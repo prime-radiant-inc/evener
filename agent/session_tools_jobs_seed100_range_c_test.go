@@ -29,15 +29,14 @@ func seed100ToolsRangeC(t *testing.T) {
 	_ = formatDelegateSend(delegateSendResult{
 		DelegateID: "dlg_seed", Status: "completed",
 		Action: "send", Output: &output, RunningInBackground: true,
-		WaitIgnoredReason: "idle",
-		StructuredResult:  map[string]any{"ok": true}, StructuredResultValid: &valid,
+		StructuredResult: map[string]any{"ok": true}, StructuredResultValid: &valid,
 	})
 	_ = formatDelegateSend(delegateSendResult{Action: "send", StructuredResult: make(chan int)})
 
 	_, _ = marshalWatchResult(watchResult{
 		WatchID: "watch_seed", Source: "self", Watching: true,
 		Events: []string{"tool_result"}, EventFilter: &watchEventFilter{ToolName: "shell", Status: "completed"},
-		Send: &watchSendArgs{To: "parent", Message: "done", IncludeExcerpt: true},
+		Send: &watchSendArgs{To: "parent"},
 	}, 1)
 	_, _ = marshalWatchListResult(jobWatchListToolResult{}, 1)
 	_, _ = marshalWatchInspectResult(jobWatchInspectToolResult{}, 1)

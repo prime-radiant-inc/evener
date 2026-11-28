@@ -24,7 +24,7 @@ func TestSetModel_EmitsModelChangedEvent(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("gpt-4.1-mini"); err != nil {
+	if err := sess.SetModel("", "gpt-4.1-mini"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestSetModel_ModelChangedEventCarriesNewDefaultEffort(t *testing.T) {
 					testOnly: testConfig{skipGitSnapshot: true},
 				}),
 			)
-			if err := sess.SetModel(tc.model); err != nil {
+			if err := sess.SetModel("", tc.model); err != nil {
 				t.Fatalf("SetModel: %v", err)
 			}
 
@@ -118,7 +118,9 @@ func TestSetModel_ModelChangedEventCarriesNewDefaultEffort(t *testing.T) {
 }
 
 // TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent verifies that a
-// rejected SetModel call (unknown instance) emits no EventModelChanged.
+// rejected SetModel call (unknown instance) emits no EventModelChanged and no
+// EventNextModelChanged: a pick that never passed its own validation was
+// never accepted, so no publication may claim it.
 func TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t,
@@ -130,16 +132,25 @@ func TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent(t *testing.T) {
 		}),
 	)
 
-	if err := sess.SetModel("bogus/some-model"); err == nil {
+	if err := sess.SetModel("", "bogus/some-model"); err == nil {
 		t.Fatal("expected error from unknown instance ref")
 	}
 
-	select {
-	case ev := <-sess.Events():
-		if _, ok := ev.Data.(events.ModelChangedData); ok {
-			t.Fatal("EventModelChanged emitted for a failed SetModel")
+	// Drain every buffered event, not just the first: the channel's first
+	// event is the session start, so a single read would pass even if the
+	// rejected pick had announced itself behind it.
+	for {
+		select {
+		case ev := <-sess.Events():
+			if _, ok := ev.Data.(events.ModelChangedData); ok {
+				t.Fatal("EventModelChanged emitted for a failed SetModel")
+			}
+			if _, ok := ev.Data.(events.NextModelChangedData); ok {
+				t.Fatal("EventNextModelChanged emitted for a failed SetModel")
+			}
+		default:
+			return
 		}
-	default:
 	}
 }
 

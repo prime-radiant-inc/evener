@@ -13,9 +13,7 @@ const CLASS = {
 };
 
 export interface WelcomeContentProps {
-  note?: string;
   showNewSession?: boolean;
-  showResume?: boolean;
   showHints?: boolean;
 }
 
@@ -46,21 +44,17 @@ function resumeCandidate(navigation: NavigationStoreState) {
 }
 
 /**
- * Presentational body of the Welcome pane: the optional "Jump back in"
- * resume candidate, an optional "New session" action, and optional chord
- * hints. No example prompts, and no host-conditional
- * ("am I mobile?") behavior - this component renders exactly what its
- * props ask for regardless of the viewport. The host decides which of these
- * to show.
+ * Presentational body of the Welcome pane: a "Jump back in" resume candidate
+ * when one exists, an optional "New session" action, and optional chord hints.
+ * No example prompts, and no host-conditional ("am I mobile?") behavior.
  */
-export function WelcomeContent({ note, showNewSession, showResume = true, showHints }: WelcomeContentProps) {
+export function WelcomeContent({ showNewSession, showHints }: WelcomeContentProps) {
   const navigation = useNavigationStore();
   const candidate = resumeCandidate(navigation);
 
   return (
     <div className={CLASS.welcomeActions}>
-      {note && <p>{note}</p>}
-      {showResume && candidate !== undefined && (
+      {candidate !== undefined && (
         <Button variant="primary" wrap onClick={() => goToSession(candidate.ref)}>
           Jump back in: {candidate.title}
         </Button>

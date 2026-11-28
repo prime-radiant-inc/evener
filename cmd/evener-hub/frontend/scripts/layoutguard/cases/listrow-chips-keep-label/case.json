@@ -9,7 +9,11 @@
   },
   "cssFiles": [
     "styles/global.css",
+    "styles/tapfloor.module.css",
+    "styles/text.module.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
+    "widgets/internal/rowChrome.module.css",
     "widgets/listrow/listrow.module.css",
     "widgets/chip/chip.module.css"
   ],

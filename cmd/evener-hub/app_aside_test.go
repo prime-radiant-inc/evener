@@ -75,6 +75,65 @@ func TestHubRPCThreadForkAsideRejectsTurnFields(t *testing.T) {
 	requireWireError(t, err, appwire.CodeInvalidParams)
 }
 
+func TestHubRPCThreadForkAsideModelOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		modelProvider string
+		model         string
+		wantProfile   string
+		wantModel     string
+	}{
+		{
+			name:          "provider and model",
+			modelProvider: "anthropic",
+			model:         "claude-opus-4-6",
+			wantProfile:   "anthropic",
+			wantModel:     "claude-opus-4-6",
+		},
+		{
+			name:        "qualified model",
+			model:       "anthropic/claude-opus-4-6",
+			wantProfile: "anthropic",
+			wantModel:   "claude-opus-4-6",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-aside-0000000000")
+			parentID := buildRPCParentSession(t, stateDir)
+			past := newRebuiltPastIndex(t, filepath.Join(root, "projects", "*"))
+
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+			defer hub.Close()
+			client := dialHubRPCInitialized(t, hub)
+
+			resp, err := appwiretest.ThreadFork(context.Background(), client, appwire.ThreadForkParams{
+				Ref:           "local:" + parentID,
+				Aside:         true,
+				ModelProvider: tc.modelProvider,
+				Model:         tc.model,
+			})
+			if err != nil {
+				t.Fatalf("ThreadFork(aside): %v", err)
+			}
+			if resp.Thread.ModelProvider != tc.wantModel || resp.Thread.Evener.Profile != tc.wantProfile {
+				t.Fatalf("response thread model/profile = (%q, %q), want (%q, %q)", resp.Thread.ModelProvider, resp.Thread.Evener.Profile, tc.wantModel, tc.wantProfile)
+			}
+			childMeta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+			if err != nil {
+				t.Fatalf("LoadSessionMeta(child): %v", err)
+			}
+			if childMeta.ProfileID != tc.wantProfile || childMeta.Model != tc.wantModel {
+				t.Fatalf("child meta profile/model = (%q, %q), want (%q, %q)", childMeta.ProfileID, childMeta.Model, tc.wantProfile, tc.wantModel)
+			}
+			childHeader := readForkTranscriptHeader(t, filepath.Join(stateDir, "sessions", resp.Thread.ID+".transcript.jsonl"))
+			if childHeader.ProfileID != tc.wantProfile || childHeader.Model != tc.wantModel {
+				t.Fatalf("child header profile/model = (%q, %q), want (%q, %q)", childHeader.ProfileID, childHeader.Model, tc.wantProfile, tc.wantModel)
+			}
+		})
+	}
+}
+
 // TestHubRPCThreadForkAsideUnavailableForNonLocal pins that aside is a
 // local-evener-session feature: remote sources are never invoked with it.
 func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {

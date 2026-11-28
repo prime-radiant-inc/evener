@@ -5,8 +5,9 @@ import { approvalWaiting } from "./sessionAttention";
 // reads, worded for a person rather than mapped to a broad Cadence family.
 //
 // "awaiting" itself splits on askPending: "Question waiting" for a pending
-// question, "idle" for a turn that merely ended on needs_response (#2629). A
-// plain reply rests idle and never reads awaiting.
+// question, "idle" for an awaiting frame with no pending question, the shape
+// an older daemon reported for a turn that ended asking for a reply (#2629).
+// A plain reply rests idle and never reads awaiting.
 // Return values are lowercase so each presentation surface can apply its own
 // casing.
 //
@@ -39,8 +40,8 @@ export function humanizeState(wireState: string, askPending: boolean, approvalPe
 }
 
 // needsResponseRest says a session rests awaiting with no pending question:
-// its turn ended on needs_response, asking for a reply. The hub's
-// hubapi.NeedsResponse draws the same line.
+// an older daemon reported that shape for a turn that ended asking for a
+// reply. The hub's hubapi.NeedsResponse draws the same line.
 export function needsResponseRest(wireState: string, askPending: boolean): boolean {
   return wireState === "awaiting" && !askPending;
 }

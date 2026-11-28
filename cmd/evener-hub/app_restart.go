@@ -192,6 +192,13 @@ func launchBinaryDigest(path string) (string, error) {
 // that does not identify itself as Evener is refused: the hub must not exec an
 // arbitrary program that happens to answer --version.
 func probeHubBinary(path string) (string, error) {
+	version, _, err := probeHubBinaryInfo(path)
+	return version, err
+}
+
+// probeHubBinaryInfo parses both the version token and optional parenthesized
+// ISO8601 build timestamp from `evener --version` (buildinfo.VersionLong).
+func probeHubBinaryInfo(path string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), hubProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "--version")
@@ -206,10 +213,10 @@ func probeHubBinary(path string) (string, error) {
 	cmd.Stderr = stderr
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		return "", errHubProbeTimeout
+		return "", "", errHubProbeTimeout
 	}
 	if err != nil {
-		return "", fmt.Errorf("version probe: %w", err)
+		return "", "", fmt.Errorf("version probe: %w", err)
 	}
 	line := versionLine(stdout.String())
 	if line == "" {
@@ -217,17 +224,24 @@ func probeHubBinary(path string) (string, error) {
 	}
 	const prefix = "evener "
 	if !strings.HasPrefix(line, prefix) {
-		return "", errors.New("target did not identify itself as evener")
+		return "", "", errors.New("target did not identify itself as evener")
 	}
 	fields := strings.Fields(strings.TrimPrefix(line, prefix))
 	if len(fields) == 0 {
-		return "", errors.New("target reported no version")
+		return "", "", errors.New("target reported no version")
 	}
 	token := fields[0]
 	if token == "" {
-		return "", errors.New("target reported an empty version")
+		return "", "", errors.New("target reported an empty version")
 	}
-	return token, nil
+	var buildTime string
+	if len(fields) >= 2 && strings.HasPrefix(fields[1], "(") && strings.HasSuffix(fields[1], ")") {
+		candidate := strings.TrimSuffix(strings.TrimPrefix(fields[1], "("), ")")
+		if _, err := time.Parse(time.RFC3339, candidate); err == nil {
+			buildTime = candidate
+		}
+	}
+	return token, buildTime, nil
 }
 
 // versionLine returns the first line when it is an Evener version banner, and

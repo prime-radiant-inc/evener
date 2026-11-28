@@ -12,7 +12,6 @@ type EventKind string
 const (
 	EventJobStarted               EventKind = "job_started"
 	EventJobFinished              EventKind = "job_finished"
-	EventJobMessageSent           EventKind = "job_message_sent"
 	EventJobNotificationPending   EventKind = "job_notification_pending"
 	EventJobNotificationDelivered EventKind = "job_notification_delivered"
 	EventJobNotificationConsumed  EventKind = "job_notification_consumed"
@@ -56,6 +55,10 @@ type Event struct {
 	// WorkingDir carries JobRecord.WorkingDir for shell jobs (see its doc
 	// comment).
 	WorkingDir string `json:"working_dir,omitempty"`
+	// ProcessGroupID and ProcessStartTime carry the same fields of JobRecord
+	// for job_started (see their doc comment).
+	ProcessGroupID   int        `json:"process_group_id,omitempty"`
+	ProcessStartTime *time.Time `json:"process_start_time,omitempty"`
 
 	// job_finished payload
 	Status                 Status     `json:"status,omitempty"`
@@ -69,10 +72,6 @@ type Event struct {
 	StructuredResult       any        `json:"structured_result,omitempty"`
 	StructuredResultValid  *bool      `json:"structured_result_valid,omitempty"`
 	StructuredResultReason string     `json:"structured_result_reason,omitempty"`
-
-	// job_message_sent payload
-	Target string `json:"target,omitempty"`
-	Action string `json:"action,omitempty"`
 
 	// watch_send_* payload
 	WatchSend *WatchSendState `json:"watch_send,omitempty"`

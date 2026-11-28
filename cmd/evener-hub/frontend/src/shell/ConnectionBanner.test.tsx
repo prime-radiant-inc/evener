@@ -175,6 +175,27 @@ describe('state "closed" - protocol skew', () => {
   });
 });
 
+describe('state "closed" - hub below the protocol floor', () => {
+  // The other skew direction: the hub serves only a protocol older than this
+  // client's minimum, so neither the current bundle nor a reloaded one can
+  // handshake with it. The fix lives on the hub's host, so the banner names
+  // that reason and offers no in-page action instead of a Reload or Retry
+  // that cannot succeed.
+  test("names the host upgrade and offers no in-page action", async () => {
+    const client = new FakeClient("closed");
+    client.terminalReason = "hub-below-floor";
+    connectionStore.getState().connect(client);
+
+    render(<ConnectionBanner state="closed" delayMs={0} />);
+
+    await waitFor(() => expect(screen.getByRole("status").getAttribute("data-reason")).toBe("hub-below-floor"));
+    expect(screen.queryByRole("button", { name: "Reload" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    // The client knows this reason exactly, so neither hub probe runs.
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('state "closed" - unauthenticated (401)', () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));

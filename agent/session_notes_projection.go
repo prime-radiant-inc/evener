@@ -184,8 +184,8 @@ func (s *Session) maybeAppendNotesContext() {
 	// record above is set before the append: a concurrent projection attempt
 	// sees the newer record and stays silent instead of double-appending.
 	turn := schema.TurnNotesContext
-	body := llm.User(block)
-	modelBody := llm.User(modelBlock)
+	body := llm.UserMachinery(block)
+	modelBody := llm.UserMachinery(modelBlock)
 	s.mu.Unlock()
 	// The ever-projected transition is part of the committed cut: readers use it
 	// to decide whether an empty store renders the explicit cleared marker, so

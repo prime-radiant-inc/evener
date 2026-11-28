@@ -1,13 +1,17 @@
 .chip {
-  display: inline-flex;
-  align-items: center;
+  composes: pill from "../../styles/surface.module.css";
   gap: var(--space-1);
-  height: 24px;
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-pill);
+  height: 20px;
   border: 1px solid transparent;
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+}
+
+/* Machine-text labels (tool names, ids) switch to the mono face; the
+   chip's caption size and geometry stay put. */
+.mono {
+  font-family: var(--font-mono);
 }
 
 .remove {
@@ -60,4 +64,18 @@
   background: var(--danger-bg);
   border-color: var(--danger-edge);
   color: var(--danger-ink);
+}
+
+.accent {
+  background: var(--accent-bg);
+  border-color: var(--accent-edge);
+  color: var(--accent-ink);
+}
+
+/* Quiet: no fill, a hairline edge and low ink, for a state marker inside a row. */
+.chip[data-variant="quiet"] {
+  flex: none;
+  background: transparent;
+  border-color: var(--edge);
+  color: var(--ink-low);
 }

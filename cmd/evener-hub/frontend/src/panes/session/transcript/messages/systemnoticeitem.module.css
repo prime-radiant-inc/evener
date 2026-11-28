@@ -8,6 +8,18 @@
   color: var(--ink-low);
 }
 
+.quietYieldSummary {
+  font-family: var(--font-prose);
+  font-size: var(--font-size-prose);
+  line-height: var(--line-height-prose);
+  color: var(--ink-low);
+}
+
+.quietYield {
+  composes: quietYieldSummary;
+  padding: var(--rhythm-line) 0;
+}
+
 /* A human's Allow or Deny: the quiet line, its time after it. */
 .approval {
   composes: line;
@@ -30,6 +42,14 @@
   align-items: baseline;
   gap: var(--space-2);
   padding: var(--space-1) 0;
+}
+
+/* The turn failure cross seats in the shared icon rail at full strength so
+ * failure text aligns on the reading margin with prose and tool rows. */
+.failureIcon {
+  composes: seat from "../../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class */
+  composes: gutterPull from "../../../../styles/railseat.module.css";
 }
 
 .failureText {

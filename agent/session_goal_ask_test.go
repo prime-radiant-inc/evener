@@ -323,24 +323,11 @@ func TestGoalHoldsAwaiting_NoProgressBreakerUnaffected(t *testing.T) {
 
 // --- SetGoal must not over-hold on an awaiting rest with nothing pending ---
 //
-// SessionAwaiting is not produced only by a pending ask_user question: a turn
-// that ended on needs_response also rests SessionAwaiting
-// (TestProcessInput_CleanCompletionRestsByEndReason, session_awaiting_test.go),
-// with an EMPTY pending-ask set. A guard that read raw state
-// (s.state == SessionAwaiting) rather than the pending-ask set would over-hold
-// on every such rest even though nothing is pending — a regression this test
-// pins.
-
-// TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk covers the guard: a
-// session resting SessionAwaiting from a needs_response turn (no
-// question posted, askPendingCount()==0) must let an idle /goal kick
-// immediately, exactly as it would on a plain SessionIdle session — the
-// arm-don't-kick hold is for a genuine unanswered question, not this general
-// rest state.
-func TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk(t *testing.T) {
+// An awaiting projection with no parsed pending ask must not hold a goal.
+func TestSetGoal_KicksOnAwaitingProjectionWithoutPendingAsk(t *testing.T) {
 	t.Parallel()
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return endReasonResponse("here is my answer", "needs_response") })
-	sess := newSession(t, withAdapter(f), withImmediateRest())
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("here is my answer") })
+	sess := newSession(t, withAdapter(f))
 
 	var kicked []string
 	sess.SetKickFunc(func(prompt string) { kicked = append(kicked, prompt) })
@@ -350,11 +337,11 @@ func TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	if got := sess.State(); got != SessionAwaiting {
-		t.Fatalf("state after a needs_response completion = %q, want %q (test setup broken)", got, SessionAwaiting)
-	}
+	sess.mu.Lock()
+	sess.state = SessionAwaiting
+	sess.mu.Unlock()
 	if got := sess.askPendingCount(); got != 0 {
-		t.Fatalf("askPendingCount after a needs_response completion = %d, want 0 (a needs_response rest, no pending question — test setup broken)", got)
+		t.Fatalf("askPendingCount on the awaiting projection = %d, want 0 (an awaiting projection, no pending question — test setup broken)", got)
 	}
 
 	started, err := sess.SetGoal(ctx, "ship it")
@@ -362,7 +349,7 @@ func TestSetGoal_KicksOnNeedsResponseRestNoPendingAsk(t *testing.T) {
 		t.Fatalf("SetGoal: %v", err)
 	}
 	if !started {
-		t.Fatal("SetGoal on a needs_response rest with nothing pending must report started=true and kick immediately (the arm-don't-kick hold is for a genuine pending question, not this needs_response rest)")
+		t.Fatal("SetGoal on an awaiting projection with nothing pending must report started=true and kick immediately (the arm-don't-kick hold is for a genuine pending question, not this needs_response rest)")
 	}
 	if len(kicked) != 1 {
 		t.Fatalf("kick count = %d, want exactly 1", len(kicked))

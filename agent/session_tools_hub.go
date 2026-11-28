@@ -40,8 +40,6 @@ func managerReadDefinition(def llm.ToolDefinition, ordinary bool) llm.ToolDefini
 				"mode":             map[string]any{"type": "string", "enum": []string{"discovery"}},
 				"cursor":           map[string]any{"type": "string"},
 				"limit":            map[string]any{"type": "integer"},
-				"sortKey":          map[string]any{"type": "string"},
-				"sortDirection":    map[string]any{"type": "string"},
 				"searchTerm":       map[string]any{"type": "string"},
 				"statuses":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"sourceIds":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -193,9 +191,9 @@ func (s *Session) composeHubRegistry() {
 		if base != nil {
 			registered = *base
 		} else if name == "job_list" {
-			registered.Definition = tool.DefJobListNamed(s.resultToolName(), s.hasHumanPartnerToAsk())
+			registered.Definition = tool.DefJobListNamed(s.resultToolName())
 		} else if name == "job_status" {
-			registered.Definition = tool.DefJobStatusNamed(s.resultToolName(), s.hasHumanPartnerToAsk())
+			registered.Definition = tool.DefJobStatusNamed(s.resultToolName())
 		} else {
 			continue
 		}

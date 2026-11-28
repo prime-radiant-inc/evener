@@ -32,13 +32,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import {
   Button,
-  Chevron,
   type ModelCatalog,
   type ModelCatalogEntry,
   ModelCatalogPanel,
+  PickerTrigger,
   Popover,
   Sheet,
-  VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./modelswitch.module.css";
@@ -73,6 +72,15 @@ export interface ModelSwitchTriggerProps {
    * kind of reload, not a scope change. */
   refreshKey?: unknown;
   disabled?: boolean;
+  /** Stretch the trigger's slot box across what it was given instead of
+   * hugging the label. The Popover path also stretches its own wrapper so the
+   * panel anchors to the field; PickerTrigger owns the slot box on both
+   * branches. Default false. */
+  fill?: boolean;
+  /** The caller's slot may squeeze this trigger: the button and value
+   * truncate instead of reserving the model id's full width and widening the
+   * row. Default false. */
+  shrink?: boolean;
   /** Visually-hidden action suffix for the trigger's accessible name. */
   actionLabel?: string;
   "data-testid"?: string;
@@ -85,9 +93,9 @@ const CLASS = {
   trigger: requireClass(styles.trigger, "modelswitch.module.css", "trigger"),
   value: requireClass(styles.value, "modelswitch.module.css", "value"),
   chevron: requireClass(styles.chevron, "modelswitch.module.css", "chevron"),
+  triggerShrink: requireClass(styles.triggerShrink, "modelswitch.module.css", "triggerShrink"),
   popoverPanel: requireClass(styles.popoverPanel, "modelswitch.module.css", "popoverPanel"),
   sheetBody: requireClass(styles.sheetBody, "modelswitch.module.css", "sheetBody"),
-  triggerWrapper: requireClass(styles.triggerWrapper, "modelswitch.module.css", "triggerWrapper"),
 };
 
 export function ModelSwitchTrigger({
@@ -98,6 +106,8 @@ export function ModelSwitchTrigger({
   onOpenConnection,
   refreshKey,
   disabled = false,
+  fill = false,
+  shrink = false,
   actionLabel = "change model",
   "data-testid": testId,
   valueTestId,
@@ -261,52 +271,39 @@ export function ModelSwitchTrigger({
   // One trigger button, whichever overlay sits behind it: the visible control
   // must not change identity across the breakpoint, or the spawn pane's
   // phone-only trigger slot and the status row's chip would both re-mount on
-  // a viewport crossing.
+  // a viewport crossing. PickerTrigger owns the one span around it on both
+  // branches, so the row's direct-child sizing reaches the same shape here as
+  // it does through Popover's wrapper.
   const triggerButton = (
-    <button
+    <PickerTrigger
       ref={triggerRef}
-      type="button"
-      className={CLASS.trigger}
-      data-testid={testId}
-      title={label}
+      open={open}
       onClick={() => {
         if (open) closePicker();
         else openPicker();
       }}
+      // The desktop Popover holds a combobox/listbox picker; the mobile
+      // branch opens the same catalog in a bottom Sheet, which is a dialog.
+      ariaMode={isMobile ? "dialog" : "listbox"}
+      actionLabel={actionLabel}
+      value={label}
+      fill={fill}
+      classes={{
+        trigger: shrink ? `${CLASS.trigger} ${CLASS.triggerShrink}` : CLASS.trigger,
+        value: CLASS.value,
+        chevron: CLASS.chevron,
+      }}
       disabled={disabled}
-    >
-      {/* Plain text, not a Chip: the trigger already draws the control's
-          own hover box, and a bordered chip inside it reads as a double
-          border - the same rule widgets/pathfield's and
-          widgets/modelCatalog's triggers follow. */}
-      <span className={CLASS.value} data-testid={valueTestId}>
-        {label}
-      </span>
-      <span className={CLASS.chevron} aria-hidden="true">
-        <Chevron direction="down" />
-      </span>{" "}
-      {/* That separating space is load-bearing: the accessible name is this
-          button's children concatenated, and each child's own text is
-          trimmed first, so a space INSIDE either span would be dropped and
-          the name would run together as "…sonnet-4-5— change model". A
-          whitespace-only text node between them survives that trim and
-          renders nothing of its own (an all-whitespace anonymous flex item
-          is not laid out). */}
-      <VisuallyHidden>— {actionLabel}</VisuallyHidden>
-    </button>
+      title={label}
+      data-testid={testId}
+      valueTestId={valueTestId}
+    />
   );
 
   if (isMobile) {
     return (
       <>
-        {/* A span wrapper matching Popover's own trigger wrapper
-            (widgets/popover's .trigger: inline-flex, hugging): the status
-            row's container-query compression targets
-            `.identity > span:first-child > button`, so the trigger must stay
-            one span deep on both sides of the breakpoint or the phone-width
-            label floor (min-width: 1rem, padding-inline: 0) stops applying
-            and the fixed facts squeeze the model label to zero width. */}
-        <span className={CLASS.triggerWrapper}>{triggerButton}</span>
+        {triggerButton}
         <Sheet open={open} side="bottom" onClose={closePicker} title="Choose model">
           <div className={CLASS.sheetBody}>{panel}</div>
         </Sheet>
@@ -324,6 +321,7 @@ export function ModelSwitchTrigger({
       // The panel's input owns focus and its own text selection - see
       // closePicker for why FocusScope must not manage focus here.
       autoFocus={false}
+      stretchTrigger={fill}
       trigger={triggerButton}
     >
       <div className={CLASS.popoverPanel}>{panel}</div>

@@ -125,15 +125,6 @@ func existingDirectory(path string) error {
 	return nil
 }
 
-// ProjectID resolves path before rendering its readable canonical identifier.
-func ProjectID(path string) (string, error) {
-	project, err := ResolveProject(path)
-	if err != nil {
-		return "", err
-	}
-	return project.ID, nil
-}
-
 // ValidateProjectID validates only the serialized Project ID syntax.
 func ValidateProjectID(value string) error {
 	if len(value) == 0 || len(value) > 80 {

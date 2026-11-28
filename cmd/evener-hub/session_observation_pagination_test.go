@@ -38,7 +38,7 @@ func TestManagerObservationReconnectBeyondLatestPage(t *testing.T) {
 	appendEntry := func(entry schema.Turn) {
 		t.Helper()
 		entry.Format = schema.TurnFormatIdentity
-		if err := writer.Append(entry); err != nil {
+		if _, err := writer.Record(entry, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -55,7 +55,7 @@ func TestManagerObservationReconnectBeyondLatestPage(t *testing.T) {
 	communicate("B", "watched-progress", false)
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 	defer daemon.Close()
-	identity, err := daemonserver.PrepareAppIdentity("local", id, path)
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", id, ref, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestManagerObservationRecoveryPageBoundaries(t *testing.T) {
 			appendItems := func(start, count int) {
 				t.Helper()
 				for i := start; i < start+count; i++ {
-					if err := writer.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "work", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("item-%d", i))}); err != nil {
+					if _, err := writer.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "work", TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("item-%d", i))}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -268,7 +268,7 @@ func TestManagerObservationRecoveryPageBoundaries(t *testing.T) {
 			appendItems(0, 130)
 			daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 			defer daemon.Close()
-			identity, err := daemonserver.PrepareAppIdentity("local", id, path)
+			identity, err := daemonserver.PrepareAppIdentityForRef("local", id, ref, path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -312,7 +312,7 @@ func TestManagerObservationRecoveryPageBoundaries(t *testing.T) {
 					case "boot":
 						// A same-ID ReplaceAppIdentity reuses its history. Move
 						// away first, as Clear does, to detach that old owner.
-						away, err := daemonserver.PrepareAppIdentity("local", "other", "")
+						away, err := daemonserver.PrepareAppIdentityForRef("local", "other", "local:other", "")
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -327,11 +327,11 @@ func TestManagerObservationRecoveryPageBoundaries(t *testing.T) {
 						if err := w.Close(); err != nil {
 							t.Fatal(err)
 						}
-						next, err := daemonserver.PrepareAppIdentity("local", id, replacement)
+						next, err := daemonserver.PrepareAppIdentityForRef("local", id, ref, replacement)
 						if err != nil {
 							t.Fatal(err)
 						}
-						away, err := daemonserver.PrepareAppIdentity("local", "other", "")
+						away, err := daemonserver.PrepareAppIdentityForRef("local", "other", "local:other", "")
 						if err != nil {
 							t.Fatal(err)
 						}

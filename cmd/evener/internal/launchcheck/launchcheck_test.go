@@ -2,6 +2,7 @@ package launchcheck
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
@@ -21,6 +24,28 @@ import (
 	_ "primeradiant.com/evener/llm/providers/all"
 	"primeradiant.com/evener/llm/registry"
 )
+
+// listingOnlyAdapter stands in for a protocol's live listing without a
+// network: a stalled endpoint waits out its context, and a healthy one answers
+// its rows immediately.
+type listingOnlyAdapter struct {
+	name string
+	list func(context.Context) ([]registry.Model, error)
+}
+
+func (a listingOnlyAdapter) Name() string { return a.name }
+
+func (listingOnlyAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, errors.New("listing-only adapter does not complete")
+}
+
+func (listingOnlyAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+func (a listingOnlyAdapter) LiveModels(ctx context.Context) ([]registry.Model, error) {
+	return a.list(ctx)
+}
 
 // launchCheckRegistry installs a client built from the given providers.toml
 // body on the launchCheckLoadClient seam.
@@ -1191,4 +1216,76 @@ func TestLaunchCheckModelsCarriesEffortLevelsForCommandCredentialedRows(t *testi
 		}
 	}
 	t.Fatalf("models=%+v, want gw/house-model", models)
+}
+
+// TestLaunchCheckSequentialStallsKeepHealthyRowsInChildBudget is the control
+// for the shared listing budget. The hub kills a launch check at 30s. Each
+// non-Copilot route gets an 8s listing budget and runs concurrently, so two
+// stalled non-Copilot endpoints finish together at 8s instead of summing to
+// 16s, leaving room for healthy rows inside the 30s child budget. A Copilot
+// route keeps its 15s session-exchange budget.
+func TestLaunchCheckSequentialStallsKeepHealthyRowsInChildBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		provider := func() registry.Provider {
+			return registry.Provider{
+				Base: "openai", Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceGeneric,
+				APIKey: "k",
+				Transport: registry.Transport{
+					Auth: registry.AuthBearer, BaseURL: "http://stalled.example.test",
+					Endpoint: "/chat/completions", ModelsEndpoint: "/models",
+					CountTokensEndpoint: registry.EndpointUnsupported,
+				},
+				Models: map[string]registry.Model{"m": {ID: "m"}},
+			}
+		}
+		reg, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"stalled-a": provider(),
+				"stalled-b": provider(),
+				"healthy":   provider(),
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry: %v", err)
+		}
+		client := llm.NewClient(llm.WithRegistry(reg))
+		stall := func(ctx context.Context) ([]registry.Model, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		client.Register(listingOnlyAdapter{name: "stalled-a", list: stall})
+		client.Register(listingOnlyAdapter{name: "stalled-b", list: stall})
+		client.Register(listingOnlyAdapter{name: "healthy", list: func(context.Context) ([]registry.Model, error) {
+			return []registry.Model{{ID: "healthy-model"}}, nil
+		}})
+		// Ollama is always visible and needs no credential; answer its
+		// listing locally so the bubble never touches a real endpoint.
+		client.Register(listingOnlyAdapter{name: "ollama", list: func(context.Context) ([]registry.Model, error) {
+			return nil, nil
+		}})
+		oldLoad := launchCheckLoadClient
+		launchCheckLoadClient = func(string) (*llm.Client, error) { return client, nil }
+		t.Cleanup(func() { launchCheckLoadClient = oldLoad })
+
+		start := time.Now()
+		models, diagnostics, err := launchCheckModels()
+		if err != nil {
+			t.Fatalf("launchCheckModels: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed != 8*time.Second {
+			t.Fatalf("two stalled non-Copilot listings took %s, want 8s of the 30s child budget", elapsed)
+		}
+		if len(diagnostics) != 2 {
+			t.Fatalf("diagnostics = %v, want one per stalled endpoint", diagnostics)
+		}
+		for _, m := range models {
+			if m.Provider == "healthy" && m.Model == "healthy-model" {
+				return
+			}
+		}
+		t.Fatalf("models = %+v, want the healthy provider's row after the two stalls", models)
+	})
 }

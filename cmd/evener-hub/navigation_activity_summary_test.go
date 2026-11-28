@@ -36,7 +36,7 @@ func TestNavigationActivitySummaryHasCountsWithoutDetail(t *testing.T) {
 	jobs[0].Command = ""
 	watches := watchListForCap(2000, 700)
 	node := hubcore.TreeNode{ID: "root", Kind: "session", State: "idle", RunningJobs: jobs, CompletedJobs: jobs, Watches: watches}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "g", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestNavigationFittingPreservesCompactCounts(t *testing.T) {
 	for i := range rows {
 		rows[i].Watches = watchListForCap(30, 10)
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Revision: 1, Tree: hubcore.Tree{Live: rows}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "g", Revision: 1, Tree: hubcore.Tree{Live: rows}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestNavigationFittingPreservesCompactCounts(t *testing.T) {
 func rowWithRunningJobs(t *testing.T, jobs ...appwire.EvenerJobInfo) hubapi.NavigationSessionSummary {
 	t.Helper()
 	node := hubcore.TreeNode{ID: "root", Kind: "session", State: "active", RunningJobs: jobs}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "g", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "g", Tree: hubcore.Tree{Live: []hubcore.TreeNode{node}}})
 	if err != nil {
 		t.Fatal(err)
 	}

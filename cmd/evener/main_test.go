@@ -60,7 +60,7 @@ func TestMainRejectsEnabledPluginsWithResumeBeforeRun(t *testing.T) {
 func TestMainBareInteractiveStartup(t *testing.T) {
 	commandTokens := []string{
 		"openai", "serve", "launch-check", "upgrade", "install", "plugin",
-		"hub", "doctor", "migrate", "models", "providers",
+		"hub", "doctor", "migrate", "models", "providers", "github-copilot",
 	}
 
 	type result struct {
@@ -380,7 +380,7 @@ func TestTopLevelHelpListsSubcommands(t *testing.T) {
 	fs.Usage()
 	usage := stderr.String()
 
-	for _, cmd := range []string{"openai", "serve", "launch-check", "upgrade", "install", "plugin", "hub", "doctor", "migrate", "models", "providers"} {
+	for _, cmd := range []string{"openai", "serve", "launch-check", "upgrade", "install", "plugin", "hub", "doctor", "migrate", "models", "providers", "github-copilot"} {
 		// The indented row, not a bare substring: "install" also appears inside
 		// "Upgrade installed Evener binaries", so only the command row proves the
 		// subcommand is listed.

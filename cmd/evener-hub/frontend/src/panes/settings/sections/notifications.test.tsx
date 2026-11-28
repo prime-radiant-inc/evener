@@ -1,12 +1,22 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { iPhoneHost } from "../../../shell/iPhoneHost";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { NotificationsSection } from "./notifications";
+
+vi.mock("../../../shell/iPhoneHost", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../../shell/iPhoneHost")>();
+  return {
+    ...original,
+    iPhoneHost: vi.fn(() => undefined),
+    tellIPhoneHost: vi.fn(),
+  };
+});
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -69,6 +79,72 @@ test("hiding and restoring sound options preserves the chosen notification scope
   expect(prefsStore.getState().notificationsLoudScope).toBe("all");
   await user.click(screen.getByRole("switch", { name: "Sound" }));
   expect(screen.getByRole("radio", { name: "Everything needing me" }).getAttribute("aria-checked")).toBe("true");
+});
+
+describe("native iPhone alert preferences", () => {
+  const preferences = { failures: false, questions: true, hold: false, haptics: true };
+  let postMessage: ReturnType<typeof vi.fn<(json: string) => void>>;
+
+  beforeEach(() => {
+    postMessage = vi.fn<(json: string) => void>();
+    vi.mocked(iPhoneHost).mockReturnValue({ postMessage });
+  });
+
+  test("reads the saved device choices and sends changes to the native owner", async () => {
+    const user = userEvent.setup();
+    renderWithToasts();
+
+    expect(JSON.parse(postMessage.mock.calls[0]?.[0] ?? "null")).toEqual({ type: "getAlertPreferences" });
+    expect(screen.queryByRole("switch", { name: "A session fails" })).toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "alertPreferences", preferences }),
+          origin: "",
+          source: null,
+        }),
+      );
+    });
+
+    const failureSwitch = screen.getByRole("switch", { name: "A session fails" });
+    expect(failureSwitch.getAttribute("aria-checked")).toBe("false");
+    expect(
+      screen
+        .getByRole("switch", { name: "A session asks a question, needs approval, or needs your reply" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      screen.getByRole("switch", { name: "Hold alerts while reading or typing" }).getAttribute("aria-checked"),
+    ).toBe("false");
+    expect(screen.getByRole("switch", { name: "Haptics" }).getAttribute("aria-checked")).toBe("true");
+    await user.click(failureSwitch);
+    expect(JSON.parse(postMessage.mock.lastCall?.[0] ?? "null")).toEqual({
+      type: "setAlertPreference",
+      key: "failures",
+      value: true,
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "alertPreferences", preferences: { ...preferences, failures: true } }),
+          origin: "",
+          source: null,
+        }),
+      );
+    });
+    expect(failureSwitch.getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("does not show or request native alert preferences in a browser", () => {
+    vi.mocked(iPhoneHost).mockReturnValue(undefined);
+    renderWithToasts();
+
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(screen.queryByRole("switch", { name: "A session fails" })).toBeNull();
+    expect(screen.getByRole("switch", { name: "Title bar count" })).toBeTruthy();
+  });
 });
 
 test("title bar count defaults checked; favicon/OS/sound default unchecked; Loud for defaults to Questions, reply requests, approvals & errors", () => {

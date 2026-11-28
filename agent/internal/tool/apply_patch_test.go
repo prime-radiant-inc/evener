@@ -54,7 +54,7 @@ func TestApplyPatch_AddUpdateMoveDelete(t *testing.T) {
 *** Delete File: d.txt
 *** End Patch
 `
-	out, err := ApplyPatch(testMutator(dir), patch)
+	out, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestApplyPatch_DeleteFailureNotReportedAsApplied(t *testing.T) {
 	}
 	fm := execenv.NewLocalExecutionEnvironment(dir).SetFs(afero.NewReadOnlyFs(afero.NewOsFs()))
 
-	out, err := ApplyPatch(fm, "*** Begin Patch\n*** Delete File: keep.txt\n*** End Patch\n")
+	out, err := ApplyPatch(t.Context(), fm, "*** Begin Patch\n*** Delete File: keep.txt\n*** End Patch\n")
 	if err == nil {
 		t.Fatalf("ApplyPatch reported success after a failed remove: %q", out)
 	}
@@ -130,7 +130,7 @@ func TestApplyPatch_SummaryPrefixesMoveToSamePath(t *testing.T) {
 +line2
 *** End Patch
 `
-	out, err := ApplyPatch(testMutator(dir), patch)
+	out, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestApplyPatch_EndOfFileMarker(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ line1\n line1\n-line2\n+replaced\n line3\n*** End of File\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch with End of File marker: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestApplyPatch_FuzzyWhitespaceMatching(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ hello\n hello world\n-goodbye\n+farewell\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch with whitespace mismatch: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestApplyPatch_ContextHintDisambiguates(t *testing.T) {
 
 	// Both functions have "    return 1" — the @@ hint disambiguates
 	patch := "*** Begin Patch\n*** Update File: f.py\n@@ func bar():\n-    return 1\n+    return 2\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestApplyPatch_SearchesWholeOldBlock(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tmodel := \"openai/gpt-5\"\n \tconfig := loadConfig()\n+\tfastCheapModel := \"openai/gpt-5-mini\"\n }\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestApplyPatch_HintCanBeFirstOldLine(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@ func unrelated() {\n func unrelated() {\n-\treturn oldValue\n+\treturn newValue\n }\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestApplyPatch_SequenceSearchMatchesOpenAILeniency(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \toldCall()\n \treturn\n+\t// done\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestApplyPatch_FuzzyMatchPreservesOriginalContextLines(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \toldCall()\n-\treturn\n+\treturn nil\n }\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestApplyPatch_SequenceSearchMatchesInternalWhitespaceFuzzily(t *testing.T)
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tconst value = 1\n-\treturn value\n+\treturn value + 1\n }\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestApplyPatch_MultiHunkSingleFile(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.txt\n@@ alpha\n alpha\n-beta\n+BETA\n@@ delta\n delta\n-epsilon\n+EPSILON\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("ApplyPatch multi-hunk: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestApplyPatch_FuzzyMatch_UnicodeQuotes(t *testing.T) {
 	// Build a v4a-style patch that uses curly quotes in the delete line.
 	patch := "*** Begin Patch\n*** Update File: test.go\n@@\n-fmt.Println(\u201Chello world\u201D)\n+fmt.Println(\"goodbye world\")\n*** End Patch\n"
 
-	result, err := ApplyPatch(testMutator(dir), patch)
+	result, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("expected patch to apply with Unicode fuzzy matching: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestApplyPatch_ContextMismatchReportsContextAndCandidates(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tgot, err := resolve()\n \tmodel := \"openai/gpt-5\"\n+\tfastCheapModel := \"openai/gpt-5-mini\"\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err == nil {
 		t.Fatal("expected patch mismatch")
 	}
@@ -420,7 +420,7 @@ func TestApplyPatch_ContextMismatchEndsWithRecoveryPointer(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tmodel := \"openai/gpt-5\"\n-\treturn nonexistent\n+\treturn model\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err == nil {
 		t.Fatal("expected patch mismatch")
 	}
@@ -449,7 +449,7 @@ func TestApplyPatch_DeleteMismatchReportsFullBlockCandidate(t *testing.T) {
 	}
 
 	patch := "*** Begin Patch\n*** Update File: hook_test.go\n@@\n func target() {\n-\tclose(done)\n+\tclose(complete)\n }\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err == nil {
 		t.Fatal("expected patch mismatch")
 	}
@@ -471,7 +471,7 @@ func TestApplyPatch_ConfinedRejectsPathTraversalAndAbsolutePaths(t *testing.T) {
 `,
 	}
 	for _, p := range cases {
-		if _, err := ApplyPatch(confinedPatchMutator(t, dir), p); err == nil {
+		if _, err := ApplyPatch(t.Context(), confinedPatchMutator(t, dir), p); err == nil {
 			t.Fatalf("expected error for patch:\n%s", p)
 		}
 	}
@@ -490,7 +490,7 @@ func TestApplyPatch_AbsolutePathUnderRootDir(t *testing.T) {
 +world
 *** End Patch
 `, dir)
-	touched, err := ApplyPatch(testMutator(dir), patch)
+	touched, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	if err != nil {
 		t.Fatalf("absolute path under rootDir should succeed: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestApplyPatch_ConfinedAbsolutePathOutsideRootDir(t *testing.T) {
 +nope
 *** End Patch
 `
-	if _, err := ApplyPatch(confinedPatchMutator(t, dir), patch); err == nil {
+	if _, err := ApplyPatch(t.Context(), confinedPatchMutator(t, dir), patch); err == nil {
 		t.Fatal("absolute path outside rootDir should be rejected")
 	}
 }
@@ -531,7 +531,7 @@ func TestApplyPatch_SandboxOffOutsideWorkingDirectory(t *testing.T) {
 		fmt.Sprintf("*** Begin Patch\n*** Update File: %s\n*** Move to: %s\n@@\n-original\n+updated\n*** End Patch\n", source, target),
 	}
 	for _, patch := range patches {
-		if _, err := ApplyPatch(fm, patch); err != nil {
+		if _, err := ApplyPatch(t.Context(), fm, patch); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -542,7 +542,7 @@ func TestApplyPatch_SandboxOffOutsideWorkingDirectory(t *testing.T) {
 	if _, err := os.Stat(source); !os.IsNotExist(err) {
 		t.Fatalf("moved source = %v", err)
 	}
-	if _, err := ApplyPatch(fm, fmt.Sprintf("*** Begin Patch\n*** Delete File: %s\n*** End Patch\n", target)); err != nil {
+	if _, err := ApplyPatch(t.Context(), fm, fmt.Sprintf("*** Begin Patch\n*** Delete File: %s\n*** End Patch\n", target)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
@@ -558,7 +558,7 @@ func TestApplyPatchKeepsBareBlankContextLine(t *testing.T) {
 	}
 	// The blank context line is written with no leading space.
 	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n first\n\n-second\n+SECOND\n third\n*** End Patch\n"
-	if _, err := ApplyPatch(testMutator(dir), patch); err != nil {
+	if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -580,7 +580,7 @@ func TestApplyPatchTrailingEmptyLineIsNotContext(t *testing.T) {
 	// they counted, the hunk would demand a blank line after "two" that the
 	// patch never described and the replacement would grow an extra one.
 	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n one\n-two\n+TWO\n\n\n*** End Patch\n"
-	if _, err := ApplyPatch(testMutator(dir), patch); err != nil {
+	if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -598,7 +598,7 @@ func TestApplyPatchMismatchReportsFirstDifferingLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n alpha\n beta\n-GAMMA\n+gamma2\n delta\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	var mm *PatchMismatchError
 	if !errors.As(err, &mm) {
 		t.Fatalf("err = %v, want *PatchMismatchError", err)
@@ -633,7 +633,7 @@ func TestApplyPatchBlankLineAfterHunkMarkerIsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n\n func f() {\n+\tbody()\n }\n*** End Patch\n"
-	if _, err := ApplyPatch(testMutator(dir), patch); err != nil {
+	if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
 	got, _ := os.ReadFile(path)
@@ -651,7 +651,7 @@ func TestApplyPatchBlankOnlyHunkAnchorsOnBlankLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n\n+new\n*** End Patch\n"
-	if _, err := ApplyPatch(testMutator(dir), patch); err != nil {
+	if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
 		t.Fatalf("ApplyPatch: %v", err)
 	}
 	got, _ := os.ReadFile(path)
@@ -666,7 +666,7 @@ func TestApplyPatchMismatchAtEndOfFileReportsEOF(t *testing.T) {
 		t.Fatal(err)
 	}
 	patch := "*** Begin Patch\n*** Update File: a.go\n@@\n alpha\n beta\n-gamma\n+delta\n*** End Patch\n"
-	_, err := ApplyPatch(testMutator(dir), patch)
+	_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
 	var mm *PatchMismatchError
 	if !errors.As(err, &mm) {
 		t.Fatalf("err = %v, want *PatchMismatchError", err)

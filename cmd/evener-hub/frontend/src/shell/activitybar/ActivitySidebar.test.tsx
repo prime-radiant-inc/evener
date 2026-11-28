@@ -16,21 +16,34 @@ import Zoom from "../../panes/zoom/Zoom";
 import "../../panes/zoom";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
-import { sessionActivitySnapshot } from "../../stores/sessionActivity";
+import {
+  OVERVIEW_WIDTH_DEFAULT,
+  OVERVIEW_WIDTH_MAX,
+  OVERVIEW_WIDTH_MIN,
+  overviewWidthMax,
+  prefsStore,
+  resetPrefsStoreForTests,
+} from "../../stores/prefs";
+import { acquireSessionActivity, sessionActivitySnapshot } from "../../stores/sessionActivity";
 import {
   activityClient,
   activityContext,
   activityDelegate,
+  activityJob,
   activitySummary,
   activityWatch,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../widgets/internal/requireClass";
+import { installSwitchableViewport } from "../appShellTestUtils";
 import { ClientProvider } from "../clientContext";
 import { conversationPaneLifetime } from "../paneLifetime";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
+import { resetMobileViewportForTests } from "../useIsMobile";
 import { currentSessionRef, type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { ActivitySidebar } from "./ActivitySidebar";
+import { ActivitySidebar, OVERVIEW_WIDTH_PROPERTY } from "./ActivitySidebar";
+import styles from "./activitybar.module.css";
 import { ActivityBoundaryObserver } from "./activityPagingTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitySidebarStore";
 import { ActivitySidebar as ActivitySidebarUnderTest } from "./activitySidebarTestUtils";
@@ -42,6 +55,7 @@ beforeAll(async () => {
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
   resetDisclosureStoreForTests();
+  resetPrefsStoreForTests();
 });
 
 const ref = "remote:owner";
@@ -144,6 +158,75 @@ test("one visible-sidebar clock advances activity rows and expanded watch detail
   expect(client.calls.filter((call) => call.method !== "thread/unsubscribe").length).toBe(readsBeforeClose);
 });
 
+test("the live watch detail names a named delegate's own watch and its job target", async () => {
+  const childRef = "remote:child";
+  // A named delegate's own activity read proves the viewed session's identity;
+  // its own row is never in its own delegates collection.
+  const context = (requestedRef: string) => ({ ...activityContext(requestedRef), delegateName: "navigation-observer" });
+  const client = activityClient();
+  client.on("evener/thread/activity/read", ({ ref: requestedRef, scope }) => ({
+    ...activitySummary(requestedRef, scope),
+    context: context(requestedRef),
+  }));
+  client.on("evener/thread/delegates/list", ({ ref: requestedRef, scope }) => ({
+    context: context(requestedRef),
+    scope: scope ?? "session",
+    delegates: [],
+    page: { complete: true, issues: [] },
+  }));
+  client.on("evener/thread/jobs/list", ({ ref: requestedRef, scope }) => ({
+    context: context(requestedRef),
+    scope: scope ?? "session",
+    jobs: [activityJob({ ownerRef: requestedRef, description: "Child checks" })],
+    page: { complete: true, issues: [] },
+  }));
+  // The watch belongs in its receiver's own collection, with the source ref
+  // naming the same physical session.
+  const ownWatch = activityWatch(
+    { source: "job_raw", target: "job_raw", outputMatch: "ready", cadence: [{ kind: "output" }] },
+    childRef,
+  );
+  ownWatch.sourceRef = childRef;
+  client.on("evener/thread/watches/list", ({ ref: requestedRef, scope }) => ({
+    context: context(requestedRef),
+    scope: scope ?? "session",
+    watches: [ownWatch],
+    page: { complete: true, issues: [] },
+  }));
+  connectionStore.getState().connect(client);
+  installFocusedScope(childRef);
+  // The session transcript beside the sidebar already observes jobs and
+  // delegates; the sidebar reads that same store and owns no read of its own.
+  const activity = acquireSessionActivity(client, childRef, "session");
+  const stopDelegates = activity.store.observe("delegates");
+  const stopJobs = activity.store.observe("jobs");
+  let mounted: ReturnType<typeof mount> | undefined;
+  try {
+    await waitFor(() => expect(activity.store.getSnapshot().jobs.rows).toHaveLength(1));
+    expect(activity.store.getSnapshot().context?.delegateName).toBe("navigation-observer");
+    const entityReads = () =>
+      client.calls.filter(
+        (call) => call.method === "evener/thread/delegates/list" || call.method === "evener/thread/jobs/list",
+      ).length;
+    const readsBeforeMount = entityReads();
+    activitySidebarStore.getState().openWith("watches");
+    mounted = mount();
+    const watch = await screen.findByText("watch_raw");
+    const summary = watch.closest("summary");
+    if (!summary) throw new Error("Watch summary missing");
+    act(() => fireEvent.click(summary));
+    await screen.findByTestId("watch-facts");
+    expect(screen.getByTestId("watch-facts").textContent).toContain("Child checks");
+    expect(screen.getByText(/navigation-observer/)).toBeTruthy();
+    expect(entityReads()).toBe(readsBeforeMount);
+  } finally {
+    act(() => mounted?.unmount());
+    stopJobs();
+    stopDelegates();
+    activity.release();
+  }
+});
+
 test("closed sidebar owns no read and an open tab observes only its own collection", async () => {
   const client = activityClient();
   connectionStore.getState().connect(client);
@@ -159,11 +242,11 @@ test("closed sidebar owns no read and an open tab observes only its own collecti
   await screen.findByRole("button", { name: /inspect/ });
   expect(client.calls.filter((c) => c.method === "evener/thread/delegates/list")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(0);
-  fireEvent.click(screen.getByRole("radio", { name: "Jobs, 2 of 201 running" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Jobs, 2 of 201 running" }));
   await screen.findByText("No jobs at this level.");
   expect(client.calls.filter((c) => c.method === "evener/thread/jobs/list")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "thread/read")).toHaveLength(1);
-  fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
+  fireEvent.click(screen.getByRole("button", { name: "Hide Overview" }));
   await waitFor(() => expect(sessionActivitySnapshot(client, ref, "session")).toBeNull());
 });
 
@@ -282,6 +365,58 @@ test("the Overview slides in by its own width and leaves again", async () => {
   expect(aside.style.transform).toMatch(/translateX\(100%\)/);
   act(() => activitySidebarStore.getState().close());
   await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+});
+
+// S2-F08: the focus scope IS the flex body. The aside used to style
+// FocusScope's unstyled wrapper with `.sidebar > div`; if a wrapper comes
+// back, the body loses its flex fill silently.
+test("the sidebar's focus scope is its flex body, not a wrapper around it", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("about");
+  mount();
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  const root = sidebar.firstElementChild;
+  expect(root?.classList.contains(requireClass(styles.focusBody, "activitybar.module.css", "focusBody"))).toBe(true);
+  expect(root?.getAttribute("tabindex")).toBe("-1");
+});
+
+test("desktop Overview puts its Hide control inside the pane and its Show control outside it", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  mount();
+
+  const show = screen.getByRole("button", { name: "Show Overview" });
+  expect(show.closest('[data-testid="activity-sidebar"]')).toBeNull();
+  expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+
+  // A keyboard user activates the Show chip, which unmounts as the pane opens.
+  // Focus must land on the in-pane Hide control instead of falling to the body.
+  show.focus();
+  expect(document.activeElement).toBe(show);
+  fireEvent.click(show);
+  const aside = await screen.findByTestId("activity-sidebar");
+  const hide = within(aside).getByRole("button", { name: "Hide Overview" });
+  expect(document.activeElement).toBe(hide);
+  expect(screen.queryByRole("button", { name: "Show Overview" })).toBeNull();
+
+  fireEvent.click(hide);
+  await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
+  const showAgain = screen.getByRole("button", { name: "Show Overview" });
+  expect(document.activeElement).toBe(showAgain);
+});
+
+test("the phone puts its Hide control inside the pane and offers no edge Show chip", async () => {
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  installFocusedScope(ref);
+  mount(true);
+  expect(screen.queryByRole("button", { name: "Show Overview" })).toBeNull();
+
+  act(() => activitySidebarStore.getState().openWith("agents"));
+  const aside = await screen.findByTestId("activity-sidebar");
+  expect(within(aside).getByRole("button", { name: "Hide Overview" })).toBeTruthy();
 });
 
 test("Escape dismisses only an unclaimed sidebar gesture", async () => {
@@ -538,7 +673,7 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     const footer = within(screen.getByTestId(`inspection-${inspectorId}`)).getByTestId("statusbar");
     expect(within(footer).getByRole("button", { name: "Jobs, 7 of 107 running - open Overview" })).toBeTruthy();
     const sidebar = within(screen.getByTestId("activity-sidebar"));
-    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
+    fireEvent.click(sidebar.getByRole("tab", { name: "About" }));
     await sidebar.findByText("wire-remote:seventh");
     expect(sidebar.queryByText("wire-remote:sixth")).toBeNull();
     window.getSelection()?.selectAllChildren(within(parent).getByText("remote:sixth real content"));
@@ -548,7 +683,7 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     fireEvent.click(sidebar.getByRole("button", { name: "child work" }));
     await sidebar.findByRole("button", { name: /Open remote:grandchild/ });
     expect(currentSessionRef(workspaceStore.getState())).toBe("remote:child");
-    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
+    fireEvent.click(sidebar.getByRole("tab", { name: "About" }));
     await sidebar.findByText("wire-remote:child");
     // The origin root never renders in the pane, so its crumb is not offered
     // and the cascade cannot pop to it: the drilled branch stays selected.
@@ -557,11 +692,11 @@ test("desktop delegate rows build six nested edges beside the mounted center and
     expect(activitySidebarStore.getState().tab).toBe("about");
     // Re-drilling from the retained Agents view keeps the per-scope view
     // state working across the ref change.
-    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
+    fireEvent.click(sidebar.getByRole("tab", { name: /^Agents,/ }));
     fireEvent.click(await sidebar.findByRole("button", { name: /Open remote:grandchild/ }));
     await waitFor(() => expect(currentSessionRef(workspaceStore.getState())).toBe("remote:grandchild"));
     expect(activitySidebarStore.getState().tab).toBe("agents");
-    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
+    fireEvent.click(sidebar.getByRole("tab", { name: "About" }));
     await sidebar.findByText("wire-remote:grandchild");
     const inspectorChip = within(
       within(screen.getByTestId(`inspection-${inspectorId}`)).getByTestId("statusbar"),
@@ -687,20 +822,19 @@ test("an embedded column's Overview describes that column, then the sidebar foll
     // focused, not the ordinary pane for the same conversation.
     expect(workspaceStore.getState().focusedPaneId).toBe("zoom");
     // The request named the parent column, so the sidebar describes it:
-    // its delegates, its wire identity, and its own ancestry - never the
+    // its wire identity, its delegates, and its own ancestry - never the
     // focused leaf's.
-    await sidebar.findByRole("button", { name: /delegate owned by child/ });
-    expect(sidebar.queryByRole("button", { name: /delegate owned by grandchild/ })).toBeNull();
-    fireEvent.click(sidebar.getByRole("radio", { name: "About" }));
     await sidebar.findByText("wire-child");
     expect(sidebar.queryByText("wire-grandchild")).toBeNull();
     expect(sidebar.getByRole("button", { name: "root" })).toBeTruthy();
+    fireEvent.click(sidebar.getByRole("tab", { name: /^Agents,/ }));
+    await sidebar.findByRole("button", { name: /delegate owned by child/ });
+    expect(sidebar.queryByRole("button", { name: /delegate owned by grandchild/ })).toBeNull();
     // The checkmark marks the scope the sidebar shows: the column's own menu
     // offers Overview as checked.
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     expect(screen.getByRole("menuitem", { name: /^Overview.*✓$/ })).toBeTruthy();
     await user.keyboard("{Escape}");
-    fireEvent.click(sidebar.getByRole("radio", { name: /^Agents,/ }));
     // The held scope releases when the workspace scope moves: the sidebar
     // goes back to following focus.
     act(() => workspaceStore.getState().openPane("session", { ref: "remote:other" }));
@@ -760,37 +894,93 @@ test("the held column's origin crumb routes to the retained origin pane", async 
   await sidebar.findByRole("button", { name: /delegate owned by root/ });
 });
 
-test("activity tabs keep a named keyboard radio group without a visible heading", async () => {
+test("activity tabs keep a named keyboard tablist without a visible heading", async () => {
   connectionStore.getState().connect(activityClient());
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
   mount();
   await screen.findByRole("button", { name: /inspect/ });
   expect(screen.getByRole("complementary", { name: "Overview" })).toBeTruthy();
-  expect(screen.getByRole("radiogroup", { name: "Overview kind" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Overview" })).toBeNull();
+  expect(screen.getByTestId("activity-sidebar").getAttribute("aria-modal")).toBeNull();
+  expect(screen.getByRole("tablist", { name: "Overview kind" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
-  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "End" }));
+  await act(async () => fireEvent.keyDown(screen.getByRole("tab", { name: /Agents/ }), { key: "End" }));
+  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  await act(async () => fireEvent.keyDown(screen.getByRole("tab", { name: /Tasks/ }), { key: "Home" }));
   expect(activitySidebarStore.getState().tab).toBe("about");
-  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: "About" }), { key: "Home" }));
+  await act(async () =>
+    fireEvent.keyDown(screen.getByRole("tab", { name: "About" }), { key: "ArrowRight", shiftKey: true }),
+  );
+  expect(activitySidebarStore.getState().tab).toBe("about");
+  await act(async () => fireEvent.keyDown(screen.getByRole("tab", { name: "About" }), { key: "ArrowRight" }));
+  expect(activitySidebarStore.getState().tab).toBe("links");
+  await act(async () => fireEvent.keyDown(screen.getByRole("tab", { name: /^Links/ }), { key: "ArrowRight" }));
   expect(activitySidebarStore.getState().tab).toBe("agents");
-  await act(async () => fireEvent.keyDown(screen.getByRole("radio", { name: /Agents/ }), { key: "ArrowRight" }));
-  expect(activitySidebarStore.getState().tab).toBe("jobs");
 });
 
-test("activity tabs show each fraction as a detail line and About stays a single line", async () => {
+test("activity tabs stack label over fraction inside a single row and About stays a single label", async () => {
   connectionStore.getState().connect(activityClient());
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("agents");
   mount();
   await screen.findByRole("button", { name: /inspect/ });
-  const tabs = screen.getAllByRole("radio");
-  expect(tabs).toHaveLength(5);
-  for (const tab of tabs.slice(0, 4)) {
-    const spans = tab.querySelectorAll("span");
-    expect(spans).toHaveLength(2);
+  const tabs = screen.getAllByRole("tab");
+  expect(tabs).toHaveLength(6);
+  for (const tab of tabs.slice(1)) {
+    const stack = tab.firstElementChild;
+    expect(stack?.children).toHaveLength(2);
     expect(tab.textContent).not.toContain("\n");
   }
-  expect(screen.getByRole("radio", { name: "About" }).querySelectorAll("span")).toHaveLength(1);
+  const aboutStack = screen.getByRole("tab", { name: "About" }).firstElementChild;
+  expect(aboutStack?.children).toHaveLength(1);
+});
+
+test("desktop Overview mounts a left-edge resize handle that persists width and clamps to the viewport; mobile omits it", async () => {
+  const originalInnerWidth = window.innerWidth;
+  try {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1400 });
+    connectionStore.getState().connect(activityClient());
+    installFocusedScope(ref);
+    activitySidebarStore.getState().openWith("about");
+    const desktop = mount(false);
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    const separator = screen.getByRole("separator", { name: "Resize Overview" });
+    expect(separator).toBe(screen.getByTestId("overview-resize-handle"));
+    expect(separator.getAttribute("aria-valuenow")).toBe(String(OVERVIEW_WIDTH_DEFAULT));
+    expect(separator.getAttribute("aria-valuemin")).toBe(String(OVERVIEW_WIDTH_MIN));
+    expect(separator.getAttribute("aria-valuemax")).toBe(String(OVERVIEW_WIDTH_MAX));
+    expect(sidebar.style.getPropertyValue(OVERVIEW_WIDTH_PROPERTY)).toBe(`${OVERVIEW_WIDTH_DEFAULT}px`);
+
+    // ArrowLeft widens the left-edge separator and persists to evener.prefs.overviewWidth.
+    fireEvent.keyDown(separator, { key: "ArrowLeft" });
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_DEFAULT + 16);
+    expect(localStorage.getItem("evener.prefs.overviewWidth")).toBe(String(OVERVIEW_WIDTH_DEFAULT + 16));
+    expect(sidebar.style.getPropertyValue(OVERVIEW_WIDTH_PROPERTY)).toBe(`${OVERVIEW_WIDTH_DEFAULT + 16}px`);
+
+    // Double-click resets back to default; End jumps to max.
+    fireEvent.doubleClick(separator);
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_DEFAULT);
+    fireEvent.keyDown(separator, { key: "End" });
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_MAX);
+
+    // Narrowing the viewport clamps rendered width without discarding the persisted preference.
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 960 });
+    act(() => window.dispatchEvent(new Event("resize")));
+    const clampedMax = overviewWidthMax(960);
+    expect(separator.getAttribute("aria-valuemax")).toBe(String(clampedMax));
+    expect(sidebar.style.getPropertyValue(OVERVIEW_WIDTH_PROPERTY)).toBe(`${clampedMax}px`);
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_MAX);
+    desktop.unmount();
+
+    // Mobile Overview is full-screen with no resize handle and no inline desktop width.
+    mount(true);
+    const mobileSidebar = await screen.findByTestId("activity-sidebar");
+    expect(screen.queryByTestId("overview-resize-handle")).toBeNull();
+    expect(mobileSidebar.style.getPropertyValue(OVERVIEW_WIDTH_PROPERTY)).toBe("");
+  } finally {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
+  }
 });
 
 test("phone Overview enters its selected category and contains sequential keyboard focus", async () => {
@@ -803,8 +993,32 @@ test("phone Overview enters its selected category and contains sequential keyboa
     activitySidebarStore.getState().openWith("about", opener);
     mount(true);
     const sidebar = await screen.findByTestId("activity-sidebar");
-    const about = screen.getByRole("radio", { name: "About" });
+    expect(screen.getByRole("dialog", { name: "Overview" })).toBe(sidebar);
+    expect(sidebar.getAttribute("aria-modal")).toBe("true");
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    const tablist = screen.getByRole("tablist", { name: "Overview kind" });
+    const tabs = within(tablist).getAllByRole("tab");
+    expect(tabs).toHaveLength(6);
+    const about = within(tablist).getByRole("tab", { name: "About" });
+    const panel = within(sidebar).getByRole("tabpanel");
+    expect(panel.getAttribute("aria-labelledby")).toBe(about.id);
+    expect(about.getAttribute("aria-selected")).toBe("true");
+    expect(about.tabIndex).toBe(0);
     await waitFor(() => expect(document.activeElement).toBe(about));
+    // Bare navigation keys rove across the underline tabs; modifier chords pass through.
+    await act(async () => fireEvent.keyDown(about, { key: "ArrowRight", altKey: true }));
+    expect(activitySidebarStore.getState().tab).toBe("about");
+    await act(async () => fireEvent.keyDown(about, { key: "ArrowRight" }));
+    expect(activitySidebarStore.getState().tab).toBe("links");
+    await act(async () =>
+      fireEvent.keyDown(within(tablist).getByRole("tab", { name: /^Links/ }), { key: "ArrowRight" }),
+    );
+    expect(activitySidebarStore.getState().tab).toBe("agents");
+    await act(async () => fireEvent.keyDown(within(tablist).getByRole("tab", { name: /^Agents/ }), { key: "End" }));
+    expect(activitySidebarStore.getState().tab).toBe("tasks");
+    await act(async () => fireEvent.keyDown(within(tablist).getByRole("tab", { name: /^Tasks/ }), { key: "Home" }));
+    expect(activitySidebarStore.getState().tab).toBe("about");
+    expect(document.activeElement).toBe(about);
     for (let step = 0; step < 20; step += 1) {
       await user.tab();
       expect(sidebar.contains(document.activeElement)).toBe(true);
@@ -816,6 +1030,78 @@ test("phone Overview enters its selected category and contains sequential keyboa
     await user.keyboard("{Escape}");
     await waitFor(() => expect(document.activeElement).toBe(opener));
     expect(activitySidebarStore.getState().open).toBe(false);
+  } finally {
+    opener.remove();
+  }
+});
+
+test("the desktop dock ends its inspection when the phone host takes over", async () => {
+  const setMobile = installSwitchableViewport();
+  try {
+    connectionStore.getState().connect(activityClient());
+    installFocusedScope(ref);
+    activitySidebarStore.getState().openWith("agents");
+    const desktop = mount();
+    await screen.findByTestId("activity-sidebar");
+    // AppShell tears the desktop surface down once the breakpoint crosses;
+    // StackHost then mounts the phone surface in its place.
+    setMobile(true);
+    desktop.unmount();
+    mount(true);
+    expect(activitySidebarStore.getState().open).toBe(false);
+    expect(screen.queryByTestId("activity-sidebar")).toBeNull();
+    // No dialog claims the whole phone screen, so the reader's attention
+    // control is not blocked by an Overview the dock left open.
+    expect(document.querySelector('[aria-modal="true"]')).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+    resetMobileViewportForTests();
+  }
+});
+
+test("a desktop remount keeps the dock's saved inspection", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  activitySidebarStore.getState().openWith("agents");
+  const first = mount();
+  await screen.findByTestId("activity-sidebar");
+  first.unmount();
+  expect(activitySidebarStore.getState().open).toBe(true);
+  mount();
+  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
+});
+
+test("phone Overview reopening during its exit returns focus to its selected category", async () => {
+  connectionStore.getState().connect(activityClient());
+  installFocusedScope(ref);
+  const opener = document.body.appendChild(document.createElement("button"));
+  opener.textContent = "Open Overview";
+  opener.addEventListener("click", () => activitySidebarStore.getState().openWith("about", opener));
+  try {
+    opener.click();
+    mount(true);
+    const sidebar = await screen.findByTestId("activity-sidebar");
+    const strip = screen.getByRole("tablist");
+    const about = screen.getByRole("tab", { name: "About" });
+    await waitFor(() => expect(document.activeElement).toBe(about));
+    // Close and reopen in separate synchronous commits. No timer or frame can
+    // run between them, so the exit animation cannot finish and the aside
+    // stays mounted: the reopen must re-arm entry focus on this same strip
+    // rather than mount a fresh one. AboutTab's rapid-reopen test uses the
+    // same no-yield pattern.
+    act(() => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(activitySidebarStore.getState().open).toBe(false);
+    expect(sidebar.isConnected).toBe(true);
+    opener.focus();
+    act(() => {
+      fireEvent.click(opener);
+    });
+    expect(activitySidebarStore.getState().open).toBe(true);
+    expect(screen.getByTestId("activity-sidebar")).toBe(sidebar);
+    expect(screen.getByRole("tablist")).toBe(strip);
+    await waitFor(() => expect(document.activeElement).toBe(about), { timeout: 1_500 });
   } finally {
     opener.remove();
   }
@@ -833,7 +1119,7 @@ test("desktop Overview leaves focus with the opener and permits Tab beyond the s
     mount();
     await screen.findByText("owner");
     expect(document.activeElement).toBe(opener);
-    screen.getByRole("radio", { name: "About" }).focus();
+    screen.getByRole("tab", { name: "About" }).focus();
     let escaped = false;
     for (let step = 0; step < 20 && !escaped; step += 1) {
       await user.tab();
@@ -946,6 +1232,7 @@ test("an embedded parent column's Overview rebases its ancestor crumb onto the c
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
     const sidebar = within(screen.getByTestId("activity-sidebar"));
+    fireEvent.click(sidebar.getByRole("tab", { name: /^Agents,/ }));
     // The held scope is the parent column "child", whose own ancestry is
     // proven against the canonical refs.
     await sidebar.findByRole("button", { name: /delegate owned by child/ });
@@ -1019,6 +1306,7 @@ test("a held parent in a cascade opened from a nested session keeps its ancestor
     await user.click(screen.getByRole("button", { name: /session actions/i }));
     await user.click(screen.getByRole("menuitem", { name: /^Overview/ }));
     const sidebar = within(screen.getByTestId("activity-sidebar"));
+    fireEvent.click(sidebar.getByRole("tab", { name: /^Agents,/ }));
     await sidebar.findByRole("button", { name: /delegate owned by parent/ });
     const crumbs = within(sidebar.getByRole("navigation", { name: "Scope" }));
     // The held scope is the parent column: its two ancestors above the

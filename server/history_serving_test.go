@@ -100,14 +100,13 @@ func TestHistoryServingReplacementKeepsCapturedInstance(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = writer.Close() })
-			if err := writer.Append(inExecution("B", true, schema.NewTurn(schema.TurnUserInput, llm.User("new-only")))); err != nil {
+			if _, err := writer.Record(inExecution("B", true, schema.NewTurn(schema.TurnUserInput, llm.User("new-only"))), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 				t.Fatal(err)
 			}
-			prepared, err := PrepareAppIdentity("local", "instance-B", path)
+			prepared, err := PrepareAppIdentityForRef("local", "instance-B", "local:instance-A", path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			prepared.ref = "local:instance-A"
 			replaced := make(chan struct{})
 			go func() {
 				srv.ReplaceAppIdentity(prepared.WithRecordedLength(writer.RecordedLength()).WithBootGeneration("2"), nil)

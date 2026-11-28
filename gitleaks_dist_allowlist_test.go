@@ -369,6 +369,9 @@ func TestGitleaksPodLockSecretDetection(t *testing.T) {
 		findings int
 	}{
 		{"lock-checksum", podLockPath, "SPEC CHECKSUMS:\n  React-cxxstableapi: " + digest + "\n", 0},
+		{"ios-lock-checksum", "mobile-native/ios/Podfile.lock", "SPEC CHECKSUMS:\n  React-cxxstableapi: " + digest + "\n", 0},
+		{"installed-manifest-checksum", "mobile-native/ios/Pods/Manifest.lock", "SPEC CHECKSUMS:\n  React-cxxstableapi: " + digest + "\n", 0},
+		{"installed-manifest-credential", "mobile-native/ios/Pods/Manifest.lock", "SPEC CHECKSUMS:\n  " + credential + "\n", 1},
 		{"lock-credential", podLockPath, "SPEC CHECKSUMS:\n  " + credential + "\n", 1},
 		{"other-path-checksum", "mobile-native/src/vendor.ts", "  React-cxxstableapi: " + digest + "\n", 1},
 	} {

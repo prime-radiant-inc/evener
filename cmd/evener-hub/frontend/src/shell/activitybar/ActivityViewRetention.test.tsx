@@ -173,7 +173,7 @@ test("an explicitly closed saved sidebar starts no activity read on reload and k
   activitySidebarStore.getState().openWith("jobs");
   mount();
   await screen.findByText("1 completed job");
-  fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
+  fireEvent.click(screen.getByRole("button", { name: "Hide Overview" }));
   clearLiveState();
 
   const reloaded = clientWithHistory();
@@ -235,9 +235,9 @@ test("expanded inactive history reveals every downloaded row and survives reload
   const history = screen.getByTestId("activity-sidebar").querySelector<HTMLElement>("details > div");
   if (!history) throw new Error("expanded inactive history missing");
   expect(within(history).getAllByRole("button")).toHaveLength(21);
-  fireEvent.click(screen.getByRole("radio", { name: "About" }));
+  fireEvent.click(screen.getByRole("tab", { name: "About" }));
   await screen.findByText("owner");
-  fireEvent.click(screen.getByRole("radio", { name: /Agents/ }));
+  fireEvent.click(screen.getByRole("tab", { name: /Agents/ }));
   await screen.findByRole("button", { name: /Finished check 20/ });
   clearLiveState();
 

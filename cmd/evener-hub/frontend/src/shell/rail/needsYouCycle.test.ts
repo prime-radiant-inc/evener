@@ -3,8 +3,9 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { afterEach, expect, test } from "vitest";
 import "../../panes/session";
+import { openAttentionSession } from "../attentionHistory";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./needsYouCycle";
+import { needsYouRefs, nextNeedsYouRef } from "./needsYouCycle";
 
 afterEach(() => {
   window.history.pushState({}, "", "/");
@@ -43,17 +44,17 @@ test("nextNeedsYouRef excludes its only current session and duplicate rows", () 
   expect(nextNeedsYouRef(["a"], "a")).toBeNull();
   expect(nextNeedsYouRef(["a", "b", "b", "c"], "b")).toBe("c");
 });
-test("openNeedsYouSession navigates to encoded session URL", () => {
-  openNeedsYouSession("local:ny1");
+test("openAttentionSession navigates to encoded session URL", () => {
+  openAttentionSession("local:ny1");
   expect(window.location.pathname).toBe("/s/local%3Any1");
 });
-test("openNeedsYouSession records an attention step even for the current URL", () => {
+test("openAttentionSession records an attention step even for the current URL", () => {
   window.history.pushState({}, "", "/s/local%3Any1");
   workspaceStore.getState().openPane("session", { ref: "local:ny1" });
   const initialLength = window.history.length;
   let popped = false;
   window.addEventListener("popstate", () => (popped = true), { once: true });
-  openNeedsYouSession("local:ny1");
+  openAttentionSession("local:ny1");
   expect(window.history.length).toBe(initialLength + 1);
   expect((window.history.state as Record<string, unknown>).__evenerAttention).toMatchObject({
     generation: expect.any(String),

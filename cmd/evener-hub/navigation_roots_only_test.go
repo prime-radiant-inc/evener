@@ -61,7 +61,7 @@ func TestNavigationListsRootsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err := buildNavigationProjection(snapshot.Inputs)
+	projection, err := buildNavigationProjection(t.Context(), snapshot.Inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestNavigationListsRootsOnly(t *testing.T) {
 	}
 	for _, project := range snapshot.Inputs.Tree.Projects {
 		for _, tier := range []string{"current", "recent", "archived"} {
-			page, err := projection.ProjectPage(project.Key, tier, 0, 0)
+			page, err := projection.ProjectPage("", project.Key, tier, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

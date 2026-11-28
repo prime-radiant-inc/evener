@@ -12,7 +12,7 @@
 // on an unanswered ask_user call is what makes the real dock populate -
 // exactly the mechanism a live ask_user call would use.
 
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useEffect, useState } from "react";
@@ -22,43 +22,10 @@ import { writeDraft } from "../../panes/session/composer/draft";
 import { type ComposerSourceState, createComposerSourceState } from "../../panes/session/composer/sourceState";
 import { ClientProvider } from "../../shell/clientContext";
 import { putThreadModel } from "../../stores/threads";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 import layout from "./composer-surface.module.css";
-
-const FULL_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
-
-function fixtureThread(ref: string, overrides: Partial<Thread> = {}): Thread {
-  return {
-    id: `thr_${ref}`,
-    sessionId: `sess_${ref}`,
-    preview: "dev fixture",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
-    status: { type: "idle" },
-    cwd: "/home/dev/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: { ref, capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
-    ...overrides,
-  };
-}
+import { FULL_CAPABILITIES, fixtureThread } from "./thread-fixture";
 
 const RESTING_REF = "dev-surface-composer-resting";
 const DRAFTED_REF = "dev-surface-composer-drafted";
@@ -123,14 +90,15 @@ function seedComposerFixtures(): void {
   writeDraft(DRAFTED_REF, "One more thing - can you also add a CHANGELOG entry for this?");
 }
 
-function FixtureComposer({ ref }: { ref: string }) {
+export function FixtureComposer({ ref, focused = false, draft }: { ref: string; focused?: boolean; draft?: string }) {
   const [source, setSource] = useState<ComposerSourceState | null>(null);
   useEffect(() => {
     const owner = createComposerSourceState(ref);
+    if (draft !== undefined) owner.writeDraft(draft, false);
     setSource(owner);
     return () => owner.dispose();
-  }, [ref]);
-  return source && <Composer ref={ref} source={source} focused={false} />;
+  }, [draft, ref]);
+  return source && <Composer ref={ref} source={source} focused={focused} />;
 }
 
 export default function ComposerSurfaceSection() {
@@ -141,18 +109,21 @@ export default function ComposerSurfaceSection() {
   }, []);
 
   return (
-    <section>
-      <h2>Composer</h2>
-      <p className={styles.note}>
-        Real Composer, fed by a threadsStore seeded directly (hydrateThread over fixture wire data - no network).
-        Resting, with drafted text, and with a pending ask_user question. The answering surface (AskDock) renders as the
-        transcript's trailing row in a real session pane (Session.tsx), so it is shown directly here; AskDock reconciles
-        itself off the seeded thread's transcript, the same way it would off a live ask_user call, and the composer's
-        own input row hides while the question is pending.
-      </p>
+    <GallerySection
+      title="Composer"
+      note={
+        <p className={styles.note}>
+          Real Composer, fed by a threadsStore seeded directly (hydrateThread over fixture wire data - no network).
+          Resting, with drafted text, and with a pending ask_user question. The answering surface (AskDock) renders as
+          the transcript's trailing row in a real session pane (Session.tsx), so it is shown directly here; AskDock
+          reconciles itself off the seeded thread's transcript, the same way it would off a live ask_user call, and the
+          composer's own input row hides while the question is pending.
+        </p>
+      }
+    >
       <ClientProvider client={client}>
         {seeded && (
-          <ThemeFlip>
+          <>
             <div className={layout.paneFixture}>
               <p className={styles.rowLabel}>resting</p>
               <FixtureComposer ref={RESTING_REF} />
@@ -165,9 +136,9 @@ export default function ComposerSurfaceSection() {
               <p className={styles.rowLabel}>ask pending (transcript trailing row)</p>
               <AskDock ref={ASK_REF} />
             </div>
-          </ThemeFlip>
+          </>
         )}
       </ClientProvider>
-    </section>
+    </GallerySection>
   );
 }

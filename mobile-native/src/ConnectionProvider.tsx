@@ -8,6 +8,7 @@ import { forgetBoardForHub } from "./board/nativeBoardMemory";
 import { ConnectionClock, type ConnectionTimes } from "./connectionClock";
 import { type HubInput, type HubProfile, HubProfiles, type HubUpdate } from "./connection";
 import { runHubCleanups } from "./hubCleanups";
+import { clearHubWebData } from "./hubWeb/clearHubWebData";
 import { useHubConnection } from "./hubConnection";
 import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
@@ -124,22 +125,26 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 	const removeHub = useCallback(
 		(id: string) =>
 			selection.remove(id, {
-				removeHub(hubId: string) {
-					runHubCleanups(hubId, [
-						(id) => drafts.removeHub(id),
-						(id) => readerPositions.removeHub(id),
-						removeOrganizationData,
-						forgetBoardForHub,
-						forgetDetailLevelsForHub,
-						forgetHistoryForHub,
-						(id) => forgetNoteDrafts(Storage, id),
-						forgetDocumentsForHub,
-						forgetDocumentSummaries,
-						forgetSubagentTrees,
-						forgetLaunchMemoryForHub,
-						forgetCreationForHub,
-						forgetStopRequestsForHub,
-					]);
+				async removeHub(hubId: string) {
+					try {
+						runHubCleanups(hubId, [
+							(id) => drafts.removeHub(id),
+							(id) => readerPositions.removeHub(id),
+							removeOrganizationData,
+							forgetBoardForHub,
+							forgetDetailLevelsForHub,
+							forgetHistoryForHub,
+							(id) => forgetNoteDrafts(Storage, id),
+							forgetDocumentsForHub,
+							forgetDocumentSummaries,
+							forgetSubagentTrees,
+							forgetLaunchMemoryForHub,
+							forgetCreationForHub,
+							forgetStopRequestsForHub,
+						]);
+					} finally {
+						await clearHubWebData(hubId);
+					}
 				},
 			}),
 		[selection],

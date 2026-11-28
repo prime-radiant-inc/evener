@@ -160,6 +160,10 @@ test("a non-expandable clamped row keeps its whole summary in the DOM with no na
   const head = screen.getByTestId("tool-row-summary-head");
   const tail = screen.getByTestId("tool-row-summary-tail");
   expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe(summary);
+  // The 60% cut lands inside the job id. The walk leaves the id whole on one
+  // side instead of splitting it across the head and tail.
+  const id = "job_034RuaCB8iWz0J1XBOUm1A_mftMIW5WFX2e";
+  expect((head.textContent ?? "").includes(id) || (tail.textContent ?? "").includes(id)).toBe(true);
   expect(screen.getByTestId("tool-row-summary").getAttribute("title")).toBe(null);
 });
 
@@ -202,7 +206,7 @@ test("the collapsed head/tail split never leaves whitespace at a span boundary -
 
 test("the clamp mechanics: head ellipsis-clamps, tail never shrinks, and the clamp lives off .demoted", () => {
   const css = rowCss();
-  expect(css).toMatch(/\.clampedHead\s*\{[^}]*text-overflow:\s*ellipsis/);
+  expect(css).toMatch(/\.clampedHead\s*\{[^}]*composes:\s*truncate from "\.\.\/\.\.\/\.\.\/styles\/text\.module\.css"/);
   // The tail never SHRINKS (flex: none) - but a command whose tail alone
   // passes 60% of the line ellipsizes the tail too, because a glyph-less
   // clip at the container edge reads as a rendering bug, an ellipsis does
@@ -211,7 +215,7 @@ test("the clamp mechanics: head ellipsis-clamps, tail never shrinks, and the cla
   expect(tail).not.toBeNull();
   expect(tail![1]).toMatch(/flex:\s*none/);
   expect(tail![1]).toContain("max-width: 60%");
-  expect(tail![1]).toContain("text-overflow: ellipsis");
+  expect(tail![1]).toContain('composes: truncate from "../../../styles/text.module.css"');
   // The clamp is collapsed-only (the .clamped modifier); .demoted itself
   // must not reintroduce end-truncation for expanded rows.
   const demoted = /\.demoted\s*\{([^}]*)\}/.exec(css);
@@ -452,10 +456,10 @@ test("the failure badge is an absolute overlay anchored to the icon glyph's box,
   expect(badgeRule).not.toMatch(/height:\s*\d/);
   expect(badgeRule).toMatch(/inset-block-end:\s*calc\(\(10px - var\(--tool-row-icon-size\)\) \/ 2\)/);
   expect(css).not.toMatch(/\.failureBadge > \[role="img"\]/);
-  // The slot is the badge's positioning context - the field seat it composes
-  // positions it - and carries the icon size the insets read.
+  // The slot is the badge's positioning context and carries the icon size
+  // the insets read.
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/)?.[1] ?? "";
-  expect(slotRule).toContain('composes: fieldSeatBehind from "../../../styles/surface.module.css"');
+  expect(slotRule).toContain("position: relative");
   expect(slotRule).toContain("--tool-row-icon-size:");
 });
 
@@ -683,11 +687,18 @@ test("the rail icon seats via the shared rail-seat module - composed, not restat
   // glyph or the Loader's rail row.
   expect(iconRule?.[1]).toContain('composes: seat from "../../../styles/railseat.module.css"');
   // The pull rides the SLOT (the row's flex item, and the failure badge's
-  // positioning context) into the seat column the row itself reserves, so
-  // the slot and the seat together still place the icon: one pull, one owner.
+  // positioning context) into the shared turn/group gutter above 700px, so the
+  // slot and the seat together place the icon in the avatar column: one pull,
+  // one owner.
   const slotRule = css.match(/\.rowIconSlot\s*\{([^}]*)\}/);
   expect(slotRule).not.toBe(null);
-  expect(slotRule?.[1]).toContain('composes: columnPull from "../../../styles/railseat.module.css"');
+  expect(slotRule?.[1]).toContain('composes: gutterPull from "../../../styles/railseat.module.css"');
+  // Below 700px the icon leads inline ahead of the rationale, so the wrapped
+  // second line (.summaryLine) offsets by --speaker-gutter to share one left
+  // edge with the rationale above it.
+  expect(css).toMatch(
+    /@media\s*\(max-width:\s*699px\)\s*\{[^}]*\.row\[data-intent="true"\]\s+\.summaryLine\s*\{[^}]*margin-left:\s*var\(--speaker-gutter\)/,
+  );
   // The retired inline grammar (the icon inside the summary's text flow) is
   // gone entirely.
   expect(css).not.toContain(".summaryIcon");
@@ -753,8 +764,10 @@ test("the chevron reports its open state for the stylesheet's rotation, and is h
   const chevron = screen.getByTestId("tool-row-chevron");
   expect(chevron.getAttribute("aria-hidden")).toBe("true");
   expect(chevron.getAttribute("data-open")).toBe("false");
+  expect(chevron.querySelector("svg")?.getAttribute("data-open")).toBe("false");
   fireEvent.click(screen.getByTestId("tool-row-trigger"));
   expect(screen.getByTestId("tool-row-chevron").getAttribute("data-open")).toBe("true");
+  expect(screen.getByTestId("tool-row-chevron").querySelector("svg")?.getAttribute("data-open")).toBe("true");
 });
 
 test("an expandable row reads as clickable - a pointer cursor and a hover state", () => {
@@ -1121,7 +1134,7 @@ test("the rationale-to-call gap is tightened to line-leading only, still tighter
   const call = /\.call\s*\{([^}]*)\}/.exec(css);
   expect(call).not.toBeNull();
   expect(call![1]).toContain('composes: toolRowInsets from "../../../styles/surface.module.css"');
-  expect(call![1]).toContain("padding: var(--tool-card-row-pad) var(--tool-card-inset)");
+  expect(call![1]).toContain("padding: var(--tool-card-row-pad) 0");
 });
 
 // The intent is the agent's stated rationale for the call - commentary on
@@ -1144,42 +1157,37 @@ test("the demoted summary line is readable text (--ink-mid), not the placeholder
 
 // --- A6: the tool disclosure animates, subtly, honoring reduced motion ----
 
-test("the chevron rotation and the body fade are declared with real motion", () => {
+test("the body fade is declared with real motion; the chevron's rotation lives in its widget", () => {
   const css = rowCss();
-  expect(css).toMatch(/\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform/);
+  expect(css).not.toMatch(/\.chevron\s*>\s*svg/);
+  expect(css).not.toMatch(/transition:\s*transform/);
   // The body fades in by the shared reveal recipe, which owns the keyframes,
   // its tokens and its reduced-motion gate (styles/motion.contract.test.ts).
   expect(css).toMatch(/\.body\s*\{[^}]*composes:\s*bodyReveal from "\.\.\/\.\.\/\.\.\/styles\/motion\.module\.css"/);
   expect(css).not.toMatch(/@keyframes/);
 });
 
-// The chevron SPAN is 1lh tall (first-line alignment) and so not square:
-// turning IT paints ~3.5px past its 14px layout box on each side, which at
-// the trailing edge escapes the row (overflowguard, 2026-07-28). The square
-// svg turns instead - a square rotates within its own bounds.
-test("the open-state rotation turns the square svg, never the 1lh-tall span", () => {
+// The chevron SPAN is 1lh tall (first-line alignment) and so not square, and
+// the old `> svg` reach-in turned the child from outside the widget. Chevron
+// now rotates its own square svg, so the row declares no rotation at all.
+test("the row leaves the open-state rotation to the shared Chevron widget", () => {
   const css = rowCss();
-  expect(css).toMatch(/\.chevron\[data-open="true"\]\s*>\s*svg\s*\{[^}]*transform:\s*rotate\(90deg\)/);
-  expect(css).not.toMatch(/\.chevron\[data-open="true"\]\s*\{/);
+  expect(css).not.toMatch(/rotate\(90deg\)/);
+  expect(css).not.toMatch(/\.chevron\[data-open=/);
 });
 
-test("the row's motion uses only existing motion tokens - no invented duration", () => {
+test("the row declares no motion of its own, so it invents no duration", () => {
   const css = rowCss();
   expect(css.match(/(?:transition|animation):[^;]*?\d+m?s/g)).toBe(null);
-  // A chevron turning is the Move recipe: the hover duration, standard easing.
-  expect(css).toMatch(
-    /\.chevron\s*>\s*svg\s*\{[^}]*transition:\s*transform var\(--motion-duration-hover\) var\(--motion-easing-standard\)/,
-  );
+  expect(css).not.toMatch(/\btransition:/);
+  expect(css).not.toMatch(/\banimation:/);
 });
 
-test("all of the row's motion sits behind a prefers-reduced-motion gate", () => {
+test("the row declares no ungated motion of its own", () => {
   const css = rowCss();
-  const gates = css.match(/@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{[\s\S]*?\n\}/g);
-  expect(gates).not.toBeNull();
-  let outsideGates = css;
-  for (const gate of gates ?? []) outsideGates = outsideGates.replace(gate, "");
-  expect(outsideGates).not.toMatch(/\btransition:/);
-  expect(outsideGates).not.toMatch(/\banimation:/);
+  expect(css).not.toMatch(/@media\s*\(prefers-reduced-motion/);
+  expect(css).not.toMatch(/\btransition:/);
+  expect(css).not.toMatch(/\banimation:/);
 });
 
 // --- kata xw3t: summaryLink linkifies a URL embedded in the row's own
@@ -1227,7 +1235,7 @@ test("no summaryLink means the summary renders exactly as before - every descrip
 });
 
 // The clamped state middle-truncates on raw character position (ToolRow's
-// own middleSplit) and can cut a URL mid-way, or split it across the two
+// own cut) and can cut a URL mid-way, or split it across the two
 // independently-ellipsis-clamped head/tail spans - there is no sound "which
 // half is clickable" answer there, so the collapsed+intent state stays
 // plain text; opening the row (one click, the same chevron already on the

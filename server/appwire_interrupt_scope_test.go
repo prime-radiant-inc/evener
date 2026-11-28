@@ -18,7 +18,7 @@ import (
 // replacement session. Drain and promote also retain their object preconditions.
 func TestServerAppWireControlNeedsNoTurnID(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	var steers, queues, drains, promotes int
 	var interrupts []appwire.TurnInterruptParams

@@ -16,7 +16,7 @@ import (
 func TestAppWireNotesPayloadMismatchIsInvalidRequest(t *testing.T) {
 	sess := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetNotesHumanSetFunc(sess.SetHumanNote)
 	srv.SetUrlsRemoveFunc(sess.RemoveSessionURL)
 
@@ -58,7 +58,7 @@ func TestAppWireUrlsPayloadMismatchIsInvalidRequest(t *testing.T) {
 		t.Fatalf("add b: %v", err)
 	}
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetNotesHumanSetFunc(sess.SetHumanNote)
 	srv.SetUrlsRemoveFunc(sess.RemoveSessionURL)
 
@@ -94,7 +94,7 @@ func TestAppWireNotesPersistenceFailureCarriesMutationMetadata(t *testing.T) {
 	sess := newNotesTestSession(t)
 	attempts := 0
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetNotesHumanSetFunc(func(outerID, note string) (appwire.NotesHumanSetResponse, error) {
 		attempts++
 		if attempts == 1 {

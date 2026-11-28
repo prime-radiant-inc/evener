@@ -158,7 +158,7 @@ func TestSessionActivityLegacyForegroundDataRemainReadable(t *testing.T) {
 	if err != nil || len(tree.Root.Entries) != 1 || tree.Root.Entries[0].Job == nil || tree.Root.Entries[0].Job.JobID != jobID {
 		t.Fatalf("diagnostics lost foreground record: %+v, error %v", tree, err)
 	}
-	tail, found, err := LoadSessionJobOutputPage(stateDir, id, jobID, nil, 1024)
+	tail, found, err := LoadSessionJobOutputPage(stateDir, id, jobID, nil, 1024, nil)
 	if err != nil || !found || tail.Data != output {
 		t.Fatalf("direct output = %+v, found %v, error %v", tail, found, err)
 	}

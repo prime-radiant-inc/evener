@@ -79,7 +79,7 @@ func fuzzScenarioBuildTree_EveryRowNamesThePendingQuestion(t *testing.T) {
 		{PID: 2, SessionID: "01NOMETA", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, PendingQuestion: testPendingQuestion()},
 		{PID: 3, SessionID: "01STALE", Status: appwire.ThreadStatusAwaiting, PendingQuestion: testPendingQuestion()},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01ASKING")
 	leaf, inLeaf, _, _ := liveAndProjectRowsFor(tree, "01NOMETA")
 	var needsYou TreeNode

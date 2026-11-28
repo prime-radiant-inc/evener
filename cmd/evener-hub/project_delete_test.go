@@ -176,7 +176,7 @@ func TestProjectDeleteRefusesBareDeleteOfMergedProject(t *testing.T) {
 	// owned by "" (this hub) and host-a, which is the state the rail renders as
 	// project.sources.
 	cache := &hubcore.RemoteThreadCache{}
-	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+	cache.Store(hubcore.RemoteThreadSnapshot{
 		Threads: []appwire.Thread{{
 			ID:          "remote-1",
 			SessionID:   "remote-1",
@@ -185,7 +185,7 @@ func TestProjectDeleteRefusesBareDeleteOfMergedProject(t *testing.T) {
 			ProjectID:   project.ID,
 			ProjectPath: project.CanonicalPath,
 		}},
-	})
+	}, nil)
 	web := NewWebServer(hubcore.WebConfig{
 		Past:              past,
 		Roster:            hubcore.NewRosterWithEntries(),
@@ -1729,7 +1729,7 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 		PokeAttention: func() { pokes++ },
 	})
 	defer hub.Close()
-	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	past.SetOnRootChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	client := dialHubRPCInitialized(t, hub)
 
 	_, err = appwiretest.ProjectDelete(context.Background(), client, appwire.ProjectDeleteParams{
@@ -1807,7 +1807,7 @@ func TestProjectDeleteDoesNotScrubProjectRowsWhenPastIndexNoLongerHasTheSessions
 	}
 
 	inputs := &hubcore.InputsVersion{}
-	past.SetOnChange(inputs.Bump)
+	past.SetOnRootChange(inputs.Bump)
 	// The session's metadata is removed and the index rebuilt after the
 	// project was last seen, so the delete set is empty.
 	if err := os.Remove(filepath.Join(stateDir, "sessions", sessionID+".meta.json")); err != nil {
@@ -1869,7 +1869,7 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 	}
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 	defer hub.Close()
-	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	past.SetOnRootChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	client := dialHubRPCInitialized(t, hub)
 
 	// Force the project's one session to be skipped (becomes live mid-request)

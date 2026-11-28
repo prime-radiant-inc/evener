@@ -8,6 +8,7 @@ import {
 	delegateModel,
 	delegateStatedIntent,
 	delegateTiming,
+	delegateWaitText,
 	findEntityView,
 	firstLine,
 	formatTokenCount,
@@ -337,11 +338,13 @@ export function subagentWhy(row: SubagentRow, now: number): SubagentWhy {
 			typeof delegate.reportPreview === "string" ? firstLine(plainQuoteLine(delegate.reportPreview), 120) : "";
 		return report ? { kind: "report", text: report } : { kind: "finished", text: "Finished" };
 	}
-	// A coordinator parked in its finalization drain on open descendants has a
-	// frozen pre-drain intent: the drain took the run, so nothing moves the
-	// intent until it ends. Name the wait instead of repeating that line.
-	const drainHeld = delegate.drainHeldBySubagents ? (delegate.runningSubagentCount ?? 0) : 0;
-	if (drainHeld > 0) return { kind: "waiting", text: waitingOnSubagents(drainHeld) };
+	// A coordinator parked in its finalization drain, on open descendants or on
+	// its own running shells, has a frozen pre-drain intent: the drain took the
+	// run, so nothing moves the intent until it ends. Name the wait instead of
+	// repeating that line, by the one rule the web row reads: the hold gates the
+	// wait, and each count only phrases it (#7331).
+	const drainWait = delegateWaitText(delegate);
+	if (drainWait !== "") return { kind: "waiting", text: drainWait };
 	// The shared display rule: a running row's non-empty stated intent stands
 	// in for the whole line. The predicate's empty answer is the point — this
 	// line has no word of its own to keep, so the rule alone decides, and

@@ -2,6 +2,19 @@
 
 Breaking changes and migration notes for evener.
 
+## Upgrading the iPhone workspace
+
+Before updating the iPhone app, finish or copy any unsent drafts and pending
+sends you want to keep in the old native editor. The app opens the selected
+hub’s web workspace and uses that workspace’s drafts and queue. It does not
+import or replay the old editor’s work. Saved hub connections and device-wide
+alert preferences carry over.
+
+Update the selected hub in **Settings → Hub → Updates** to receive iOS shares,
+open grouped Needs You alerts, and change this iPhone’s alert preferences in
+**Settings → Notifications**. If you share to a hub that still needs the update,
+the app keeps the item on the phone.
+
 ## Before shutting down an older session
 
 **Saved sessions that hold legacy delegate lifecycle state, or watches addressed

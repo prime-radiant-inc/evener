@@ -1,5 +1,5 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -26,6 +26,7 @@ import {
   rail,
   warmRoute,
 } from "./appShellTestUtils";
+import { closeCheatsheet } from "./cheatsheet/cheatsheetController";
 import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { resolveFocusedComposer } from "./holdhints/HoldHints";
 import { paletteStore } from "./palette/paletteController";
@@ -94,6 +95,7 @@ afterEach(() => {
   // The command palette store is a module singleton; reset it so one test's
   // open palette never leaks into the next.
   paletteStore.setState({ open: false, query: "" });
+  closeCheatsheet();
   // Several tests below navigate to /settings/* and mount the real
   // HubSection, whose mount effect touches settingsOverviewStore for
   // real - same module-singleton reasoning as warmRoute's own reset (appShellTestUtils).
@@ -104,7 +106,10 @@ afterEach(() => {
 test('clicking "New session" navigates to /new and opens the spawn pane', async () => {
   const user = userEvent.setup();
   render(<AppShell client={new FakeClient("ready")} />);
-  const button = await screen.findByRole("button", { name: "New session" });
+  // Scope to the rail: Welcome also renders a "New session" button, and the
+  // rail's floating action now carries the same accessible name ("New session")
+  // instead of "+ New session".
+  const button = await rail().findByRole("button", { name: "New session" });
 
   await user.click(button);
 
@@ -376,6 +381,57 @@ test("clicking the rail's own Search button opens the command palette", async ()
   await user.click(await screen.findByTestId("rail-search"));
 
   expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
+});
+
+test("mobile: dismissing the command palette opened via Ctrl+K from the Sessions drawer filter restores focus and keeps Tab inside the drawer", async () => {
+  installMobileViewport();
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/s/local:ref_abc123");
+  installLocationForRoute("local:ref_abc123");
+  render(<AppShell client={navClient()} />);
+  const sessionsButton = await screen.findByRole("button", { name: "Sessions" });
+  await user.click(sessionsButton);
+
+  const drawer = await screen.findByRole("dialog", { name: "Sessions" });
+  expect(within(drawer).queryByTestId("rail-search")).toBeNull();
+  const filterInput = within(drawer).getByTestId("rail-filter");
+  expect(filterInput).toBe(within(drawer).getByRole("searchbox"));
+
+  await user.click(filterInput);
+  await user.keyboard("{Control>}k{/Control}");
+  const palette = await screen.findByRole("dialog", { name: "Command palette" });
+  expect(drawer.compareDocumentPosition(palette) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Sessions" })).toBe(drawer);
+  expect(document.activeElement).toBe(filterInput);
+
+  await user.tab();
+  expect(drawer.contains(document.activeElement)).toBe(true);
+  await user.tab({ shift: true });
+  expect(drawer.contains(document.activeElement)).toBe(true);
+  await user.tab({ shift: true });
+  await user.tab({ shift: true });
+  expect(drawer.contains(document.activeElement)).toBe(true);
+  expect(document.activeElement).not.toBe(sessionsButton);
+});
+
+test("desktop: opening Command palette from inside Keyboard shortcuts places it after the shortcuts dialog in DOM order", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  await user.keyboard("{Control>}/{/Control}");
+  const cheatsheet = await screen.findByRole("dialog", { name: "Keyboard shortcuts" });
+
+  await user.keyboard("{Control>}k{/Control}");
+  const palette = await screen.findByRole("dialog", { name: "Command palette" });
+  expect(cheatsheet.compareDocumentPosition(palette) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Command palette" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBe(cheatsheet);
 });
 
 // FIX 1 (real-browser bug): Settings' Escape/close used to call

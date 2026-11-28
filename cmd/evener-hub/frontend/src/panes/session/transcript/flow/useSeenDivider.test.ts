@@ -237,35 +237,69 @@ const QUIET = { askPending: false, pendingEscalations: [] };
 const NOTHING_WAITS = { thread: QUIET, askDockPending: false, retained: undefined };
 
 test("unseenOpeningTurnId opens at the divider turn when it is settled and nothing waits", () => {
-  expect(unseenOpeningTurnId(SETTLED, NOTHING_WAITS)).toBe("t2");
+  expect(unseenOpeningTurnId(SETTLED, NOTHING_WAITS, true)).toBe("t2");
 });
 
 test("unseenOpeningTurnId does not open at an unsettled boundary", () => {
-  expect(unseenOpeningTurnId({ dividerTurnId: "t2", settled: false }, NOTHING_WAITS)).toBeNull();
+  expect(unseenOpeningTurnId({ dividerTurnId: "t2", settled: false }, NOTHING_WAITS, true)).toBeNull();
 });
 
 test("unseenOpeningTurnId yields to a question the dock is showing", () => {
-  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, askDockPending: true })).toBeNull();
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, askDockPending: true }, true)).toBeNull();
 });
 
 // A transcript restored without its bodies knows a question is pending before
 // the dock has the question to show.
 test("unseenOpeningTurnId yields to a pending question the dock has not reconstructed yet", () => {
-  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, thread: { ...QUIET, askPending: true } })).toBeNull();
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, thread: { ...QUIET, askPending: true } }, true)).toBeNull();
 });
 
 test("unseenOpeningTurnId yields to a pending approval", () => {
-  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, thread: { ...QUIET, pendingEscalations: [{}] } })).toBeNull();
+  expect(
+    unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, thread: { ...QUIET, pendingEscalations: [{}] } }, true),
+  ).toBeNull();
 });
 
 test("unseenOpeningTurnId yields to a retained place away from the bottom", () => {
-  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, retained: { followingBottom: false } })).toBeNull();
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, retained: { followingBottom: false } }, true)).toBeNull();
 });
 
 test("unseenOpeningTurnId opens at the divider turn when the retained view was following the bottom", () => {
-  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, retained: { followingBottom: true } })).toBe("t2");
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, retained: { followingBottom: true } }, true)).toBe("t2");
 });
 
 test("unseenOpeningTurnId is null when there is no boundary turn", () => {
-  expect(unseenOpeningTurnId({ dividerTurnId: null, settled: true }, NOTHING_WAITS)).toBeNull();
+  expect(unseenOpeningTurnId({ dividerTurnId: null, settled: true }, NOTHING_WAITS, true)).toBeNull();
+});
+
+// The web's landing is opt-in (#4845): the same settled unseen reply that
+// opens when it is on leaves the live end in place when it is off, which is
+// where every session opened before this preference existed.
+test("unseenOpeningTurnId is null when the open-at-unread preference is off", () => {
+  expect(unseenOpeningTurnId(SETTLED, NOTHING_WAITS, false)).toBeNull();
+});
+
+test("unseenOpeningTurnId stays null with the preference off even when the retained view followed the bottom", () => {
+  expect(unseenOpeningTurnId(SETTLED, { ...NOTHING_WAITS, retained: { followingBottom: true } }, false)).toBeNull();
+});
+
+// A turn that errored or was interrupted still ends where it ends; the reader
+// can have read it, so it is a read-eligible position (mirrors the phone's
+// latestSettledTurnId).
+test("a failed reply is read-eligible: it marks where reading stopped", () => {
+  writeSeenWatermark("local:01AAA", "t1");
+  const { result, unmount } = renderHook(() =>
+    useSeenDivider("local:01AAA", model([turn("t1"), turn("t2", "failed")])),
+  );
+  expect(result.current.dividerTurnId).toBe("t2");
+  unmount();
+  expect(readSeenWatermark("local:01AAA")).toBe("t2");
+});
+
+test("an interrupted reply is read-eligible too", () => {
+  writeSeenWatermark("local:01AAA", "t1");
+  const { result, unmount } = renderHook(() => useSeenDivider("local:01AAA", model([turn("t1"), running("t2")])));
+  expect(result.current.dividerTurnId).toBe("t2");
+  unmount();
+  expect(readSeenWatermark("local:01AAA")).toBe("t2");
 });

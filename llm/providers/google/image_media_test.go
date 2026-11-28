@@ -45,25 +45,23 @@ func testGIF(t *testing.T) []byte {
 	})
 }
 
-func requirePNGInlineData(t *testing.T, inline map[string]any) {
+func requirePNGInteractionImage(t *testing.T, img map[string]any) {
 	t.Helper()
-	if inline["mimeType"] != "image/png" {
-		t.Fatalf("inlineData mimeType = %#v, want image/png", inline["mimeType"])
+	if img["type"] != "image" {
+		t.Fatalf("item type = %#v, want image", img["type"])
 	}
-	data, err := base64.StdEncoding.DecodeString(inline["data"].(string))
+	if img["mime_type"] != "image/png" {
+		t.Fatalf("image mime_type = %#v, want image/png", img["mime_type"])
+	}
+	data, err := base64.StdEncoding.DecodeString(img["data"].(string))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, format, err := image.Decode(bytes.NewReader(data)); err != nil || format != "png" {
-		t.Fatalf("inlineData bytes decode as (%q, %v), want png", format, err)
+		t.Fatalf("image bytes decode as (%q, %v), want png", format, err)
 	}
 }
 
-// TestBuildBodyNormalizesUnsupportedInlineImageMediaType pins that Gemini's
-// inline image parts never carry a raster media type the API rejects. BMP and
-// GIF are accepted by the tool layer and by other providers, but Gemini's
-// inline set is png/jpeg/webp/heic/heif, so the builder must re-encode them as
-// PNG instead of writing the claimed type verbatim (#4584).
 func TestBuildBodyNormalizesUnsupportedInlineImageMediaType(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -78,16 +76,12 @@ func TestBuildBodyNormalizesUnsupportedInlineImageMediaType(t *testing.T) {
 				{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: tc.data, MediaType: tc.mediaType}}}},
 			}}
 			body := geminiBuild(t, req, protoRes(nil))
-			inline := body["contents"].([]map[string]any)[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
-			requirePNGInlineData(t, inline)
+			img := body["input"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+			requirePNGInteractionImage(t, img)
 		})
 	}
 }
 
-// TestBuildBodyKeepsAcceptedInlineImageMediaType pins that a media type Gemini
-// accepts still rides through byte-for-byte, so normalization cannot re-encode
-// every image on the hot path. HEIC and HEIF are accepted by the wire but not
-// readable by the local decoder, so the pass-through is their only path.
 func TestBuildBodyKeepsAcceptedInlineImageMediaType(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -108,17 +102,14 @@ func TestBuildBodyKeepsAcceptedInlineImageMediaType(t *testing.T) {
 			req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
 				{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: data, MediaType: tc.claimed}}}},
 			}}
-			inline := geminiBuild(t, req, protoRes(nil))["contents"].([]map[string]any)[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
-			if inline["mimeType"] != tc.want || inline["data"] != base64.StdEncoding.EncodeToString(data) {
-				t.Fatalf("accepted inline image changed: %#v", inline)
+			img := geminiBuild(t, req, protoRes(nil))["input"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+			if img["mime_type"] != tc.want || img["data"] != base64.StdEncoding.EncodeToString(data) {
+				t.Fatalf("accepted inline image changed: %#v", img)
 			}
 		})
 	}
 }
 
-// TestBuildBodyDerivesInlineMediaTypeFromBytes pins the unclaimed case: a
-// client that sends no media type must still get the bytes' real type, not a
-// fabricated image/png that bypasses normalization (#4584).
 func TestBuildBodyDerivesInlineMediaTypeFromBytes(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
@@ -133,18 +124,15 @@ func TestBuildBodyDerivesInlineMediaTypeFromBytes(t *testing.T) {
 			req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
 				{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: tc.data}}}},
 			}}
-			inline := geminiBuild(t, req, protoRes(nil))["contents"].([]map[string]any)[0]["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
-			requirePNGInlineData(t, inline)
-			if tc.unchanged && inline["data"] != base64.StdEncoding.EncodeToString(tc.data) {
-				t.Fatalf("an unclaimed png must keep its bytes: %#v", inline)
+			img := geminiBuild(t, req, protoRes(nil))["input"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+			requirePNGInteractionImage(t, img)
+			if tc.unchanged && img["data"] != base64.StdEncoding.EncodeToString(tc.data) {
+				t.Fatalf("an unclaimed png must keep its bytes: %#v", img)
 			}
 		})
 	}
 }
 
-// TestBuildBodyNormalizesUnsupportedToolResultImageMediaType covers the
-// tool-result arm: a BMP read result on a multimodal Gemini row must re-encode
-// to PNG inside the functionResponse instead of carrying image/bmp.
 func TestBuildBodyNormalizesUnsupportedToolResultImageMediaType(t *testing.T) {
 	t.Parallel()
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{
@@ -155,15 +143,11 @@ func TestBuildBodyNormalizesUnsupportedToolResultImageMediaType(t *testing.T) {
 		c.InputModalities = []string{"text", "image"}
 		c.MultimodalToolResults = new(true)
 	}))
-	parts := body["contents"].([]map[string]any)[1]["parts"].([]map[string]any)
-	fr := parts[0]["functionResponse"].(map[string]any)
-	inline := fr["parts"].([]map[string]any)[0]["inlineData"].(map[string]any)
-	requirePNGInlineData(t, inline)
+	fr := body["input"].([]any)[1].(map[string]any)
+	img := fr["result"].([]map[string]any)[1]
+	requirePNGInteractionImage(t, img)
 }
 
-// TestBuildBodyRefusesUndecodableClaimedRaster pins the loud refusal: a claimed
-// unsupported raster whose bytes are not decodable must fail the build as a
-// configuration error, not reach the provider for an opaque 400.
 func TestBuildBodyRefusesUndecodableClaimedRaster(t *testing.T) {
 	t.Parallel()
 	req := llm.Request{Model: "gemini-x", Messages: []llm.Message{

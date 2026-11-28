@@ -8,6 +8,7 @@ import {
   CODE_INVALID_REQUEST,
   ConnectionClosedError,
   isMethodNotFound,
+  isUpgradeRequiredError,
   RequestTimeoutError,
   WireError,
 } from "./errors";
@@ -53,6 +54,14 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 // far beyond any real restore, but finite, so the pane recovers without a
 // reload.
 export const RESUME_REQUEST_TIMEOUT_MS = 10 * 60_000;
+// Session creation spans pre-spawn launch checks (30s timeout) plus the hub's
+// detached spawn/read/initial-turn sequence (threadStartDetachedTimeout, 2m in
+// cmd/evener-hub/app_threadlifecycle.go). 3m clears that server bound with
+// headroom so a slow but valid start resolves instead of failing at 30s while
+// the hub finishes creating the session. Unlike thread/resume, an expired
+// thread/start timeout leaves the socket intact because the hub detaches the
+// operation once admitted.
+export const START_REQUEST_TIMEOUT_MS = 3 * 60_000;
 export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v7";
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
@@ -86,9 +95,27 @@ class HandshakeRejectedError extends Error {
   }
 }
 
+// HubBelowFloorError marks an initialize the server refused without naming
+// upgradeRequired. A hub names upgradeRequired when the CLIENT announced a
+// protocol older than the one the hub serves (appwire.UpgradeRequired from
+// internal/appserver/server.go), so its absence means the hub serves only a
+// protocol older than this client's floor: APPWIRE_PROTOCOL_VERSION is the
+// minimum this client speaks, and it never announces anything below it.
+// Neither a retry nor a page reload can fix that -- the hub has to be
+// upgraded on whichever host runs it -- so the close is terminal and carries
+// its own reason instead of the client-side "protocol" verdict.
+export class HubBelowFloorError extends Error {
+  constructor(cause: WireError) {
+    super(
+      `AppwireClient: the hub is older than the minimum supported protocol ${APPWIRE_PROTOCOL_VERSION} and must be upgraded on its host: ${cause.message}`,
+    );
+    this.name = "HubBelowFloorError";
+  }
+}
+
 // TerminalReason names a close a human has to resolve, as opposed to an
 // ordinary drop the client retries on its own.
-export type TerminalReason = "protocol" | null;
+export type TerminalReason = "protocol" | "hub-below-floor" | null;
 
 // Same values as legacy appwire.js. Browsers can't send WebSocket ping
 // frames from JS, so a silently-dropped connection leaves readyState OPEN
@@ -115,10 +142,20 @@ export const RECONNECT_MAX_MS = 5_000;
 // connecting or reconnecting.
 const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["initialize"]);
 
-// Methods whose response is owned by the operation the request starts, not by
-// an ordinary transport deadline: a pending call carries its own (longer)
-// budget.
-const COMPLETION_OWNED_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["thread/resume"]);
+// Per-method request deadline policy for operations that outlive
+// DEFAULT_REQUEST_TIMEOUT_MS. `retireSocketOnDefaultTimeout` closes the socket
+// when the default cap fires (used for thread/resume so the hub observes
+// abandonment and unwinds ownership); an explicit caller timeoutMs always wins
+// and never closes the socket.
+interface MethodTimeoutPolicy {
+  readonly timeoutMs: number;
+  readonly retireSocketOnDefaultTimeout: boolean;
+}
+
+const METHOD_TIMEOUT_POLICIES: Partial<Record<MethodName, MethodTimeoutPolicy>> = {
+  "thread/resume": { timeoutMs: RESUME_REQUEST_TIMEOUT_MS, retireSocketOnDefaultTimeout: true },
+  "thread/start": { timeoutMs: START_REQUEST_TIMEOUT_MS, retireSocketOnDefaultTimeout: false },
+};
 
 function defaultSocketFactory(url: string): WebSocketLike {
   // The DOM WebSocket type is structurally richer than WebSocketLike (its
@@ -165,7 +202,7 @@ const FEATURE_KEYS = [
   "directoryComplete",
   "auth",
 ] as const;
-const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings"] as const;
+const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings", "threadStartIdempotency"] as const;
 
 function hasExactKeys(
   value: Record<string, unknown>,
@@ -501,14 +538,9 @@ export class AppwireClient {
     if (!socket) {
       return Promise.reject(new Error(`AppwireClient: cannot call "${method}"; not connected`));
     }
-    // Restore completion is not an ordinary transport deadline, but it is not
-    // unbounded either: a legitimate minutes-long restore must not fail on the
-    // 30s budget, and a hub that never answers must not leave the correlation
-    // (and resumePending) forever. An explicit caller budget still wins, and
-    // every other method retains its ordinary request deadline.
-    const timeoutMs =
-      opts?.timeoutMs ??
-      (COMPLETION_OWNED_METHODS.has(method) ? RESUME_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS);
+    // Explicit caller timeoutMs overrides any per-method policy in METHOD_TIMEOUT_POLICIES.
+    const timeoutPolicy = METHOD_TIMEOUT_POLICIES[method];
+    const timeoutMs = opts?.timeoutMs ?? timeoutPolicy?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const id = this.nextId++;
     return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -519,7 +551,7 @@ export class AppwireClient {
         // does, and let the reconnect machinery rebuild for the retry. An
         // explicit caller deadline is the caller owning abandonment
         // semantics themselves; it rejects only, transport untouched.
-        if (opts?.timeoutMs === undefined && COMPLETION_OWNED_METHODS.has(method)) {
+        if (opts?.timeoutMs === undefined && timeoutPolicy?.retireSocketOnDefaultTimeout === true) {
           this.handleSocketLoss(socket, 1000);
           try {
             socket.close();
@@ -609,8 +641,13 @@ export class AppwireClient {
   // noteProtocolFailure records the terminal reason when a handshake failure
   // is one no retry can fix (see terminalReasonValue). Shared by the initial
   // connect (performHandshake) and every reconnect attempt, so both paths
-  // leave the same evidence for ConnectionBanner's "reload this page" copy.
+  // leave the same evidence for the connection surfaces' verdict copy: a
+  // client that must reload, or a hub its host must upgrade.
   private noteProtocolFailure(error: unknown): boolean {
+    if (error instanceof HubBelowFloorError) {
+      this.terminalReasonValue = "hub-below-floor";
+      return true;
+    }
     if (
       error instanceof ProtocolVersionMismatchError ||
       error instanceof HandshakeRejectedError ||
@@ -656,6 +693,7 @@ export class AppwireClient {
       capabilities: DEFAULT_CAPABILITIES,
     }).catch((error: unknown) => {
       if (error instanceof WireError && error.code === CODE_INVALID_REQUEST) {
+        if (!isUpgradeRequiredError(error)) throw new HubBelowFloorError(error);
         throw new HandshakeRejectedError(error);
       }
       throw error;

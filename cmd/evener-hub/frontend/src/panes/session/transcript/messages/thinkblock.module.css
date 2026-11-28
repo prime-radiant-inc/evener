@@ -45,17 +45,16 @@
  * and the Disclosure summary set --ink-mid, so no colour is declared here.
  * align-self: center seats the glyph on the text's centre line.
  *
- * The deliberate NON-consumer of the shared rail seat
+ * The single-line live/compact variant beside the shared rail seat
  * (styles/railseat.module.css): the label row is single-line, so there is no
  * line-1 pinning to do (no height: 1lh, no font-size matching - the bulb is
  * a fixed 14px stroke, not a text glyph in a wrapping row), .label's center
  * alignment seats it (align-self: center, not the seat's flex-start), and its
  * margin-right is the FULL speaker gap because the label flex row has no
- * column gap for the seat's netting arithmetic to subtract. Only the live
- * eyebrow pulls into the rail (below); the settled thought is a Disclosure
- * and sits in the content column, so .gutterPull is not composed either. railseat.contract.test.ts pins this
- * stance, so a future "compose the seat" cleanup has to argue with it rather
- * than silently change the thought row's seating. */
+ * column gap for the seat's netting arithmetic to subtract. Live and compact
+ * rows put the desktop pull on their container (.label / .compactSummary),
+ * while full settled thoughts compose the shared rail seat directly in
+ * .summaryIcon below. */
 .icon {
   flex: none;
   align-self: center;
@@ -67,14 +66,18 @@
   opacity: 0.5;
 }
 
-/* The same glyph leading the settled Disclosure summary: the summary sits in
- * the content column like every Disclosure, so the glyph takes only its own
- * box and the summary's gap, at the rail's ambient 50%. */
+/* The bulb glyph leading the settled Disclosure summary: composes the shared
+ * icon-rail seat, ambient strength, and desktop gutter pull so settled
+ * thoughts align on the exact same vertical margin as live thoughts, compact
+ * thoughts, tool rows, and prose. Body font-size matches the summary text's
+ * 1lh line box. */
 .summaryIcon {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  opacity: 0.5;
+  composes: seat from "../../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: ambient from "../../../../styles/railseat.module.css";
+  composes: gutterPull from "../../../../styles/railseat.module.css";
+  align-self: center;
+  font-size: var(--font-size-body);
 }
 
 /* Above the breakpoint the block sits inside runContent's --speaker-gutter
@@ -85,6 +88,16 @@
   .label {
     margin-left: calc(-1 * var(--speaker-gutter));
   }
+}
+
+/* Compact settled and redacted summaries are intent-level chrome: the same
+ * railed label geometry as the full live row, but UI-sized like the live
+ * compact Loader and neighboring intent rows. The wrapper, not the icon, owns
+ * the pull; the text remains the flex item that yields to the chevron. */
+.compactSummary {
+  composes: label;
+  margin-bottom: 0;
+  font-size: var(--font-size-ui);
 }
 
 /* The thinking body is ALWAYS italic (Jesse, 2026-08-03): a thought reads
@@ -118,10 +131,22 @@
  * whatever text survives. The JS-side 120-char preview clamp remains the
  * primary bound. */
 .summaryText {
+  composes: truncate from "../../../../styles/text.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+/* Loader owns the live label's UI font size; this wrapper owns the matching
+ * intent-line height without changing the widget or the expanded body. */
+.compactSummary,
+.compactLiveSummary {
+  flex: 0 1 auto;
+  min-width: 0;
+  line-height: var(--line-height-title);
+}
+
+.compactLiveSummary {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* A settled thought renders through the Markdown widget, which sets its own

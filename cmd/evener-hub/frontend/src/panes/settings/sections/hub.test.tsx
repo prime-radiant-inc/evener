@@ -8,7 +8,7 @@ import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOver
 import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { HubSection } from "./hub";
 import { statusReasons } from "./reasonTestUtils";
-import { settingsFieldHelp, settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
+import { settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
 
 const SAMPLE_RESPONSE: SettingsOverviewResponse = {
   hub: {
@@ -26,27 +26,24 @@ beforeEach(() => {
   resetDaemonResidentsStoreForTests();
 });
 
-test("fetches the overview on mount and renders the runtime and authentication fields with their help text", async () => {
+test("fetches the overview on mount, mounts hub sections, and omits technical runtime details", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
   render(<HubSection />);
 
-  await userEvent.setup().click(await screen.findByText("Technical details", { selector: "summary" }));
-  expect(await screen.findByText("127.0.0.1:9180")).toBeTruthy();
-  expect(screen.queryByText("/tmp/evener-run")).toBeNull();
-  expect(screen.getByText("30s")).toBeTruthy();
-  expect(settingsFieldIds()).toEqual(["listen-address", "bearer-token", "spawn-timeout"]);
-  for (const field of settingsFieldIds()) {
-    expect(settingsFieldHelp(field ?? "")).not.toBeNull();
-  }
   await waitFor(() =>
     expect(fake.calls).toEqual([
       { method: "evener/settings/overview", params: {} },
       { method: "evener/daemon/list", params: {} },
     ]),
   );
+  expect(screen.getByRole("region", { name: "Updates" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Resident daemons" })).toBeTruthy();
+  expect(document.querySelector("details")).toBeNull();
+  expect(settingsFieldIds()).toEqual([]);
+  expect(screen.queryByText("127.0.0.1:9180")).toBeNull();
 });
 
 test("shows a loading skeleton before the overview resolves", () => {
@@ -56,6 +53,7 @@ test("shows a loading skeleton before the overview resolves", () => {
 
   render(<HubSection />);
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+  expect(screen.getAllByTestId("skeleton-line")).toHaveLength(3);
 });
 
 describe("on load failure", () => {
@@ -74,7 +72,9 @@ describe("on load failure", () => {
     await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
     const notice = document.querySelector<HTMLElement>('[role="status"][data-reason="unavailable"]');
     if (notice === null) throw new Error("load failure shows no notice");
-    expect(within(notice).getByRole("button", { name: "Retry" })).toBeTruthy();
+    // The region announces the failure; the retry control stays outside it.
+    expect(within(notice).queryByRole("button")).toBeNull();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.queryByTestId("empty-state")).toBeNull();
     expect(screen.queryByText("raw-overview-failure", { exact: false })).toBeNull();
   });
@@ -93,8 +93,7 @@ describe("on load failure", () => {
     fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
-    await userEvent.setup().click(await screen.findByText("Technical details", { selector: "summary" }));
-    expect(await screen.findByText("127.0.0.1:9180")).toBeTruthy();
+    expect(await screen.findByRole("region", { name: "Updates" })).toBeTruthy();
     await waitFor(() => expect(fake.calls).toHaveLength(3));
   });
 
@@ -113,19 +112,6 @@ describe("on load failure", () => {
   });
 });
 
-test.each(["fixture-token-age", undefined])("renders only a fixed token mask and optional age %s", async (age) => {
-  const fake = connectReadyFakeClient();
-  fake.on("evener/settings/overview", () => ({
-    ...SAMPLE_RESPONSE,
-    hub: { ...SAMPLE_RESPONSE.hub, daemonIdleTimeoutMillis: 3600000, bearerTokenAge: age },
-  }));
-  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
-  render(<HubSection />);
-  await userEvent.setup().click(await screen.findByText("Technical details", { selector: "summary" }));
-  await screen.findByText("127.0.0.1:9180");
-  expect(settingsFieldValue("bearer-token").textContent?.trim()).toBe(age ? `•••••••••••• ${age}` : "••••••••••••");
-});
-
 test("hides client internals when the overview transport becomes unreachable", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => {
@@ -134,20 +120,6 @@ test("hides client internals when the overview transport becomes unreachable", a
   render(<HubSection />);
   await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
   expect(screen.queryByText(/AppwireClient/i)).toBeNull();
-});
-
-test("runtime details start folded while resident controls remain available", async () => {
-  const fake = connectReadyFakeClient();
-  fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
-  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
-  render(<HubSection />);
-  const toggle = await screen.findByText("Technical details", { selector: "summary" });
-  expect(toggle.closest("details")?.open).toBe(false);
-  expect(settingsFieldIds()).toEqual([]);
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/daemon/list")).toBe(true));
-  await userEvent.setup().click(toggle);
-  expect(settingsFieldIds()).toContain("listen-address");
-  expect(settingsFieldIds()).not.toContain("run-dir");
 });
 
 test("reports the operation store's quarantine signal when the hub carries one", async () => {
@@ -173,12 +145,7 @@ test("reports the operation store's quarantine signal when the hub carries one",
 
   render(<HubSection />);
 
-  // The oracle is the notice's presence and its reason, not its wording: a
-  // person opening Settings -> Hub must be able to see that the store was
-  // quarantined. Copy changes must not fail this.
   await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
-  // And the path it shows must be the one holding the quarantined bytes. A row
-  // that exists but points at the replacement passes any presence-only check.
   expect(settingsFieldValue("aside-file").textContent).toBe(
     "/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z",
   );
@@ -193,15 +160,8 @@ test("reveals a quarantine the hub performed while this tab was on another secti
   const first = render(<HubSection />);
   await waitFor(() => expect(fake.calls.length).toBeGreaterThan(0));
   expect(statusReasons()).not.toContain("operation-store-quarantined");
-  // The reader moves to another Settings section, so HubSection unmounts.
   first.unmount();
 
-  // The hub restarted and quarantined the store while HubSection was gone.
-  // fetch() is fetch-once, so a subscription in the section would miss this
-  // reconnect entirely and reopening would reuse the healthy cache.
-  // Typed, not spread through a partial: SettingsHubOverview's
-  // daemonIdleTimeoutMillis is required, and a spread through the sample's
-  // optional type would drop it.
   const quarantined: SettingsOverviewResponse = {
     hub: {
       ...SAMPLE_RESPONSE.hub,
@@ -214,8 +174,6 @@ test("reveals a quarantine the hub performed while this tab was on another secti
       },
     },
   };
-  // A client replacement is the reconnect the recovery hook watches for; no
-  // poll.
   await act(async () => {
     connectReadyFakeClient((fake2) => {
       fake2.on("evener/settings/overview", () => quarantined);
@@ -256,17 +214,12 @@ test("names no set-aside file for a quarantine whose aside is already gone", asy
   render(<HubSection />);
 
   await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
-  // A row for a path the hub does not have would send an operator to a file
-  // that is not there; the custody file is the only one left to name.
   expect(settingsFieldIds()).not.toContain("aside-file");
   expect(settingsFieldValue("custody-file").textContent).toBe(
     "/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
   );
 });
 
-// The quarantine fixture every reconnect test below answers with: the store
-// path the replacement occupies, the aside file holding the corrupt bytes, the
-// custody file, and the epoch.
 const QUARANTINED: SettingsOverviewResponse = {
   hub: {
     ...SAMPLE_RESPONSE.hub,
@@ -289,18 +242,11 @@ test("reveals a quarantine the hub performed during a reconnect this section ope
   await waitFor(() => expect(fake.calls.length).toBeGreaterThan(0));
   first.unmount();
 
-  // The hub restarts and quarantines the store. This tab's socket notices the
-  // gap but is still reconnecting when the reader opens Hub settings, so the
-  // section mounts INTO the flap and its mount read reuses the healthy cache.
   fake.emitStateChange("reconnecting");
   fake.on("evener/settings/overview", () => QUARANTINED);
   render(<HubSection />);
   expect(statusReasons()).not.toContain("operation-store-quarantined");
 
-  // The same client recovers. Nothing else changes - no new client, no reopen -
-  // and the notice must appear as soon as the re-read answers, because an
-  // operator who opened the pane during the flap is exactly the one who was not
-  // looking when it happened.
   await act(async () => {
     fake.emitStateChange("ready");
   });
@@ -317,9 +263,6 @@ test("re-reads on the next open after a reconnect whose refresh failed", async (
   await waitFor(() => expect(fake.calls.length).toBeGreaterThan(0));
   first.unmount();
 
-  // A replacement connection whose first overview read times out, with the
-  // socket staying ready: the pane keeps the pre-restart overview on screen,
-  // and that failed read must not count as having caught up.
   const fake2 = connectReadyFakeClient((replacement) => {
     replacement.on("evener/settings/overview", () => {
       throw new Error("overview request timed out");
@@ -331,8 +274,6 @@ test("re-reads on the next open after a reconnect whose refresh failed", async (
   expect(statusReasons()).not.toContain("operation-store-quarantined");
   stale.unmount();
 
-  // The RPC answers again. Reopening must retry rather than trust a cache the
-  // failed read never refreshed.
   fake2.on("evener/settings/overview", () => QUARANTINED);
   render(<HubSection />);
 

@@ -180,9 +180,9 @@ func TestBuildBwrapArgvNetwork(t *testing.T) {
 // it makes bwrap try to create a mountpoint under the read-only common dir (EROFS)
 // and abort the whole sandbox, which would break evener's primary workflow.
 func TestBuildBwrapArgvLinkedWorktreeNoDeadPin(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	home := t.TempDir()
-	cwd := MaterializeWorkspace(t, LinkedWorktree)
+	cwd := materializeWorkspace(t, LinkedWorktree)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, bwrapFacts(home), cwd)
 	if err != nil {
@@ -228,7 +228,7 @@ func TestBuildBwrapArgvMasksSymlinkedSecret(t *testing.T) {
 	if err := os.Symlink(realSSH, filepath.Join(home, ".ssh")); err != nil {
 		t.Fatal(err)
 	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, bwrapFacts(home), cwd)
 	if err != nil {
@@ -254,7 +254,7 @@ func TestBuildBwrapArgvCacheOverlay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
@@ -279,7 +279,7 @@ func TestBuildBwrapArgvOverlaysTheHostGoPath(t *testing.T) {
 	if err := os.MkdirAll(goPkg, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoPath: filepath.Dir(goPkg)}
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
@@ -302,7 +302,7 @@ func TestBuildBwrapArgvLeavesOutAnUnoverlayableCacheRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	facts := HostFacts{
 		OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true,
 		GoCache: good, GoModCache: bad,
@@ -390,7 +390,7 @@ func TestBuildBwrapArgvReadOnlySessionTmp(t *testing.T) {
 func TestBuildBwrapArgvBindsInfraReadRoots(t *testing.T) {
 	home := t.TempDir()
 	infra := tmpInfraRoot(t)
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: &net, InfraReadRoots: []string{infra}}, bwrapFacts(home), cwd)
 	if err != nil {
@@ -415,7 +415,7 @@ func TestBuildBwrapArgvBindsInfraReadRoots(t *testing.T) {
 func TestBuildBwrapArgvRebindsInfraReadRootsUnderPrivateTmpInReadAnywhereModes(t *testing.T) {
 	home := t.TempDir()
 	infra := tmpInfraRoot(t)
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	net := true
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite} {
 		rp, err := Resolve(SandboxPolicy{Mode: mode, Network: &net, InfraReadRoots: []string{infra}}, bwrapFacts(home), cwd)
@@ -570,7 +570,7 @@ func TestNewWrapperCreatesAMissingCacheRootSoItIsOverlaid(t *testing.T) {
 	home := t.TempDir()
 	modCache := filepath.Join(t.TempDir(), "absent", "modcache")
 	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoModCache: modCache}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -595,7 +595,7 @@ func TestBuildBwrapArgvSkipsANonDirectoryCacheRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: file}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -630,7 +630,7 @@ func TestBuildBwrapArgvDoesNotOverlayACacheHoldingAWriteRoot(t *testing.T) {
 	if err := os.MkdirAll(library, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	for _, w := range []string{library, filepath.Join(cache, "not-yet")} {
 		rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{w}}, overlayFacts(home), cwd)
 		if err != nil {
@@ -643,7 +643,7 @@ func TestBuildBwrapArgvDoesNotOverlayACacheHoldingAWriteRoot(t *testing.T) {
 		}
 	}
 
-	linked := MaterializeWorkspace(t, LinkedWorktree)
+	linked := materializeWorkspace(t, LinkedWorktree)
 	mainRepo := strings.TrimSuffix(linked, "-wt")
 	facts := overlayFacts(t.TempDir())
 	facts.XDGCacheHome = mainRepo
@@ -663,7 +663,7 @@ func TestWrapRecreatesACacheRootRemovedSinceTheWrapperWasBuilt(t *testing.T) {
 		t.Fatal(err)
 	}
 	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -699,7 +699,7 @@ func TestWrapSkipsACacheRootRetargetedIntoTheWorktree(t *testing.T) {
 	}
 	gocache := filepath.Join(link, "cache")
 	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -730,7 +730,7 @@ func TestWrapSkipsACacheRootRetargetedIntoTheWorktree(t *testing.T) {
 func overlayFixture(t *testing.T, facts HostFacts) (ResolvedPolicy, string) {
 	t.Helper()
 	facts.OS, facts.BwrapPath, facts.BwrapCapable, facts.OverlaySupported = "linux", "/usr/bin/bwrap", true, true
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -890,7 +890,7 @@ func TestBuildBwrapArgvRebindsEvenerContentAfterTheMask(t *testing.T) {
 	}
 	facts := bwrapFacts(home)
 	facts.EvenerContentRoots = []string{store}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
@@ -921,7 +921,7 @@ func TestBuildBwrapArgvMasksGitInsideEvenerContent(t *testing.T) {
 	}
 	facts := bwrapFacts(home)
 	facts.EvenerContentRoots = []string{cache}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
@@ -949,7 +949,7 @@ func TestBuildBwrapArgvMasksDeepGitAndSkipsUninspectableRoots(t *testing.T) {
 	}
 	facts := bwrapFacts(home)
 	facts.EvenerContentRoots = []string{skills}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -1002,7 +1002,7 @@ func TestBuildBwrapArgvMasksGitAfterEveryBindOfASymlinkedCarveOut(t *testing.T) 
 	}
 	facts := bwrapFacts(home)
 	facts.EvenerContentRoots = []string{filepath.Join(home, ".config", "evener", "plugins", "cache")}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		t.Run(mode.String(), func(t *testing.T) {
 			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
@@ -1109,7 +1109,7 @@ func TestBuildBwrapArgvRecreatesACarveOutSpellingUnderTmp(t *testing.T) {
 	skills := filepath.Join(home, ".config", "evener", "skills")
 	facts := bwrapFacts(home)
 	facts.EvenerContentRoots = []string{skills}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -1132,7 +1132,7 @@ func TestBuildBwrapArgvLeavesGitUnmaskedWithoutTheConfigMask(t *testing.T) {
 	}
 	facts := bwrapFacts(home)
 	facts.EvenerContentRoots = []string{skills}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true), DenylistRemove: []string{".config/evener"}}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -1199,7 +1199,7 @@ func TestBuildBwrapArgvBindsAnUninspectableCarveOutWithoutTheConfigMask(t *testi
 	}
 	facts := bwrapFacts(home)
 	facts.EvenerContentRoots = []string{skills}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true), DenylistRemove: []string{".config/evener"}}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -1232,7 +1232,7 @@ func TestBuildBwrapArgvRecreatesACarveOutSpellingUnderDevShm(t *testing.T) {
 	facts := bwrapFacts(t.TempDir())
 	facts.EvenerConfigRoot = filepath.Join(xdg, "evener")
 	facts.EvenerContentRoots = []string{skills}
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
 	if err != nil {
 		t.Fatal(err)

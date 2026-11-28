@@ -29,9 +29,8 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 		{
 			name:          "no overrides",
 			fields:        map[string]string{"message": "string", "data": "object", "artifacts": "array"},
-			required:      []string{"message", "data", "artifacts"},
 			output:        `{"message":"structured-sentinel","data":{},"artifacts":[]}`,
-			invalidOutput: []string{`{}`},
+			invalidOutput: []string{`{"wrong":true}`, `{"data":false}`},
 		},
 		{
 			name:          "output replacement",
@@ -45,7 +44,7 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 			name:          "allowed decisions",
 			decisions:     []string{"approved", "rejected"},
 			fields:        map[string]string{"message": "string", "data": "object", "artifacts": "array", "decision": "string"},
-			required:      []string{"message", "data", "artifacts", "decision"},
+			required:      []string{"decision"},
 			output:        `{"message":"","data":{},"artifacts":[],"decision":"approved"}`,
 			invalidOutput: []string{`{"message":"","data":{},"artifacts":[]}`, `{"message":"","data":{},"artifacts":[],"decision":"unknown"}`},
 		},
@@ -78,7 +77,7 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 				if err := json.Unmarshal([]byte(tc.output), &output); err != nil {
 					t.Fatal(err)
 				}
-				args := map[string]any{"message": "visible-sentinel", "end_turn": true, "output": output}
+				args := map[string]any{"message": "visible-sentinel", "next": "send_and_end_turn", "output": output}
 				rawArgs := mustMarshalJSON(t, args)
 				f := newFakeAdapter("openai", func(llm.Request) llm.Response {
 					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "result-schema", Name: name, Arguments: rawArgs, Type: "function"})
@@ -96,22 +95,22 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 				if err := registered.Schema.Validate(args); err != nil {
 					t.Errorf("valid output rejected: %v", err)
 				}
-				if err := registered.Schema.Validate(map[string]any{"message": "m", "end_turn": true}); err == nil {
-					t.Error("missing output accepted")
+				if err := registered.Schema.Validate(map[string]any{"message": "m", "next": "send_and_end_turn"}); err != nil {
+					t.Errorf("wire schema requires optional output: %v", err)
 				}
 				for _, raw := range tc.invalidOutput {
 					var invalid any
 					if err := json.Unmarshal([]byte(raw), &invalid); err != nil {
 						t.Fatal(err)
 					}
-					if err := registered.Schema.Validate(map[string]any{"message": "m", "end_turn": true, "output": invalid}); err == nil {
+					if err := registered.Schema.Validate(map[string]any{"message": "m", "next": "send_and_end_turn", "output": invalid}); err == nil {
 						t.Errorf("invalid output accepted: %s", raw)
 					}
 				}
-				// An interactive root adds end_reason after adopting the profile.
+				// The interactive root uses the same schema as other roles.
 				props := registered.Definition.Parameters["properties"].(map[string]any)
-				if _, ok := props["end_reason"]; !ok {
-					t.Error("end_reason overlay lost")
+				if _, ok := props["end_reason"]; ok {
+					t.Error("end_reason is still advertised")
 				}
 				after := mustJSON(t, p.ToolDefinitions())
 				if before != after {
@@ -150,8 +149,8 @@ func TestCommunicate_ProfileOverridesPreservedByResultToolName(t *testing.T) {
 
 func assertResultToolOutputSchema(t *testing.T, def llm.ToolDefinition, fields map[string]string, required, decisions []string) {
 	t.Helper()
-	if !slices.Contains(toStringSlice(def.Parameters["required"]), "output") {
-		t.Error("output is not required")
+	if slices.Contains(toStringSlice(def.Parameters["required"]), "output") {
+		t.Error("output is required at the wire schema")
 	}
 	props, _ := def.Parameters["properties"].(map[string]any)
 	output, _ := props["output"].(map[string]any)
@@ -196,7 +195,7 @@ func TestCommunicate_ResultToolNameWithoutProfileDefinition(t *testing.T) {
 			}
 			assertResultToolOutputSchema(t, registered.Definition,
 				map[string]string{"message": "string", "data": "object", "artifacts": "array"},
-				[]string{"message", "data", "artifacts"}, nil)
+				nil, nil)
 		})
 	}
 }

@@ -1,3 +1,4 @@
+import type { InstanceEntry } from "@evener/appwire-client";
 import { hostRequest, isLocalHost, LOCAL_HOST } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
 import { useConnectionStore } from "../../stores/connection";
@@ -58,12 +59,13 @@ export function useProviderSetup(host: string = LOCAL_HOST) {
   const configured = instances.some(
     (instance) =>
       !instance.hidden &&
+      !instance.loadError &&
       (instance.credentialRequired
         ? instance.activeSource !== "none" && instance.activeSource !== ""
         : !instance.implicit),
   );
   const implicitKeyless = instances.some(
-    (instance) => !instance.hidden && !instance.credentialRequired && instance.implicit,
+    (instance) => !instance.hidden && !instance.loadError && !instance.credentialRequired && instance.implicit,
   );
   // The registry includes an implicit Ollama instance even on a fresh install
   // without a local server. It is available only if it actually offers models.
@@ -99,17 +101,43 @@ export function useProviderSetup(host: string = LOCAL_HOST) {
       cancelled = true;
     };
   }, [client, connection, host, checkedClient, loading, error, configured, implicitKeyless, instances]);
-  const status =
-    !client || connection !== "ready" || checkedClient !== client || loading
-      ? "loading"
-      : error || writesRefused
-        ? "error"
-        : configured
-          ? "ready"
-          : implicitKeyless
-            ? keyless?.instances === instances
-              ? keyless.status
-              : "loading"
-            : "missing";
+  const listingReady = targetIsLocal
+    ? localState.listingEstablished && !localState.listingFromPreviousConnection
+    : hostState.read;
+  const status = resolveProviderSetupStatus({
+    connected: Boolean(client) && connection === "ready",
+    listingSettled: listingReady || (checkedClient === client && !loading),
+    hasError: Boolean(error) || writesRefused,
+    configured,
+    implicitKeyless,
+    keyless,
+    instances,
+  });
   return { status, instances, retry };
+}
+
+type ProviderSetupStatus = "loading" | "error" | "ready" | "missing";
+
+function resolveProviderSetupStatus({
+  connected,
+  listingSettled,
+  hasError,
+  configured,
+  implicitKeyless,
+  keyless,
+  instances,
+}: {
+  connected: boolean;
+  listingSettled: boolean;
+  hasError: boolean;
+  configured: boolean;
+  implicitKeyless: boolean;
+  keyless: { instances: readonly InstanceEntry[]; status: "ready" | "missing" | "error" } | null;
+  instances: readonly InstanceEntry[];
+}): ProviderSetupStatus {
+  if (!connected || !listingSettled) return "loading";
+  if (hasError) return "error";
+  if (configured) return "ready";
+  if (implicitKeyless) return keyless?.instances === instances ? keyless.status : "loading";
+  return "missing";
 }

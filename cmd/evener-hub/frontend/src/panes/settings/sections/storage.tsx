@@ -1,16 +1,10 @@
 import { useEffect, useState } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import {
-  Button,
-  Disclosure,
-  InlineNotice,
-  PropertyList,
-  Skeleton,
-  type StackedPropertyListRow,
-} from "../../../widgets";
+import { Disclosure, PropertyList, type StackedPropertyListRow } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { SectionGate } from "./sectionGate";
 import { SESSION_CACHE_HELP, SESSION_CACHE_LABEL, SessionCacheStatus } from "./sessionCacheRow";
-import { Code, FieldDim, FieldValue } from "./settingsField";
+import { Code, FieldDim } from "./settingsField";
 import styles from "./storage.module.css";
 
 const CLASS = {
@@ -35,27 +29,17 @@ export function StorageSection() {
     void settingsOverviewStore.getState().fetch();
   }, []);
 
-  if (loading && !data) return <Skeleton lines={4} />;
-
-  if (!data && error) {
+  if (!data) {
     return (
-      <InlineNotice
-        tone="danger"
-        live="status"
-        data-reason="unavailable"
+      <SectionGate
+        loading={loading}
+        error={error}
         title="Couldn't load storage settings"
-        action={
-          <Button size="sm" onClick={() => void settingsOverviewStore.getState().refresh()}>
-            Retry
-          </Button>
-        }
-      >
-        {error}
-      </InlineNotice>
+        onRetry={() => void settingsOverviewStore.getState().refresh()}
+        skeletonLines={4}
+      />
     );
   }
-
-  if (!data) return null; // not yet fetched, not loading, no error: effect hasn't run yet
 
   const hub = data.hub;
   const pastIndex = hub?.pastIndex;
@@ -67,12 +51,9 @@ export function StorageSection() {
         rows={[
           {
             label: SESSION_CACHE_LABEL,
-            value: (
-              <FieldValue field="session-cache">
-                <SessionCacheStatus />
-              </FieldValue>
-            ),
+            value: <SessionCacheStatus />,
             help: SESSION_CACHE_HELP,
+            rowProps: { "data-field": "session-cache" },
           },
         ]}
       />
@@ -84,31 +65,30 @@ export function StorageSection() {
             [
               {
                 label: "State dir",
-                value: <FieldValue field="state-dir">{data.storage?.stateDir ?? ""}</FieldValue>,
+                value: data.storage?.stateDir ?? "",
                 help: "Root directory for hub state: auth token, credentials, and project sub-directories.",
+                rowProps: { "data-field": "state-dir" },
               },
               {
                 label: "Run dir",
-                value: <FieldValue field="run-dir">{hub?.runDir ?? ""}</FieldValue>,
+                value: hub?.runDir ?? "",
                 help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
+                rowProps: { "data-field": "run-dir" },
               },
               {
                 label: "Hub config",
-                value: (
-                  <FieldValue field="hub-config">
-                    <Code>~/.config/evener/hub.toml</Code>
-                  </FieldValue>
-                ),
+                value: <Code>~/.config/evener/hub.toml</Code>,
                 help: "Main configuration file. Edit it to change addresses, providers, and spawn defaults.",
+                rowProps: { "data-field": "hub-config" },
               },
               ...(pastIndex !== undefined
                 ? [
                     {
                       label: "Past index",
                       value: (
-                        <FieldValue field="past-index">
+                        <>
                           {pastIndex.path} {pastIndex.size !== undefined && <FieldDim>{pastIndex.size}</FieldDim>}
-                        </FieldValue>
+                        </>
                       ),
                       help: (
                         <>
@@ -116,10 +96,12 @@ export function StorageSection() {
                           {pastCountCopy(pastIndex.count ?? 0)}
                         </>
                       ),
+                      rowProps: { "data-field": "past-index" },
                     },
                     {
                       label: "Past results per page",
-                      value: <FieldValue field="past-results-per-page">{pastIndex.perPage ?? 0}</FieldValue>,
+                      value: pastIndex.perPage ?? 0,
+                      rowProps: { "data-field": "past-results-per-page" },
                     },
                   ]
                 : []),

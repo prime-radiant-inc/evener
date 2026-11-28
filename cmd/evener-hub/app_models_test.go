@@ -11,18 +11,21 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
+	"primeradiant.com/evener/rendezvous"
 )
 
 type modelMetadataAdapter struct {
@@ -285,9 +288,10 @@ func TestFetchLiveModelsSkipsRowAuthOverrideInstances(t *testing.T) {
 
 // TestFetchLiveModels_BindsTheRegistrysCodexScope pins the model-list half of
 // a wrong-record bug: the fetch must authenticate with the registry client's
-// own state root, not whatever root the process-global Codex holds. The
+// own state root, not whatever root the process-global OAuth clients hold. The
 // adapter records the request context, so the assertion is about what the
-// fetch actually carried.
+// fetch actually carried. The Copilot assertion keeps a Codex scope from
+// answering a Copilot listing.
 func TestFetchLiveModels_BindsTheRegistrysCodexScope(t *testing.T) {
 	root := t.TempDir()
 	writeCodexOAuthRecord(t, root, "codex-work")
@@ -325,6 +329,14 @@ func TestFetchLiveModels_BindsTheRegistrysCodexScope(t *testing.T) {
 	}
 	if codex.StateDir != root {
 		t.Fatalf("scoped Codex state dir = %q, want the client registry's %q", codex.StateDir, root)
+	}
+	copilotAuth := llm.AuthenticatorOverrideFor(recorder.requestCtx, registry.AuthOAuthGitHubCopilot)
+	copilot, ok := copilotAuth.(*tokenauth.Copilot)
+	if !ok {
+		t.Fatalf("fetch context carried %T for Copilot, want a scoped *tokenauth.Copilot", copilotAuth)
+	}
+	if copilot.StateDir != root {
+		t.Fatalf("scoped Copilot state dir = %q, want the client registry's %q", copilot.StateDir, root)
 	}
 }
 
@@ -1162,4 +1174,173 @@ func TestHubModelListServesLaunchContractFromCache(t *testing.T) {
 	if got := spawner.callCount(); got != 1 {
 		t.Fatalf("launch contract called %d times for two model/list RPCs, want 1", got)
 	}
+}
+
+// TestFetchLiveModelsUsesSharedListingBudget proves the settings sheet's
+// per-instance credential probe uses the one shared listing budget, whatever
+// the instance's transport.
+func TestFetchLiveModelsUsesSharedListingBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(string) (string, bool) { return "", false }),
+			registry.WithInstances(map[string]registry.Provider{
+				"kimi-anthropic-api": {Base: "kimi-for-coding", APIKey: "k"},
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry: %v", err)
+		}
+		client := llm.NewClient(llm.WithRegistry(r))
+		recorder := &modelListAuthRecorder{
+			name:   "kimi-anthropic-api",
+			models: []registry.Model{{ID: "k3"}},
+		}
+		client.Register(recorder)
+		for _, inst := range r.Instances() {
+			if inst.Name != "kimi-anthropic-api" {
+				client.Register(&modelMetadataAdapter{name: inst.Name})
+			}
+		}
+		oldLoadClient := liveModelLoadClient
+		liveModelLoadClient = func(string) (*llm.Client, error) { return client, nil }
+		t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
+
+		NewWebServer(hubcore.WebConfig{}).fetchLiveModels(context.Background())
+		if recorder.requestCtx == nil {
+			t.Fatal("the settings listing never ran")
+		}
+		deadline, ok := recorder.requestCtx.Deadline()
+		if !ok {
+			t.Fatal("the settings listing ran without the shared deadline")
+		}
+		if remaining := time.Until(deadline); remaining != 8*time.Second {
+			t.Fatalf("settings listing budget = %s, want the shared 8s listing budget", remaining)
+		}
+	})
+}
+
+func TestValidateEvenerLaunchModelUsesCachedLaunchModels(t *testing.T) {
+	t.Parallel()
+
+	t.Run("warm cache accepts valid model without re-running launch-check", func(t *testing.T) {
+		t.Parallel()
+		spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+		}}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		if _, err := hubModelList(t.Context(), web.cfg, nil, appwire.ModelListParams{CWD: "/tmp/proj"}); err != nil {
+			t.Fatalf("hubModelList: %v", err)
+		}
+		if got := spawner.callCount(); got != 1 {
+			t.Fatalf("warm call count = %d, want 1", got)
+		}
+		if err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "gpt-5.5"}, "/tmp/proj"); err != nil {
+			t.Fatalf("validateEvenerLaunchModel: %v", err)
+		}
+		if got := spawner.callCount(); got != 1 {
+			t.Fatalf("launch contract called %d times after warm model/list + validate, want 1", got)
+		}
+	})
+
+	t.Run("stale cache refusal refreshes and accepts newly added model", func(t *testing.T) {
+		t.Parallel()
+		var reloaded atomic.Bool
+		spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+			model := "gen-1"
+			if reloaded.Load() {
+				model = "gen-2"
+			}
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{
+				{Provider: "openai", Model: model},
+			}}
+		}}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		t.Cleanup(web.waitLaunchRefreshes)
+		if _, err := web.fetchLaunchModels(t.Context(), "/tmp/proj", false); err != nil {
+			t.Fatalf("warm fetchLaunchModels: %v", err)
+		}
+		reloaded.Store(true)
+		if err := web.cfg.Registry.Reload(); err != nil {
+			t.Fatalf("Reload: %v", err)
+		}
+		if err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "gen-2"}, "/tmp/proj"); err != nil {
+			t.Fatalf("validateEvenerLaunchModel after stale miss: %v", err)
+		}
+		if got := spawner.callCount(); got < 2 {
+			t.Fatalf("launch contract called %d times, want at least 2 (initial load + refresh)", got)
+		}
+	})
+
+	t.Run("warm cache refusal refreshes once before rejecting invalid model", func(t *testing.T) {
+		t.Parallel()
+		spawner := &countLaunchContractSpawner{modelsFn: func(int, string) appwire.ModelListResponse {
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+		}}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		if _, err := web.fetchLaunchModels(t.Context(), "/tmp/proj", false); err != nil {
+			t.Fatalf("warm fetchLaunchModels: %v", err)
+		}
+		err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "missing"}, "/tmp/proj")
+		assertHubLaunchError(t, err)
+		if got := spawner.callCount(); got != 2 {
+			t.Fatalf("launch contract called %d times, want 2 (initial load + one refresh on refusal)", got)
+		}
+	})
+
+	t.Run("custom LaunchModels loader receives refresh=false then refresh=true on refusal", func(t *testing.T) {
+		t.Parallel()
+		spawner := &countLaunchContractSpawner{}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		var refreshes []bool
+		web.cfg.LaunchModels = func(_ context.Context, _ string, refresh bool) (appwire.ModelListResponse, error) {
+			refreshes = append(refreshes, refresh)
+			if !refresh {
+				return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "old"}}}, nil
+			}
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "new"}}}, nil
+		}
+		if err := validateEvenerLaunchModel(t.Context(), web.cfg, cmdutil.ModelRef{Provider: "openai", Model: "new"}, "/tmp/custom"); err != nil {
+			t.Fatalf("validateEvenerLaunchModel: %v", err)
+		}
+		if !reflect.DeepEqual(refreshes, []bool{false, true}) {
+			t.Fatalf("LaunchModels refresh sequence = %v, want [false true]", refreshes)
+		}
+	})
+
+	t.Run("thread/start reuses launch model cache warmed by model/list across symlinked CWD", func(t *testing.T) {
+		t.Parallel()
+		realDir := filepath.Join(t.TempDir(), "repo")
+		if err := os.MkdirAll(realDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		linkDir := filepath.Join(t.TempDir(), "repo-link")
+		if err := os.Symlink(realDir, linkDir); err != nil {
+			t.Fatalf("Symlink: %v", err)
+		}
+		spawner := &countLaunchContractSpawner{
+			modelsFn: func(int, string) appwire.ModelListResponse {
+				return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}}
+			},
+		}
+		spawner.spawn = func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{PID: 412, Protocol: appwire.ProtocolVersion, ThreadID: "th_cached", SessionID: "sess_cached"}, nil
+		}
+		web := newLaunchModelsTestWeb(t, spawner, true)
+		web.cfg.LaunchConfigRoot = t.TempDir()
+		web.cfg.PluginRoot = t.TempDir()
+		if _, err := hubModelList(t.Context(), web.cfg, appsource.NewRegistry(), appwire.ModelListParams{CWD: linkDir + string(os.PathSeparator)}); err != nil {
+			t.Fatalf("hubModelList: %v", err)
+		}
+		if _, err := hubThreadStart(t.Context(), web.cfg, appsource.NewRegistry(), appwire.ThreadStartParams{
+			Model: "openai/gpt-5.5",
+			CWD:   linkDir,
+		}); err != nil {
+			t.Fatalf("hubThreadStart: %v", err)
+		}
+		if got := spawner.callCount(); got != 1 {
+			t.Fatalf("launch contract called %d times across model/list + thread/start, want 1", got)
+		}
+	})
 }

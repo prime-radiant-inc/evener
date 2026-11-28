@@ -528,7 +528,7 @@ func jobtools_buildWatchResult(r *jobtools_reader) jobWatchToolResult {
 		out.EventFilter = &jobWatchToolEventFilter{ToolName: r.str(), Status: r.str()}
 	}
 	if r.booln() {
-		out.Send = &jobWatchToolSendArgs{To: r.str(), Message: r.str(), IncludeExcerpt: r.booln()}
+		out.Send = &jobWatchToolSendArgs{To: r.str()}
 	}
 	out.Every = r.intn(5)
 	return out

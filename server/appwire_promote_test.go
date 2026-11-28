@@ -26,7 +26,7 @@ import (
 func newPromoteTestServer(t *testing.T, processing bool) (*Server, *int) {
 	t.Helper()
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(processing)
 	state := "idle"
 	if processing {
@@ -52,7 +52,7 @@ func promoteRPC(conn interface {
 
 func TestServerAppWireTurnPromoteQueuedAsSteerDispatchesIndex(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	gotIndex := -1
@@ -107,7 +107,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerDelegatesWhenProjectionIsIdle(t *t
 
 func TestServerAppWireTurnPromoteQueuedAsSteerUnavailableWithoutFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	conn := srv.AppServer().NewConnection("test")
@@ -126,7 +126,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerUnavailableWithoutFunc(t *testing.
 // preview instead of believing the wrong message was promoted.
 func TestServerAppWireTurnPromoteQueuedAsSteerPropagatesSessionError(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
@@ -194,7 +194,7 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	waitForQueueDepth(t, sess, 2)
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetProcessing(true)
 	seedStatus(srv, StatusInfo{SessionID: sess.ID(), State: "active"})
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{

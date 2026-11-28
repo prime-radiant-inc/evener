@@ -606,9 +606,10 @@ func TestHeldAttentionDropShiftsTheInFlightBoundary(t *testing.T) {
 	runtime.history = []schema.Turn{held, inFlight}
 	runtime.turnHistoryBaseline = 1
 	runtime.mu.Unlock()
-	runtime.attentionMu.Lock()
-	runtime.attentionAutomaticDriveHolds = map[string]uint64{heldID: 1}
-	runtime.attentionMu.Unlock()
+	c.seedAttentionRowForTest("dlg_target", heldID, true)
+	if err := c.holdDelegateAttention("dlg_target", heldID, 1); err != nil {
+		t.Fatalf("hold attention: %v", err)
+	}
 
 	ctx := context.WithValue(context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease), delegateAttentionRunContextKey{}, struct{}{})
 	var timings events.RoundTimings

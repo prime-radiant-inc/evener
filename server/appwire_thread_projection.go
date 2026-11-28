@@ -152,7 +152,9 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			AgentNote:              agentNote,
 			SessionURLs:            sessionURLs,
 			Usage:                  usage,
-			Cost:                   appwire.EstimateCost(s.costFor(status.Profile+"/"+status.Model), usage),
+			// Usage accrued on the committed model; an advertised pick that
+			// has not applied must not reprice it.
+			Cost:                   appwire.EstimateCost(s.costFor(status.CommittedProfile+"/"+status.CommittedModel), usage),
 			WorkMillis:             workMillis,
 			ActiveTurnStartedAt:    activeTurnStartedAt,
 			FailedToolCalls:        failedToolCalls,

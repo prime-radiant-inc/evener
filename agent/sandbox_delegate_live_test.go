@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
 )
@@ -133,7 +134,7 @@ func TestReadOnlyRoleDelegateUsesRealWriteBlockedBoundary(t *testing.T) {
 				minimalSystemPrompt: true,
 				noSyncJobStore:      true,
 				childClientFactory:  func() *llm.Client { return childClient },
-				sandboxProber:       sandbox.FakeProber{Facts: facts},
+				sandboxProber:       sandboxtest.FakeProber{Facts: facts},
 			},
 		}),
 	)

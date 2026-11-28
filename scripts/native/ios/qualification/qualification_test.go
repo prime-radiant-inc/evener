@@ -152,7 +152,7 @@ func TestSimulatorRequiresAvailableCompatibleIPhone(t *testing.T) {
 
 func TestBundleMetadataRequiresIdentityAndSharedGroup(t *testing.T) {
 	t.Parallel()
-	info := map[string]any{"CFBundleIdentifier": "com.primeradiant.evener.native", "MinimumOSVersion": "16.4", "UIDeviceFamily": []any{float64(1)}, "CFBundleURLTypes": []any{map[string]any{"CFBundleURLSchemes": []any{"evener-native"}}}}
+	info := map[string]any{"CFBundleIdentifier": "com.primeradiant.evener.native", "MinimumOSVersion": "17.0", "UIDeviceFamily": []any{float64(1)}, "CFBundleURLTypes": []any{map[string]any{"CFBundleURLSchemes": []any{"evener-native"}}}}
 	entitlements := map[string]any{"com.apple.security.application-groups": []any{"group.com.primeradiant.evener.native"}}
 	if err := validateBundleMetadata(info, entitlements, false); err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestBundleMetadataRequiresIdentityAndSharedGroup(t *testing.T) {
 	for _, mutate := range []func(map[string]any, map[string]any){
 		func(i, _ map[string]any) { i["CFBundleIdentifier"] = "other.app" },
 		func(i, _ map[string]any) { i["UIDeviceFamily"] = []any{float64(1), float64(2)} },
-		func(i, _ map[string]any) { i["MinimumOSVersion"] = "17.0" },
+		func(i, _ map[string]any) { i["MinimumOSVersion"] = "16.4" },
 		func(i, _ map[string]any) { delete(i, "CFBundleURLTypes") },
 		func(_, e map[string]any) { delete(e, "com.apple.security.application-groups") },
 		func(_, e map[string]any) { e["com.apple.security.application-groups"] = []any{"other.group"} },
@@ -171,7 +171,7 @@ func TestBundleMetadataRequiresIdentityAndSharedGroup(t *testing.T) {
 			t.Fatalf("accepted invalid metadata: %v, %v, %v", i, e, err)
 		}
 	}
-	share := map[string]any{"CFBundleIdentifier": "com.primeradiant.evener.native.ShareExtension", "MinimumOSVersion": "16.4", "UIDeviceFamily": []any{float64(1)}, "NSExtension": map[string]any{"NSExtensionPointIdentifier": "com.apple.share-services"}}
+	share := map[string]any{"CFBundleIdentifier": "com.primeradiant.evener.native.ShareExtension", "MinimumOSVersion": "17.0", "UIDeviceFamily": []any{float64(1)}, "NSExtension": map[string]any{"NSExtensionPointIdentifier": "com.apple.share-services"}}
 	if err := validateBundleMetadata(share, entitlements, true); err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func buildControlAppFixture(t *testing.T, r *runner) string {
 	<key>CFBundleExecutable</key>
 	<string>%s</string>
 	<key>MinimumOSVersion</key>
-	<string>16.4</string>
+	<string>17.0</string>
 	<key>UIDeviceFamily</key>
 	<array>
 		<integer>1</integer>
@@ -390,7 +390,7 @@ func TestGeneratedSettingsDoNotHideConflictingPlist(t *testing.T) {
 	t.Parallel()
 	settings := map[string]string{
 		"PRODUCT_BUNDLE_IDENTIFIER":  "com.primeradiant.evener.native",
-		"IPHONEOS_DEPLOYMENT_TARGET": "16.4", "TARGETED_DEVICE_FAMILY": "1", "DEVELOPMENT_TEAM": "EVENERCI01",
+		"IPHONEOS_DEPLOYMENT_TARGET": "17.0", "TARGETED_DEVICE_FAMILY": "1", "DEVELOPMENT_TEAM": "EVENERCI01",
 	}
 	entitlements := map[string]any{"com.apple.security.application-groups": []any{"group.com.primeradiant.evener.native"}}
 	info := map[string]any{"CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)", "CFBundleURLTypes": []any{map[string]any{"CFBundleURLSchemes": []any{"evener-native"}}}}
@@ -400,7 +400,7 @@ func TestGeneratedSettingsDoNotHideConflictingPlist(t *testing.T) {
 	for _, conflict := range []map[string]any{
 		{"CFBundleIdentifier": "other.app"},
 		{"CFBundleIdentifier": nil},
-		{"MinimumOSVersion": "17.0"},
+		{"MinimumOSVersion": "16.4"},
 		{"UIDeviceFamily": []any{float64(2)}},
 	} {
 		changed := cloneTestMap(t, info)
@@ -418,7 +418,7 @@ func TestGeneratedShareSettingsUseBuildIdentifier(t *testing.T) {
 	for _, identifier := range []string{"com.primeradiant.evener.native.ShareExtension", "other.app", ""} {
 		settings := map[string]string{
 			"PRODUCT_BUNDLE_IDENTIFIER":  identifier,
-			"IPHONEOS_DEPLOYMENT_TARGET": "16.4", "TARGETED_DEVICE_FAMILY": "1", "DEVELOPMENT_TEAM": "EVENERCI01",
+			"IPHONEOS_DEPLOYMENT_TARGET": "17.0", "TARGETED_DEVICE_FAMILY": "1", "DEVELOPMENT_TEAM": "EVENERCI01",
 		}
 		err := validateGeneratedSettings(cloneTestMap(t, info), entitlements, settings, true)
 		if identifier == "com.primeradiant.evener.native.ShareExtension" {
@@ -429,7 +429,7 @@ func TestGeneratedShareSettingsUseBuildIdentifier(t *testing.T) {
 			t.Fatalf("accepted invalid build identifier %q: %v", identifier, err)
 		}
 	}
-	info["MinimumOSVersion"] = "16.4"
+	info["MinimumOSVersion"] = "17.0"
 	info["UIDeviceFamily"] = []any{float64(1)}
 	if err := validateBundleMetadata(info, entitlements, true); !errors.Is(err, errIdentity) {
 		t.Fatalf("accepted built share bundle with missing identity: %v", err)
@@ -452,7 +452,7 @@ func TestGeneratedShareSourcePlist(t *testing.T) {
 	}
 	settings := map[string]string{
 		"PRODUCT_BUNDLE_IDENTIFIER":  "com.primeradiant.evener.native.ShareExtension",
-		"IPHONEOS_DEPLOYMENT_TARGET": "16.4", "TARGETED_DEVICE_FAMILY": "1", "DEVELOPMENT_TEAM": "EVENERCI01",
+		"IPHONEOS_DEPLOYMENT_TARGET": "17.0", "TARGETED_DEVICE_FAMILY": "1", "DEVELOPMENT_TEAM": "EVENERCI01",
 	}
 	entitlements := map[string]any{"com.apple.security.application-groups": []any{"group.com.primeradiant.evener.native"}}
 	if err := validateGeneratedSettings(info, entitlements, settings, true); err != nil {

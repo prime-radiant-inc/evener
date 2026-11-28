@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -126,7 +127,7 @@ func TestRelayedCloseFrameRechecksRecoveryLocksAfterSubscription(t *testing.T) {
 	client := relayedNotificationClient(t, thread, deliveries, handoff, func(cfg *hubcore.WebConfig) { cfg.ResumeLocks = locks })
 	// The subscription has captured an idle snapshot before recovery begins.
 	finish := locks.BeginForceStop([]string{"recovering"})
-	if err := locks.PersistForceStop([]string{"recovering"}, "recovering"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"recovering"}, "recovering", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(false)

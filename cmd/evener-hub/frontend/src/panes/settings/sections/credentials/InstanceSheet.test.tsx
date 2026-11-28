@@ -721,7 +721,7 @@ describe("the form", () => {
     };
   }
 
-  test("prefills every field from the instance and shows the base provider as a fact", () => {
+  test("prefills every field from the instance including the base provider", () => {
     renderSheet(WORK, {}, [OPENAI]);
     expect(field("Name").value).toBe("work");
     expect(field("Base URL").value).toBe("https://gw.example.test/v1");
@@ -729,7 +729,61 @@ describe("the form", () => {
     expect(select("Surface").value).toBe("generic");
     expect(field("API key environment variable").value).toBe("PORTKEY_KEY");
     expect(field("Credential header").value).toBe("Authorization=Bearer $PORTKEY_KEY");
-    expect(screen.getByTestId("base-provider").textContent).toBe("openai");
+    expect(select("Base provider").value).toBe("openai");
+  });
+
+  test("broken provider surfaces loadError, hides live actions, and repairs base on save", async () => {
+    const broken = instance({
+      name: "kimi",
+      base: "kimi-code-plan-global",
+      providerId: "kimi-code-plan-global",
+      protocol: "openai-responses",
+      hidden: true,
+      credentialRequired: false,
+      activeSource: "none",
+      loadError: 'providers.kimi: base "kimi-code-plan-global" is not a registry id',
+    });
+    const compat = {
+      id: "openai-compatible",
+      name: "OpenAI-compatible",
+      protocol: "openai-chat",
+      auth: "bearer",
+      implicit: false,
+    };
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => ({
+      instances: [
+        instance({
+          name: "kimi",
+          base: "openai-compatible",
+          providerId: "openai-compatible",
+          baseUrl: "https://api.kimi.com/coding/v1",
+          protocol: "openai-responses",
+        }),
+      ],
+      availableProviders: [OPENAI, compat],
+    }));
+    connectionStore.getState().connect(fake);
+    renderSheet(broken, {}, [OPENAI, compat]);
+
+    const notice = screen.getByRole("status", { name: "Provider load error" });
+    expect(notice.textContent).toContain("kimi-code-plan-global");
+    expect(select("Base provider").value).toBe("kimi-code-plan-global");
+    expect(screen.queryByRole("button", { name: "Test credentials" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /make default/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+
+    const user = userEvent.setup();
+    await user.selectOptions(select("Base provider"), "openai-compatible");
+    await fill(user, field("Base URL"), "https://api.kimi.com/coding/v1");
+    await user.click(saveButton());
+
+    expect(await sentEditParams(fake)).toEqual({
+      name: "kimi",
+      base: "openai-compatible",
+      baseUrl: "https://api.kimi.com/coding/v1",
+      originClientId: "test-tab",
+    });
   });
 
   test("renders the connection facts and settings through the card's shared components", () => {

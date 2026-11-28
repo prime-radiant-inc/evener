@@ -125,19 +125,14 @@ var gitWritableLeaves = []string{
 var gitProtectedLeaves = []string{"config", "config.worktree", "hooks", "commondir", "gitdir"}
 
 // ClassifyWorkspace resolves cwd's git layout structurally (reading .git entries
-// directly; it never forks the git binary) into a GitLayout. It returns an error
-// only on an unreadable or unrecognized .git pointer shape — a fail-closed signal
-// the resolver turns into a refusal rather than guessing a grant set.
-func ClassifyWorkspace(cwd string) (GitLayout, error) {
-	return ClassifyWorkspaceWithCeilings(cwd, nil)
-}
-
-// ClassifyWorkspaceWithCeilings is ClassifyWorkspace with git's
-// GIT_CEILING_DIRECTORIES boundary: the upward search stops before a ceiling
-// directory, so a workspace nested inside another repository is classified as
-// its own non-Git root when a ceiling names its parent (#3724). A .git entry at
-// cwd itself is still found before any ceiling is consulted.
-func ClassifyWorkspaceWithCeilings(cwd string, ceilings []string) (GitLayout, error) {
+// directly; it never forks the git binary) into a GitLayout. Optional ceilings
+// apply git's GIT_CEILING_DIRECTORIES boundary: the upward search stops before a
+// ceiling directory, so a workspace nested inside another repository is classified
+// as its own non-Git root; a .git entry at cwd itself is still found before any
+// ceiling is consulted. It returns an error only on an unreadable or
+// unrecognized .git pointer shape — a fail-closed signal the resolver turns into a
+// refusal rather than guessing a grant set.
+func ClassifyWorkspace(cwd string, ceilings []string) (GitLayout, error) {
 	cwd = identifier.ResolveClean(cwd)
 
 	holder, isDir, ok := findGitEntry(cwd, ceilings)
@@ -161,8 +156,10 @@ func ClassifyWorkspaceWithCeilings(cwd string, ceilings []string) (GitLayout, er
 		return withIncludeProtections(layout)
 	}
 
-	// .git is a pointer file: "gitdir: <path>".
-	content, err := os.ReadFile(entry)
+	// .git is a pointer file: "gitdir: <path>". The entry is workspace-controlled,
+	// so it is read through the guard that refuses a FIFO, a device, a pseudo
+	// stream, or a file larger than any pointer instead of blocking or over-reading.
+	content, err := identifier.ReadGitPointerFile(entry)
 	if err != nil {
 		return GitLayout{}, fmt.Errorf("reading .git pointer at %s: %w", holder, err)
 	}

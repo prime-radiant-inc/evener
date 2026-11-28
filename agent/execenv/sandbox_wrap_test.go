@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 )
 
 // kernelWrappedEnv resolves mode against bwrap facts anchored at home and attaches a
@@ -66,7 +67,7 @@ func TestNoSandboxByteIdentical(t *testing.T) {
 func TestWrapForSandboxRewritesArgvAndRaisesEnvFloor(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	cwd := sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout)
 	sessionTmp := t.TempDir()
 	env := kernelWrappedEnv(t, "/usr/bin/bwrap", home, cwd, sessionTmp, sandbox.ModeWorkspaceWrite, true)
 
@@ -96,7 +97,7 @@ func TestWrapForSandboxRewritesArgvAndRaisesEnvFloor(t *testing.T) {
 
 func TestNoInheritedFDs(t *testing.T) {
 	t.Parallel()
-	env := kernelWrappedEnv(t, "/usr/bin/bwrap", t.TempDir(), sandbox.MaterializeWorkspace(t, sandbox.MainCheckout), t.TempDir(), sandbox.ModeWorkspaceWrite, true)
+	env := kernelWrappedEnv(t, "/usr/bin/bwrap", t.TempDir(), sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout), t.TempDir(), sandbox.ModeWorkspaceWrite, true)
 
 	f, err := os.CreateTemp(t.TempDir(), "leak")
 	if err != nil {
@@ -123,7 +124,7 @@ func TestExecWrappedConfinesSecret(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".ssh", "id"), []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	cwd := sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout)
 	env := kernelWrappedEnv(t, bwrapPath, home, cwd, t.TempDir(), sandbox.ModeWorkspaceWrite, true)
 
 	res, err := env.ExecCommand(context.Background(), "cat "+filepath.Join(home, ".ssh", "id")+" 2>&1 || true", 15000, cwd, nil)
@@ -145,7 +146,7 @@ func TestStreamWrappedConfinesSecret(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".ssh", "id"), []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	cwd := sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout)
 	env := kernelWrappedEnv(t, bwrapPath, home, cwd, t.TempDir(), sandbox.ModeWorkspaceWrite, true)
 
 	var buf strings.Builder

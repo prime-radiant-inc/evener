@@ -1,8 +1,9 @@
 {
   "name": "pane-body-composer-gap-phone",
-  "description": "On a phone the breakpoint's own .body rule declares a different bottom inset; a pane with any slot below its body (a padded footer, or a flush edge footer alone) must still close its scrolling body on that surface's hairline, while a footer-less pane keeps the phone's inset.",
+  "description": "On a phone the session composer floats over the transcript: the body runs to the pane's bottom edge so content scrolls under the chrome and leaves no in-flow band, while a footer-less pane keeps the phone's own inset and a flush body stays edge to edge.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "widgets/panescaffold/panescaffold.module.css"
   ],
@@ -19,9 +20,9 @@
     }
   ],
   "mutation": {
-    "declaration": "panescaffold.module.css: (a) remove the `.body:not(:last-child)` / `.body:last-child` pair, or (b) on the phone case only, remove the phone block's `--pane-body-edge-inset` restatement",
-    "verified": "2026-11-11",
+    "declaration": "panescaffold.module.css: (a) the phone block's `.footer` floating rule `position: absolute` set to `static`, (b) the `.body:not(:last-child)` / `.body:last-child` pair removed, (c) the phone block's `--pane-body-edge-inset` restatement removed, or (d) the floating footer given a solid `--composer-dock-scrim: var(--surface-0)`",
+    "verified": "2026-11-25",
     "expect": "fail",
-    "note": "Measured 2026-11-11 at 390px. Removing the phone block's token restatement fails the footer-less fixture with 24.0px where the breakpoint's token declares 16px - the two-sided check is what catches a leaked desktop value. Removing the selector pair fails both docked fixtures with a 16.0px band. Restoring both passes all four."
+    "note": "At 390px, making the footer static left the session body 36px above the pane's bottom edge. Removing the selector pair left a 16px end band. Removing the phone token restatement gave the footer-less fixture 24px instead of 16px. The solid scrim failed the browser paint check while all geometry still passed."
   }
 }

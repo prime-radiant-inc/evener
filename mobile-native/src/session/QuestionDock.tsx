@@ -19,6 +19,7 @@ import {
 	type QuestionSelections,
 	questionAdvanceTarget,
 } from "../questionAnswers";
+import { radius } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useComposerTyping } from "../useKeyboardShown";
 import { useReadingFace } from "../display/displayContext";
@@ -437,7 +438,7 @@ function AnswerBar({
 					minHeight: 44,
 					paddingHorizontal: 16,
 					justifyContent: "center",
-					borderRadius: 22,
+					borderRadius: radius.capsule,
 					backgroundColor: filled ? palette.accentFill : "transparent",
 					opacity: primaryOff ? 0.4 : pressed ? 0.6 : 1,
 				})}

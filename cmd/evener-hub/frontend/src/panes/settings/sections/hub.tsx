@@ -1,5 +1,5 @@
 import type { SettingsOperationStoreQuarantine } from "@evener/appwire-client";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { connectionStore, readyConnectionTransition } from "../../../stores/connection";
 import {
   loadSettingsOverview,
@@ -7,23 +7,19 @@ import {
   settingsOverviewStore,
   useSettingsOverviewStore,
 } from "../../../stores/settingsOverview";
-import { Button, Disclosure, InlineNotice, PropertyList, Skeleton } from "../../../widgets";
+import { InlineNotice, PropertyList } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
 import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
-import { Code, FieldDim, FieldValue } from "./settingsField";
+import { SectionGate } from "./sectionGate";
 
 const CLASS = {
   root: requireClass(styles.root, "hub.module.css", "root"),
 };
 
-// Never derive the mask from a credential. The overview carries only its age.
-const BEARER_TOKEN_MASK = "••••••••••••";
-
-/** Hub runtime, authentication status, updates and resident daemons. */
+/** Hub updates, resident daemons, and store health notices. */
 export function HubSection() {
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const data = useSettingsOverviewStore((s) => s.data);
   const loading = useSettingsOverviewStore((s) => s.loading);
   const error = useSettingsOverviewStore((s) => s.error);
@@ -46,27 +42,16 @@ export function HubSection() {
     });
   }, []);
 
-  if (loading && !data) return <Skeleton lines={3} />;
-
-  if (!data && error) {
+  if (!data) {
     return (
-      <InlineNotice
-        tone="danger"
-        live="status"
-        data-reason="unavailable"
+      <SectionGate
+        loading={loading}
+        error={error}
         title="Couldn't load hub settings"
-        action={
-          <Button size="sm" onClick={() => void settingsOverviewStore.getState().refresh()}>
-            Retry
-          </Button>
-        }
-      >
-        {error}
-      </InlineNotice>
+        onRetry={() => void settingsOverviewStore.getState().refresh()}
+      />
     );
   }
-
-  if (!data) return null; // not yet fetched, not loading, no error: effect hasn't run yet
 
   const hub = data.hub;
 
@@ -75,42 +60,6 @@ export function HubSection() {
       <HubUpdates />
       <HubResidents />
       <OperationStoreQuarantineNotice quarantine={hub?.operationStoreQuarantine} />
-      <Disclosure summary="Technical details" open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <PropertyList
-          layout="stacked"
-          rows={[
-            {
-              label: "Listen address",
-              value: <FieldValue field="listen-address">{hub?.listenAddr ?? ""}</FieldValue>,
-              help: (
-                <>
-                  Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
-                  <Code>~/.config/evener/hub.toml</Code> or <Code>--addr</Code>.
-                </>
-              ),
-            },
-            {
-              label: "Bearer token",
-              value: (
-                <FieldValue field="bearer-token">
-                  {BEARER_TOKEN_MASK} {hub?.bearerTokenAge !== undefined && <FieldDim>{hub.bearerTokenAge}</FieldDim>}
-                </FieldValue>
-              ),
-              help: (
-                <>
-                  Used to authenticate the TUI or a remote browser. Stored as <Code>auth-token</Code> in the hub state
-                  directory and reused across restarts.
-                </>
-              ),
-            },
-            {
-              label: "Spawn timeout",
-              value: <FieldValue field="spawn-timeout">{hub?.spawnTimeout ?? ""}</FieldValue>,
-              help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
-            },
-          ]}
-        />
-      </Disclosure>
     </div>
   );
 }
@@ -147,21 +96,25 @@ function OperationStoreQuarantineNotice({ quarantine }: { quarantine: SettingsOp
             ? [
                 {
                   label: "Set aside",
-                  value: <FieldValue field="aside-file">{quarantine.asideFile}</FieldValue>,
+                  value: quarantine.asideFile,
+                  rowProps: { "data-field": "aside-file" },
                 },
               ]
             : []),
           {
             label: "Store path",
-            value: <FieldValue field="quarantined-file">{quarantine.quarantinedFile ?? ""}</FieldValue>,
+            value: quarantine.quarantinedFile ?? "",
+            rowProps: { "data-field": "quarantined-file" },
           },
           {
             label: "Custody file",
-            value: <FieldValue field="custody-file">{quarantine.custodyFile ?? ""}</FieldValue>,
+            value: quarantine.custodyFile ?? "",
+            rowProps: { "data-field": "custody-file" },
           },
           {
             label: "Quarantine epoch",
-            value: <FieldValue field="quarantine-epoch">{quarantine.quarantineEpoch ?? 0}</FieldValue>,
+            value: quarantine.quarantineEpoch ?? 0,
+            rowProps: { "data-field": "quarantine-epoch" },
           },
         ]}
       />

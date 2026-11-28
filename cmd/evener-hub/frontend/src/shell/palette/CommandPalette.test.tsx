@@ -5,9 +5,16 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { ALL_CAPABILITIES as CAPS } from "../../threadTestUtils";
 import "../../panes/sessionPanels";
 import "../../panes/session";
-import { ACTIONS, rebindAction, restoreDefaultBinding, WireError } from "@evener/appwire-client";
+import {
+  ACTIONS,
+  makeTranscriptDisplayConfig,
+  rebindAction,
+  restoreDefaultBinding,
+  WireError,
+} from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
+import { resetFindRequestsForTests, useFindRequest } from "../../panes/session/find/findRequest";
 import "../../panes/sessionPanels";
 import type {
   ItemModel,
@@ -33,7 +40,9 @@ import { connectionStore, resetConnectionStoreForTests } from "../../stores/conn
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { chordLabel, Dialog, Toast } from "../../widgets";
+import chipStyles from "../../widgets/chip/chip.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { currentAttentionEntryToken } from "../attentionHistory";
 import { NeedsYouProvider } from "../NeedsYouProvider";
@@ -96,8 +105,27 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
 function item(id: string, text: string): ItemModel {
   return { id, turnId: "t1", type: "agentMessage", text };
 }
+function reasoningItem(id: string, text: string): ItemModel {
+  return { id, turnId: "t1", type: "reasoning", text: "", status: "completed", reasoningSummaries: [[text]] };
+}
+function actionItem(id: string, rationale: string): ItemModel {
+  return {
+    id,
+    turnId: "t1",
+    type: "commandExecution",
+    text: "",
+    status: "completed",
+    toolName: "shell",
+    description: rationale,
+  };
+}
 function turn(items: ItemModel[]): TurnModel {
   return { id: "t1", status: "completed", items };
+}
+
+function FindProbe() {
+  const request = useFindRequest("ref_a", "p1");
+  return <div data-testid="find-request" data-query={request?.query ?? ""} data-item={request?.itemId ?? ""} />;
 }
 
 function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
@@ -118,6 +146,8 @@ beforeEach(() => {
   resetNavigationStoreForTests();
   resetQuoteInsertStoreForTests();
   resetComposerFocusStoreForTests();
+  resetTranscriptDisplayStoreForTests();
+  resetFindRequestsForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
   // Keep viewport tests isolated from direct matchMedia assignments.
@@ -126,6 +156,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  resetTranscriptDisplayStoreForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -1040,6 +1071,35 @@ test("selecting a free-arg APP-GLOBAL command enters args mode with a pill and p
   expect(screen.getByRole("option", { name: /Start with prompt/ })).toBeTruthy();
 });
 
+// The args-mode pill is the shared Chip, and its back control is that Chip's
+// remove slot, not a local button: the chip carries chip.module.css's base and
+// accent classes, and the remove control carries the chip's own remove class.
+// Its glyph is an SVG rather than the "×" text character.
+test("the args-mode back control is the shared Chip remove control and returns to the command list", async () => {
+  const user = userEvent.setup();
+  render(
+    <NeedsYouProvider>
+      <CommandPalette />
+    </NeedsYouProvider>,
+  );
+  act(() => openPalette("/spawn"));
+  await user.click(screen.getByRole("option", { name: /Start with prompt/ }));
+
+  const back = screen.getByRole("button", { name: "back to command list" });
+  expect(back.className.split(" ")).toContain(chipStyles.remove);
+  const chip = back.parentElement;
+  expect(chip?.className.split(" ")).toContain(chipStyles.chip);
+  expect(chip?.className.split(" ")).toContain(chipStyles.accent);
+  expect(back.querySelector("svg")).not.toBeNull();
+  expect(back.textContent).toBe("");
+
+  await user.click(back);
+  // Backed out to command-filter, dialog still open and the input focused.
+  expect(screen.queryByRole("button", { name: "back to command list" })).toBeNull();
+  expect(screen.getByRole("option", { name: /Start with prompt/ })).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole("combobox"));
+});
+
 // --- execution & error surfacing ---
 
 test("running a navigation command closes the palette and navigates", async () => {
@@ -1357,6 +1417,125 @@ test("in-session search scans the focused ThreadModel's turns", async () => {
   expect(rows).toHaveLength(1);
   // The match sits in the second turn; the fixture text carries no digits.
   expect(rows[0]?.textContent).toContain("2");
+});
+
+test("choosing a thought or action row in In session hands Find the words and the item", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }));
+  focusSession("ref_a", {
+    turns: [turn([reasoningItem("think1", "the frobnitz plan"), actionItem("call1", "grep for frobnitz")])],
+  });
+
+  render(
+    <>
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>
+      <FindProbe />
+    </>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "frobnitz");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(2));
+
+  await user.click(paletteRowsOfKind("insession")[0] as HTMLElement);
+  await waitFor(() => expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("think1"));
+  expect(screen.getByTestId("find-request").getAttribute("data-query")).toBe("frobnitz");
+
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "frobnitz");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(2));
+  await user.click(paletteRowsOfKind("insession")[1] as HTMLElement);
+  await waitFor(() => expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("call1"));
+});
+
+test("a Tools-preset call's own lines are offered In session and hand Find the call", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+  focusSession("ref_a", {
+    turns: [turn([{ ...actionItem("call1", "grep for frobnitz"), output: "frobnitz log" }])],
+  });
+
+  render(
+    <>
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>
+      <FindProbe />
+    </>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "frobnitz");
+
+  // At the tools level the call renders its intent line and its body, so both
+  // are on screen and both are listed - each as its own snippet.
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(2));
+  const snippets = paletteRowsOfKind("insession").map((row) => row.textContent);
+  expect(snippets.some((text) => text?.includes("grep for frobnitz"))).toBe(true);
+  expect(snippets.some((text) => text?.includes("frobnitz log"))).toBe(true);
+
+  // Choosing either hands the session's Find the words and the call itself.
+  await user.click(paletteRowsOfKind("insession")[0] as HTMLElement);
+  await waitFor(() => expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("call1"));
+  expect(screen.getByTestId("find-request").getAttribute("data-query")).toBe("frobnitz");
+});
+
+test("In session offers steers, human notes and memory refreshes, and hands one to Find", async () => {
+  const user = userEvent.setup();
+  scriptSearch({ live: [], past: [] });
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }));
+  focusSession("ref_a", {
+    turns: [
+      turn([
+        { id: "steer1", turnId: "t1", type: "steering", text: "rethink the frobnitz", source: "user" },
+        {
+          id: "note1",
+          turnId: "t1",
+          type: "steering",
+          text: "whiteboard: frobnitz plan",
+          source: "user",
+          steeringKind: "human-note",
+        },
+        {
+          id: "mem1",
+          turnId: "t1",
+          type: "systemMessage",
+          eventKind: "memory-context",
+          text: "recorded text",
+          raw: {
+            memoryContext: { scope: "personal", state: "current", truncated: false, content: "- frobnitz index" },
+          },
+        },
+        // The tasks surfaces own this one: it renders nothing, so it is no
+        // result the palette may offer.
+        { id: "task1", turnId: "t1", type: "steering", text: "frobnitz task", steeringKind: "task-list" },
+      ]),
+    ],
+  });
+
+  render(
+    <>
+      <NeedsYouProvider>
+        <CommandPalette />
+      </NeedsYouProvider>
+      <FindProbe />
+    </>,
+  );
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), "frobnitz");
+  await waitFor(() => expect(paletteRowsOfKind("insession")).toHaveLength(3));
+
+  await user.click(paletteRowsOfKind("insession")[2] as HTMLElement);
+  await waitFor(() => expect(screen.getByTestId("find-request").getAttribute("data-item")).toBe("mem1"));
+  expect(screen.getByTestId("find-request").getAttribute("data-query")).toBe("frobnitz");
 });
 
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend

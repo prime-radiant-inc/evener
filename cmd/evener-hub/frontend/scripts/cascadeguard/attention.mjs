@@ -73,6 +73,7 @@ function geometryExpr() {
       next: box(query('[data-testid="next-needs-you-next"]')),
       more: box(query('[data-testid="next-needs-you-more"]')),
       stack: box(query('[data-testid="flow-overlay-stack"]')),
+      attention: box(query('[data-testid="flow-overlay-attention"]')),
       pill: box(query('[data-testid="new-content-pill"]')),
       clearance: box(clearance),
       clearanceHeight: clearance ? clearance.getBoundingClientRect().height : 0,
@@ -851,12 +852,14 @@ export async function attentionJourney(ctx) {
       assert.ok(!intersects(sample.next, sample.more), `${label} Next and More are distinct hit areas`);
       assert.ok(!intersects(sample.control, sample.composer), `${label} the control never overlaps the composer`);
       assert.ok(!intersects(sample.control, sample.send), `${label} the control never overlaps Send/Stop`);
-      // Everything from the reader's own bottom edge up to the stack's top:
-      // the stack's height plus the inset it floats above that edge.
-      const requiredClearance = sample.port && sample.stack ? sample.port.bottom - sample.stack.top : null;
+      // Everything from the reader's own bottom edge up to the Next slot's top:
+      // Next's height plus the stack's bottom inset (including the phone's
+      // floating composer reserve). New Content mounts only while scrolled away
+      // and is excluded from end clearance.
+      const requiredClearance = sample.port && sample.attention ? sample.port.bottom - sample.attention.top : null;
       assert.ok(
         sample.clearanceHeight === 0 || (requiredClearance !== null && Math.abs(sample.clearanceHeight - requiredClearance) <= 0.5),
-        `${label} the end clearance reaches the stack top, got ${sample.clearanceHeight} vs ${requiredClearance ?? "unmeasured"}`);
+        `${label} the end clearance reaches the attention slot top, got ${sample.clearanceHeight} vs ${requiredClearance ?? "unmeasured"}`);
       assert.ok(sample.stack && sample.stack.height > 0, `${label} the floating stack owns a measured height`);
       if (sample.pill) {
         assert.ok(!intersects(sample.pill, sample.next), `${label} New Content and Next do not overlap`);
@@ -864,7 +867,7 @@ export async function attentionJourney(ctx) {
       assert.ok(sample.nextOverflow, `${label} the Next label is measurable`);
       assert.ok(sample.nextOverflow.button <= Math.min(18 * 16, width * 0.55) + 18,
         `${label} the long title stays inside the compact ceiling, got ${sample.nextOverflow.button}`);
-      // At the end the reader's own last content row sits above the stack.
+      // At the end the reader's own last content row sits above the Next slot.
       // The sizer can grow after a width change lands: a tall row above the
       // viewport re-measures, scroll anchoring holds the visible content still,
       // and the reader ends up short of the end. A person at the end scrolls
@@ -880,23 +883,23 @@ export async function attentionJourney(ctx) {
         const last = rows.at(-1);
         const body = document.querySelector('.dv-active-group [data-pane-scaffold^="session:"]')
           ?? document.querySelector('[data-pane-scaffold^="session:"]');
-        const stack = body?.parentElement?.querySelector('[data-testid="flow-overlay-stack"]')
-          ?? document.querySelector('[data-testid="flow-overlay-stack"]');
-        if (!last || !stack) return null;
+        const attention = body?.parentElement?.querySelector('[data-testid="flow-overlay-attention"]')
+          ?? document.querySelector('[data-testid="flow-overlay-attention"]');
+        if (!last || !attention) return null;
         const box = last.getBoundingClientRect();
         const portBox = port.getBoundingClientRect();
         // The row can be taller than the reader after a resize. Require part of
-        // it inside the viewport and its end above the stack's bottom edge.
+        // it inside the viewport and its end above the attention slot's bottom edge.
         if (box.top > portBox.bottom - 2 || box.bottom < portBox.top + 2) return null;
-        const stackBox = stack.getBoundingClientRect();
+        const attentionBox = attention.getBoundingClientRect();
         // The final row's own content must be hit-testable (nothing paints over
-        // it) and the row must end above the stack's TOP edge, the edge the end
-        // clearance is measured to.
-        const y = Math.min(Math.max(box.top + 8, portBox.top + 2), Math.min(portBox.bottom, stackBox.top) - 2);
+        // it) and the row must end above the attention slot's TOP edge, the edge
+        // the end clearance is measured to.
+        const y = Math.min(Math.max(box.top + 8, portBox.top + 2), Math.min(portBox.bottom, attentionBox.top) - 2);
         if (y <= box.top) return null;
         const hit = document.elementFromPoint(box.x + Math.min(10, box.width / 2), y);
-        return last.contains(hit) && box.bottom <= stackBox.top + 1
-          ? { lastBottom: box.bottom, stackTop: stackBox.top, stackBottom: stackBox.bottom } : null;
+        return last.contains(hit) && box.bottom <= attentionBox.top + 1
+          ? { lastBottom: box.bottom, stackTop: attentionBox.top, stackBottom: attentionBox.bottom } : null;
       })()`, `${label}: final transcript content scrolls above the floating controls`);
       geometry.push({ width, theme, next: sample.next, more: sample.more, stack: sample.stack, pill: sample.pill, send: sample.send, clearance: sample.clearanceHeight, lastRowBottom: bottom.lastBottom, stackTop: bottom.stackTop, stackBottom: bottom.stackBottom });
       driver.milestone(label, { width, theme, next: sample.next, more: sample.more, stack: sample.stack, pill: sample.pill, send: sample.send, clearance: sample.clearanceHeight, nextText: sample.nextText, lastRowBottom: bottom.lastBottom, stackBottom: bottom.stackBottom, ...(passingProbe ? { probe: passingProbe } : {}) });

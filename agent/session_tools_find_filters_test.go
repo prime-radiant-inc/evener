@@ -52,7 +52,7 @@ func writeFindTranscript(t *testing.T, bucketDir, id string, created time.Time, 
 		t.Fatalf("writeFindTranscript %s: %v", id, err)
 	}
 	for _, turn := range turns {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			_ = w.Close()
 			t.Fatalf("append %s: %v", id, err)
 		}

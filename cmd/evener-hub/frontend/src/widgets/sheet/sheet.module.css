@@ -1,4 +1,5 @@
-/* Sheet reuses Dialog's scrim/header/title/body/footer/closeButton chrome
+/* Sheet reuses Dialog's scrim/header/title/body/footer chrome, and its
+ * shared IconButton close control,
  * wholesale (see index.tsx, which composes styles.panel from
  * ../dialog/dialog.module.css with the variant classes below) - this file
  * only adds the edge-anchored geometries, each composing the Slide recipe
@@ -8,17 +9,25 @@
  * position: fixed to escape that centering and anchor to an edge instead.
  */
 
-.right {
-  composes: slideRight from "../../styles/motion.module.css";
+/* The two vertical edges differ only in which side they anchor to, the
+ * border they drop and the direction of the shadow; everything else is one
+ * geometry. */
+.edgeVertical {
   position: fixed;
   top: 0;
-  right: 0;
-  height: 100vh;
-  width: min(var(--sheet-inline-size), 100vw);
+  width: min(var(--sheet-inline-size), calc(100vw - var(--home-safe-left, 0px) - var(--home-safe-right, 0px)));
   border-radius: 0;
   border-top: none;
-  border-right: none;
   border-bottom: none;
+}
+
+.right {
+  composes: edgeVertical;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: slideRight from "../../styles/motion.module.css";
+  right: var(--home-safe-right, 0px);
+  height: 100vh;
+  border-right: none;
   /* .panel's --shadow-modal falls downward, which suits only the centered
    * dialog; each edge variant redirects the same geometry toward its one
    * visible edge so the shadow actually reads. */
@@ -28,28 +37,38 @@
 .bottom {
   composes: slideBottom from "../../styles/motion.module.css";
   position: fixed;
-  left: 0;
+  left: var(--home-safe-left, 0px);
   bottom: 0;
-  width: 100vw;
+  right: var(--home-safe-right, 0px);
+  width: auto;
   max-height: min(480px, 100vh);
   border-radius: var(--radius-panel) var(--radius-panel) 0 0;
   border-left: none;
   border-right: none;
   border-bottom: none;
   box-shadow: 0 -16px 40px var(--shadow-color);
+  /* Keeps a swipe that reaches the sheet's scroll edge from scrolling the
+   * page behind it. */
+  overscroll-behavior-y: contain;
+}
+
+/* The body is the sheet's scrollport: containing its overscroll keeps a
+ * downward swipe there owned by the sheet instead of the page. */
+.bottomBody {
+  overscroll-behavior-y: contain;
+}
+
+:global(body[data-iphone-glass]) .bottom {
+  border-radius: var(--glass-radius) var(--glass-radius) 0 0;
 }
 
 .left {
+  composes: edgeVertical;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
   composes: slideLeft from "../../styles/motion.module.css";
-  position: fixed;
-  top: 0;
-  left: 0;
+  left: var(--home-safe-left, 0px);
   height: 100vh;
-  width: min(var(--sheet-inline-size), 100vw);
-  border-radius: 0;
-  border-top: none;
   border-left: none;
-  border-bottom: none;
   box-shadow: 16px 0 40px var(--shadow-color);
 }
 
@@ -72,24 +91,6 @@
   --sheet-inline-size: calc((24rem * 2) + var(--space-3) + (var(--space-3) * 2));
 }
 
-/* --- expandable bottom Sheet (Task 2) -------------------------------------
- * A bottom-anchored Sheet can opt into a peek/full geometry: a drag handle
- * at the top toggles or drags between a fixed peek height and full viewport
- * height. .expandableBottom animates the height change on the Spatial
- * budget (user-initiated geometry); .expandableHeader
- * stays pinned so it survives the body's scroll; .expandableBody gives the
- * inner scroll region a flex column that can actually shrink (min-height:
- * 0) so the content clips instead of overflowing the panel.
- */
-
-.handle {
-  display: flex;
-  justify-content: center;
-  padding: var(--space-2) 0 var(--space-1);
-  cursor: grab;
-  touch-action: none;
-}
-
 .handleBar {
   width: 36px;
   height: 4px;
@@ -97,34 +98,35 @@
   background: var(--ink-low);
 }
 
-.expandableBottom {
-  height: 100vh;
-  /* Override .bottom's max-height: min(480px, 100vh): when expandable, the
-   * panel owns the dynamic height (peek vs full) via an inline style, and
-   * the 480px cap would prevent the "full" (100vh) geometry from ever
-   * filling the screen. .expandableBottom appears after .bottom in the
-   * composed panelClassName and has equal (single-class) specificity, so
-   * this later declaration wins. */
-  max-height: 100vh;
-  transition: height var(--motion-duration-spatial) var(--motion-easing-standard);
+/* The decorative grab pill a bottom Sheet shows above its header on coarse
+ * pointers. It invites the swipe-down gesture and carries onPointerDown for
+ * touch drags, with no role or tab stop. Fine pointers have no swipe gesture to
+ * advertise, so it is hidden for them. */
+.grabHandle {
+  display: none;
+  justify-content: center;
+  padding: var(--space-2) 0 var(--space-1);
+  touch-action: none;
 }
 
-.expandableHeader {
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky-bar);
-  background: var(--surface-inset);
+/* Prevents touch browsers from claiming a header downward drag for panning or
+ * selection and firing pointercancel before pointermove starts. */
+.bottomHeader {
+  touch-action: none;
 }
 
-.expandableBody {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+@media (any-pointer: coarse) {
+  .grabHandle {
+    display: flex;
+  }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .expandableBottom {
-    transition: none;
+/* While open and not actively dragged, clearing an inline drag transform
+ * glides the sheet back to rest on the spatial exit budget. Dragging sets
+ * data-swiping="true" so the panel tracks the finger 1:1, and closing flips
+ * data-motion to "closing" so the exit recipe owns the motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .bottom[data-motion="open"]:not([data-swiping="true"]) {
+    transition: transform var(--motion-duration-spatial-exit) var(--motion-easing-standard);
   }
 }

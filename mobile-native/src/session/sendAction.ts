@@ -56,8 +56,7 @@ export function composerPlaceholder(action: SendAction, questionPending: boolean
 	return "Message";
 }
 
-/** Send is a paper airplane, so its accessibility label says what pressing it
- * does: offline, that it waits for the connection (ruling 14). */
+/** Send's accessibility label names the action and whether it will wait for a connection. */
 export function sendLabel(action: SendAction, questionPending: boolean, connected = true): string {
 	if (!connected) return questionPending ? "Send answer when you're back online" : "Send when you're back online";
 	if (questionPending) return "Send answer";

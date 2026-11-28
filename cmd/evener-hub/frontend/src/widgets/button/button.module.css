@@ -9,7 +9,7 @@
    * nowrap makes the label's min-content its full width, which a flex parent
    * then cannot shrink below (min-width:auto) - the label always fits. */
   white-space: nowrap;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-pill);
   border: 1px solid transparent;
   font-family: var(--font-sans);
   font-weight: var(--font-weight-medium);
@@ -48,9 +48,18 @@
 }
 
 .icon {
-  display: inline-flex;
+  display: inline-grid;
+  grid: 100% / 100%;
+  place-items: center;
+  line-height: 0;
   width: 1em;
   height: 1em;
+}
+
+/* The inline button aligns by its box even when its icon has a taller
+ * drawing. Its tooltip wrapper must not grow with the glyph's baseline. */
+.button:where(:not(.link)) {
+  vertical-align: middle;
 }
 
 /* --- sizes -------------------------------------------------------- */
@@ -217,6 +226,16 @@
   min-height: 32px;
 }
 
+/* --- block ---------------------------------------------------------
+ * Opt-in full-width layout for a button that is its row's whole control
+ * (a sheet's stacked actions, the rail's New session). It replaces the
+ * caller's one-purpose grid/flex wrapper; width is the only thing those
+ * wrappers changed, so the variant, size, height, and centered label all
+ * stay. A link is inline text and ignores it, like wrap. */
+.block {
+  width: 100%;
+}
+
 /* Tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
  * min-height, not height - the desktop heights above stay the desktop sizing
  * rule and this only ever grows them to the 44px --tap-min declared in
@@ -232,5 +251,19 @@
   }
   .md {
     min-height: var(--tap-min);
+  }
+  @container (max-width: 559px) {
+    .button[data-compact-action] {
+      min-width: var(--tap-min);
+    }
+  }
+}
+
+/* Where the composer hides the label, give Send, Stop and Start the same
+ * circular slot for both pointer and touch input. */
+@container (max-width: 559px) {
+  .button[data-compact-action] {
+    aspect-ratio: 1;
+    padding-inline: 0;
   }
 }

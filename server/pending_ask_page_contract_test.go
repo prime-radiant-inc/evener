@@ -13,7 +13,7 @@ import (
 func TestPendingAskPageFencesAndIteration(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", "root")
+	setAppIdentity(t, s, "local", "root")
 	state := &appwire.PendingAskState{Version: 1, InstanceID: "root", BootGeneration: "2", Revision: 3, CalllessCount: 2, CompositeTotal: 3, Calls: []appwire.PendingAskCall{{TurnID: "t1", CallID: "a"}, {TurnID: "t2", CallID: "b"}, {TurnID: "t2", CallID: "c"}}}
 	s.SetThreadEnvelopeSource(&pendingAskEnvelopeSource{sample: func() *appwire.PendingAskState { return state }})
 	s.RefreshThreadEnvelope()

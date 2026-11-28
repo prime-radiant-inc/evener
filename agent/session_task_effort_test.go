@@ -219,7 +219,7 @@ func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) 
 				seed.Close()
 				t.Fatalf("Append: %v", err)
 			}
-			if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+			if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 				seed.Close()
 				t.Fatalf("Update: %v", err)
 			}
@@ -410,11 +410,10 @@ func TestSession_TaskEffortInherit_KeepsSessionEffort(t *testing.T) {
 	}
 }
 
-// Once loop detection escalates the session's effort ("Your reasoning effort
-// has been increased"), a lower per-task override must not silently undo the
-// escalation — the effective effort is the higher-ranked of the escalated
-// config and the task override, so the message never lies.
-func TestSession_LoopDetectEscalation_WinsOverLowerTaskEffort(t *testing.T) {
+// Loop detection steers the model toward a different approach, but it must not
+// silently raise the session's reasoning effort. A lower per-task override
+// therefore stays in effect for the round after a detection.
+func TestSession_LoopDetect_DoesNotEscalateTaskEffort(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -440,8 +439,11 @@ func TestSession_LoopDetectEscalation_WinsOverLowerTaskEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The loop detector fires: first escalation bumps effort medium -> high.
+	// The loop detector fires. It steers, and leaves the configured effort alone.
 	_ = sess.stuckEscalation(1)
+	if got := sess.cfg.ReasoningEffort; got != "medium" {
+		t.Fatalf("ReasoningEffort after loop detection = %q, want %q (no hidden escalation)", got, "medium")
+	}
 
 	if _, err := sess.ProcessInput(ctx, "keep going", nil); err != nil {
 		t.Fatal(err)
@@ -455,8 +457,8 @@ func TestSession_LoopDetectEscalation_WinsOverLowerTaskEffort(t *testing.T) {
 	if got[2] != "low" {
 		t.Fatalf("request efforts = %v, want request 2 at task override %q (no escalation active yet)", got, "low")
 	}
-	if got[3] != "high" {
-		t.Fatalf("request efforts = %v, want request 3 at escalated %q (escalation must beat a lower task override)", got, "high")
+	if got[3] != "low" {
+		t.Fatalf("request efforts = %v, want request 3 at task override %q (loop detection must not escalate effort)", got, "low")
 	}
 }
 
@@ -464,21 +466,17 @@ func TestEffectiveReasoningEffort(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		cfg, override string
-		escalated     bool
 		want          string
 	}{
-		{"max", "", false, "max"},
-		{"max", "low", false, "low"},
-		{"max", "low", true, "max"},
-		{"low", "high", true, "high"},
-		{"max", "", true, "max"},
-		{"", "low", false, "low"},
-		{"", "low", true, "low"},
-		{"", "", false, ""},
+		{"max", "", "max"},
+		{"max", "low", "low"},
+		{"low", "high", "high"},
+		{"", "low", "low"},
+		{"", "", ""},
 	}
 	for _, tc := range cases {
-		if got := effectiveReasoningEffort(tc.cfg, tc.override, tc.escalated); got != tc.want {
-			t.Errorf("effectiveReasoningEffort(%q, %q, %v) = %q, want %q", tc.cfg, tc.override, tc.escalated, got, tc.want)
+		if got := effectiveReasoningEffort(tc.cfg, tc.override); got != tc.want {
+			t.Errorf("effectiveReasoningEffort(%q, %q) = %q, want %q", tc.cfg, tc.override, got, tc.want)
 		}
 	}
 }
@@ -507,7 +505,7 @@ func TestSession_TaskEffortSurvivesCompaction(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("append task: %v", err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
 
@@ -550,7 +548,7 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("append task: %v", err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
 	ctx := context.Background()
@@ -590,7 +588,7 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	}
 }
 
-func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
+func TestSession_LoopDetect_NoEscalationSurvivesResume(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	c := llm.NewClient()
@@ -612,7 +610,7 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("append task: %v", err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
 	ctx := context.Background()
@@ -620,6 +618,9 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = sess.stuckEscalation(1)
+	if got := sess.cfg.ReasoningEffort; got != "medium" {
+		t.Fatalf("ReasoningEffort after loop detection = %q, want %q (no hidden escalation)", got, "medium")
+	}
 	sess.maybeAutoSave()
 	sessionID := sess.id
 	sess.Close()
@@ -633,6 +634,9 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
 	defer restored.Close()
+	if got := restored.cfg.ReasoningEffort; got != "medium" {
+		t.Fatalf("resumed ReasoningEffort = %q, want %q (no sticky escalation)", got, "medium")
+	}
 	if _, err := restored.ProcessInput(ctx, "continue after escalation", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -640,8 +644,8 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 	if len(reqs) != 2 {
 		t.Fatalf("expected two requests across escalation resume, got %d (efforts=%v)", len(reqs), requestEfforts(t, reqs))
 	}
-	if got := requestEfforts(t, reqs)[1]; got != "high" {
-		t.Fatalf("resumed request effort = %q, want sticky escalated effort %q", got, "high")
+	if got := requestEfforts(t, reqs)[1]; got != "low" {
+		t.Fatalf("resumed request effort = %q, want the task override %q (loop detection must not escalate effort)", got, "low")
 	}
 }
 

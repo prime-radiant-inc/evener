@@ -1,22 +1,16 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  max-width: 720px;
+  composes: stack4 from "../../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: sectionMeasure from "../../../styles/surface.module.css";
 }
 
 .help {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
+  composes: helpUi from "../../../styles/help.module.css";
 }
 
 .list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  composes: stack2 from "../../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: listReset from "../../../styles/surface.module.css";
 }
 

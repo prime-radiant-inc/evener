@@ -1573,6 +1573,21 @@ func TestValidateProviderCredentials_CuratedImplicitWithoutCredential(t *testing
 			}
 		})
 	}
+
+	// A signed-out Copilot launch must offer its device sign-in, not a key the
+	// transport never reads.
+	t.Run("github-copilot", func(t *testing.T) {
+		reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
+		err := validateProviderCredentials("github-copilot", "", reg)
+		assertHubLaunchError(t, err)
+		refusal, ok := errors.AsType[*launchCredentialError](err)
+		if !ok || refusal.target != "github-copilot" || refusal.scheme != registry.AuthOAuthGitHubCopilot {
+			t.Fatalf("the refusal judges github-copilot's Copilot sign-in: %v", err)
+		}
+		if refusal.remedy != remedyCopilotLogin {
+			t.Fatalf("the refusal offers the Copilot device sign-in (remedy %v): %v", refusal.remedy, err)
+		}
+	})
 }
 
 // TestValidateProviderCredentials_UnknownInstance covers a name the registry
@@ -1583,6 +1598,29 @@ func TestValidateProviderCredentials_UnknownInstance(t *testing.T) {
 	assertHubLaunchError(t, err)
 	if refusal, ok := errors.AsType[*launchCredentialError](err); !ok || refusal.target != "nowhere" || refusal.remedy != remedyDeclareInstance {
 		t.Fatalf("the refusal says how to declare the instance: %v", err)
+	}
+}
+
+// TestValidateProviderCredentials_BrokenUserProvider surfaces the isolated
+// provider's own load error rather than reporting it as undeclared or letting
+// it fall through to a curated implicit provider of the same name, while a
+// healthy sibling still passes.
+func TestValidateProviderCredentials_BrokenUserProvider(t *testing.T) {
+	reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"OPENAI_API_KEY": "sk-openai"}, map[string]registry.Provider{
+		"kimi":   {Base: "not-a-registry-id"},
+		"openai": {Base: "not-a-registry-id"},
+		"work":   {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"}, APIKey: "sk-work"},
+	})
+	for _, broken := range []string{"kimi", "openai"} {
+		err := validateProviderCredentials(broken, broken+"/any-model", reg)
+		assertHubLaunchError(t, err)
+		loadErr, ok := errors.AsType[*registry.ProviderLoadError](err)
+		if !ok || loadErr.Provider != broken {
+			t.Fatalf("validateProviderCredentials(%q) = %v (%T), want *registry.ProviderLoadError for %q", broken, err, err, broken)
+		}
+	}
+	if err := validateProviderCredentials("work", "work/house", reg); err != nil {
+		t.Fatalf("healthy sibling work refused alongside broken providers: %v", err)
 	}
 }
 
@@ -1905,4 +1943,220 @@ func TestEvenerLaunchCheckEntryPointsShareFailureHandling(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestHubSpawnerFastCheapCredentialPreflight(t *testing.T) {
+	t.Parallel()
+	const primaryModel = "primary/main-model"
+	writeStubEvener := func(t *testing.T, dir, execMarker string) string {
+		t.Helper()
+		bin := filepath.Join(dir, "fake-evener")
+		script := "#!/bin/sh\n" +
+			": > \"" + execMarker + "\"\n" +
+			"if [ \"$1\" = \"launch-check\" ]; then\n" +
+			"  printf '{\"protocol\":\"" + appwire.ProtocolVersion + "\",\"launch_flags\":[\"api-log\"]}\\n'\n" +
+			"  exit 0\n" +
+			"fi\n" +
+			"if [ \"$1\" = \"serve\" ]; then\n" +
+			"  mkdir -p \"$EVENER_RUN_DIR\"\n" +
+			"  printf '{\"pid\":%s,\"address\":\"127.0.0.1:1\",\"started_at\":\"2999-01-01T00:00:00Z\"}\\n' \"$$\" > \"$EVENER_RUN_DIR/$$.json\"\n" +
+			"  sleep 1\n" +
+			"  exit 0\n" +
+			"fi\n" +
+			"exit 2\n"
+		writeFakeEvener(t, bin, script)
+		return bin
+	}
+
+	t.Run("missing credential on implicit and explicit cross-provider fails pre-exec without launching child", func(t *testing.T) {
+		for _, tc := range []struct {
+			name           string
+			fastCheapModel string
+			wantTarget     string
+			wantRemedy     launchRemedy
+		}{
+			{
+				name:           "implicit provider without credential",
+				fastCheapModel: "anthropic/claude-haiku-4-5-20251001",
+				wantTarget:     "anthropic",
+				wantRemedy:     remedyAPIKey,
+			},
+			{
+				name:           "explicit instance without credential",
+				fastCheapModel: "work/claude-haiku-4-5-20251001",
+				wantTarget:     "work/claude-haiku-4-5-20251001",
+				wantRemedy:     remedyInstanceCredential,
+			},
+			{
+				name:           "unknown provider",
+				fastCheapModel: "nowhere/cheap-model",
+				wantTarget:     "nowhere",
+				wantRemedy:     remedyDeclareInstance,
+			},
+			{
+				name:           "cross-provider multi-slash model without credential",
+				fastCheapModel: "openrouter/anthropic/claude-haiku-4-5",
+				wantTarget:     "openrouter",
+				wantRemedy:     remedyAPIKey,
+			},
+			{
+				name:           "cross-provider row without credential despite credentialed default",
+				fastCheapModel: "gw/bare-model",
+				wantTarget:     "gw/bare-model",
+				wantRemedy:     remedyInstanceCredential,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				execMarker := filepath.Join(dir, "evener-executed")
+				bin := writeStubEvener(t, dir, execMarker)
+				reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"PRIMARY_KEY": "pk"}, map[string]registry.Provider{
+					"primary": {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"}, APIKeyEnv: []string{"PRIMARY_KEY"}},
+					"work":    {Base: "anthropic", APIKeyEnv: []string{"WORK_KEY"}},
+					"gw": {
+						Base:              "openai-compatible",
+						Transport:         registry.Transport{BaseURL: "http://127.0.0.1:9/v1", Auth: registry.AuthHeader, AuthHeader: "X-Provider-Key"},
+						CredentialHeaders: map[string]string{"Authorization": "$PRIMARY_KEY"},
+						DefaultModel:      "house-model",
+						Models: map[string]registry.Model{
+							"house-model": {Transport: &registry.Transport{AuthHeader: "Authorization"}},
+							"bare-model":  {},
+						},
+					},
+				})
+				spawner := HubSpawner{
+					Cfg:          DefaultConfig(),
+					EvenerBinary: bin,
+					RunDir:       filepath.Join(dir, "run"),
+					Registry:     reg,
+				}
+				_, err := spawner.Spawn(t.Context(), hubcore.SpawnRequest{
+					Provider:   "primary",
+					StateDir:   filepath.Join(dir, "state"),
+					WorkingDir: dir,
+					Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+						Model:          primaryModel,
+						FastCheapModel: tc.fastCheapModel,
+					}},
+				})
+				if err == nil {
+					t.Fatalf("Spawn succeeded with uncredentialed fast_cheap_model=%q", tc.fastCheapModel)
+				}
+				if _, pre := errors.AsType[preExecSpawnError](err); !pre {
+					t.Fatalf("Spawn err = %T (%v), want preExecSpawnError", err, err)
+				}
+				refusal, ok := errors.AsType[*launchCredentialError](err)
+				if !ok || refusal.target != tc.wantTarget || refusal.remedy != tc.wantRemedy {
+					t.Fatalf("refusal = %+v (err=%v), want target=%q remedy=%v", refusal, err, tc.wantTarget, tc.wantRemedy)
+				}
+				if _, statErr := os.Stat(execMarker); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("evener binary executed despite preflight refusal (stat=%v)", statErr)
+				}
+			})
+		}
+	})
+
+	t.Run("adding stored credential clears refusal and allows spawn", func(t *testing.T) {
+		dir := t.TempDir()
+		execMarker := filepath.Join(dir, "evener-executed")
+		bin := writeStubEvener(t, dir, execMarker)
+		store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"PRIMARY_KEY": "pk"}, map[string]registry.Provider{
+			"primary": {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"}, APIKeyEnv: []string{"PRIMARY_KEY"}},
+		}, store)
+		spawner := HubSpawner{
+			Cfg:          DefaultConfig(),
+			EvenerBinary: bin,
+			RunDir:       filepath.Join(dir, "run"),
+			Registry:     reg,
+		}
+		req := hubcore.SpawnRequest{
+			Provider:   "primary",
+			StateDir:   filepath.Join(dir, "state"),
+			WorkingDir: dir,
+			Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+				Model:          primaryModel,
+				FastCheapModel: "anthropic/claude-haiku-4-5-20251001",
+			}},
+		}
+		_, err = spawner.Spawn(t.Context(), req)
+		if _, pre := errors.AsType[preExecSpawnError](err); !pre {
+			t.Fatalf("initial Spawn err = %T (%v), want preExecSpawnError", err, err)
+		}
+		if err := store.Set("anthropic", "sk-ant-stored"); err != nil {
+			t.Fatal(err)
+		}
+		if err := reg.Reload(); err != nil {
+			t.Fatal(err)
+		}
+		entry, err := spawner.Spawn(t.Context(), req)
+		if err != nil {
+			t.Fatalf("Spawn after adding credential: %v", err)
+		}
+		if proc, findErr := os.FindProcess(entry.PID); findErr == nil {
+			_ = proc.Kill()
+		}
+	})
+
+	t.Run("accepted fast/cheap states pass preflight", func(t *testing.T) {
+		for _, tc := range []struct {
+			name           string
+			fastCheapModel string
+		}{
+			{name: "empty", fastCheapModel: ""},
+			{name: "whitespace", fastCheapModel: "   "},
+			{name: "bare off token", fastCheapModel: "off"},
+			{name: "bare none token", fastCheapModel: "none"},
+			{name: "bare disabled token", fastCheapModel: "disabled"},
+			{name: "bare model inherits primary", fastCheapModel: "fast-model"},
+			{name: "equals primary", fastCheapModel: primaryModel},
+			{name: "same provider different model", fastCheapModel: "primary/fast-model"},
+			{name: "same provider case-insensitive", fastCheapModel: "Primary/fast-model"},
+			{name: "keyless implicit ollama", fastCheapModel: "ollama/llama3"},
+			{name: "explicit auth none instance", fastCheapModel: "localnone/cheap"},
+			{name: "row-level auth none override", fastCheapModel: "gw/free-row"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				execMarker := filepath.Join(dir, "evener-executed")
+				bin := writeStubEvener(t, dir, execMarker)
+				reg := newSpawnGateRegistry(t, t.TempDir(), map[string]string{"PRIMARY_KEY": "pk"}, map[string]registry.Provider{
+					"primary":   {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"}, APIKeyEnv: []string{"PRIMARY_KEY"}},
+					"localnone": {Base: "openai-compatible", Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1", Auth: registry.AuthNone}},
+					"gw": {
+						Base:              "openai-compatible",
+						Transport:         registry.Transport{BaseURL: "http://127.0.0.1:9/v1", Auth: registry.AuthHeader, AuthHeader: "X-K"},
+						CredentialHeaders: map[string]string{"X-K": "$MISSING"},
+						Models: map[string]registry.Model{
+							"free-row": {Transport: &registry.Transport{Auth: registry.AuthNone}},
+						},
+					},
+				})
+				spawner := HubSpawner{
+					Cfg:          DefaultConfig(),
+					EvenerBinary: bin,
+					RunDir:       filepath.Join(dir, "run"),
+					Registry:     reg,
+				}
+				entry, err := spawner.Spawn(t.Context(), hubcore.SpawnRequest{
+					Provider:   "primary",
+					StateDir:   filepath.Join(dir, "state"),
+					WorkingDir: dir,
+					Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+						Model:          primaryModel,
+						FastCheapModel: tc.fastCheapModel,
+					}},
+				})
+				if err != nil {
+					t.Fatalf("Spawn(%q): %v", tc.fastCheapModel, err)
+				}
+				if proc, findErr := os.FindProcess(entry.PID); findErr == nil {
+					_ = proc.Kill()
+				}
+			})
+		}
+	})
 }

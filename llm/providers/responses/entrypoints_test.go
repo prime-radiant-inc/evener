@@ -49,21 +49,24 @@ func TestEntrypointsPropagateBuildErrors(t *testing.T) {
 	}
 }
 
-// TestStampResponseIDHashOnRawlessResponse pins the defensive arm of
-// stampResponseIDHash: a response whose Raw map is still nil gets one so the
-// id_hash can be recorded.
-func TestStampResponseIDHashOnRawlessResponse(t *testing.T) {
+// TestStampsResponseIDHashFromProtocolHasher pins the process-wide fallback:
+// a context carrying no hasher still stamps through the Protocol's own
+// Hasher, so the helper's fallback arm is reached from the wire path.
+func TestStampsResponseIDHashFromProtocolHasher(t *testing.T) {
 	t.Parallel()
 	hasher := llm.NewContinuationHasher([]byte("fuzz-secret"))
-	want, err := hasher.HashContinuationHandle("response_id", "resp_x")
+	want, err := hasher.HashContinuationHandle("response_id", "resp_1")
 	if err != nil {
 		t.Fatalf("HashContinuationHandle: %v", err)
 	}
-	p := &Protocol{Hasher: hasher}
-	resp := llm.Response{ID: "resp_x"} // Raw intentionally nil
-	p.stampResponseIDHash(context.Background(), &resp)
-	if resp.Raw == nil {
-		t.Fatal("a nil Raw map must be initialized before stamping")
+	srv, _ := server(t, 200, responseJSON)
+	p := &Protocol{Client: srv.Client(), Hasher: hasher}
+	resp, err := p.Complete(context.Background(), userReq("hi"), liveRes(srv, openaiCaps))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != "resp_1" {
+		t.Fatalf("id = %q, want the fixture's resp_1", resp.ID)
 	}
 	if resp.Raw["id_hash"] != want {
 		t.Fatalf("id_hash = %v, want %q", resp.Raw["id_hash"], want)

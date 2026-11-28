@@ -54,8 +54,8 @@ func TestOpeningATranscriptWhileItIsCreatedSharesItsTail(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open transcript while it is created: %v", err)
 		}
-		if err := opener.AppendDurable(steeringTurn("opener")); err != nil {
-			t.Fatalf("opener AppendDurable: %v", err)
+		if _, err := opener.Record(steeringTurn("opener"), RecordOptions{Door: DoorDurable}); err != nil {
+			t.Fatalf("opener Record(DoorDurable): %v", err)
 		}
 	}}
 	creator, err := newWriterFS(fs, path, sharedFileHeader, false)
@@ -64,8 +64,8 @@ func TestOpeningATranscriptWhileItIsCreatedSharesItsTail(t *testing.T) {
 	}
 	defer creator.Close() //nolint:errcheck // assertion fixture
 	defer opener.Close()  //nolint:errcheck // assertion fixture
-	if err := creator.Append(steeringTurn("creator")); err != nil {
-		t.Fatalf("creator Append: %v", err)
+	if _, err := creator.Record(steeringTurn("creator"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("creator Record: %v", err)
 	}
 	requireOneSequenceInFileOrder(t, path, []string{"opener", "creator"})
 }
@@ -85,8 +85,8 @@ func TestConcurrentCreatesOfOneTranscriptLetOneWin(t *testing.T) {
 		t.Fatalf("first create: %v", err)
 	}
 	defer first.Close() //nolint:errcheck // assertion fixture
-	if err := first.Append(steeringTurn("first")); err != nil {
-		t.Fatalf("first Append: %v", err)
+	if _, err := first.Record(steeringTurn("first"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("first Record: %v", err)
 	}
 	requireOneSequenceInFileOrder(t, path, []string{"first"})
 }
@@ -110,23 +110,23 @@ func TestRollbackThenAnotherWriterAppendsKeepsOneSequence(t *testing.T) {
 	other := openSharedFileWriter(t, path)
 	defer other.Close() //nolint:errcheck // assertion fixture
 
-	if err := failing.Append(steeringTurn("failing before")); err != nil {
-		t.Fatalf("failing Append: %v", err)
+	if _, err := failing.Record(steeringTurn("failing before"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("failing Record: %v", err)
 	}
-	if err := other.Append(steeringTurn("other before")); err != nil {
-		t.Fatalf("other Append: %v", err)
+	if _, err := other.Record(steeringTurn("other before"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("other Record: %v", err)
 	}
 	realFile := failing.file
 	failing.file = syncFailsFile{realFile}
-	if err := failing.AppendDurable(steeringTurn("rolled back")); !errors.Is(err, errInjectedSync) {
-		t.Fatalf("AppendDurable with failing fsync = %v, want the injected failure", err)
+	if _, err := failing.Record(steeringTurn("rolled back"), RecordOptions{Door: DoorDurable}); !errors.Is(err, errInjectedSync) {
+		t.Fatalf("Record(DoorDurable) with failing fsync = %v, want the injected failure", err)
 	}
 	failing.file = realFile
-	if err := other.Append(steeringTurn("other after")); err != nil {
-		t.Fatalf("other Append after rollback: %v", err)
+	if _, err := other.Record(steeringTurn("other after"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("other Record after rollback: %v", err)
 	}
-	if err := failing.Append(steeringTurn("failing after")); err != nil {
-		t.Fatalf("failing Append after rollback: %v", err)
+	if _, err := failing.Record(steeringTurn("failing after"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("failing Record after rollback: %v", err)
 	}
 	var got []string
 	for _, entry := range readSharedFileEntries(t, path) {
@@ -199,12 +199,12 @@ func TestPartialLineFromOneWriterPoisonsEveryWriterOnTheFile(t *testing.T) {
 
 	realFile := broken.file
 	broken.file = &partialWriteFile{File: realFile, transferBeforeFailure: 10, writeFailure: errors.New("injected short write")}
-	if err := broken.Append(steeringTurn("partial")); err == nil {
-		t.Fatal("Append with a short write succeeded")
+	if _, err := broken.Record(steeringTurn("partial"), RecordOptions{Door: DoorBuffered}); err == nil {
+		t.Fatal("Record with a short write succeeded")
 	}
 	broken.file = realFile
-	if err := other.Append(steeringTurn("after the broken bytes")); !errors.Is(err, ErrWriterPoisoned) {
-		t.Fatalf("other writer's Append after a partial line = %v, want ErrWriterPoisoned", err)
+	if _, err := other.Record(steeringTurn("after the broken bytes"), RecordOptions{Door: DoorBuffered}); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("other writer's Record after a partial line = %v, want ErrWriterPoisoned", err)
 	}
 	if !other.Poisoned() {
 		t.Fatal("other writer does not report the file's poison")
@@ -212,10 +212,10 @@ func TestPartialLineFromOneWriterPoisonsEveryWriterOnTheFile(t *testing.T) {
 
 	resumed := openSharedFileWriter(t, path)
 	defer resumed.Close() //nolint:errcheck // assertion fixture
-	if err := other.Append(steeringTurn("after resume")); err != nil {
-		t.Fatalf("other writer's Append after a resume truncated the broken bytes: %v", err)
+	if _, err := other.Record(steeringTurn("after resume"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("other writer's Record after a resume truncated the broken bytes: %v", err)
 	}
-	if err := broken.Append(steeringTurn("never")); !errors.Is(err, ErrWriterPoisoned) {
+	if _, err := broken.Record(steeringTurn("never"), RecordOptions{Door: DoorBuffered}); !errors.Is(err, ErrWriterPoisoned) {
 		t.Fatalf("the writer that left the broken bytes = %v, want it to stay poisoned", err)
 	}
 	// The partial append consumed seq 1 though it recorded nothing, so the

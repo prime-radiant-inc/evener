@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -26,7 +25,7 @@ import (
 // server, including thread/clear. Each hook resolves the live session per call,
 // so a thread/clear replacement is never pinned. It returns the envelope
 // source it installed, whose PendingEscalations the startup write reports.
-func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, live *liveSession, bridge *serveBridge, retiring *serveRetirement, rvRegistration *rvreg.Registration, sessionCfg agent.SessionConfig, client *llm.Client, profile *provider.Profile, wd, sd string, logOut io.Writer, workspaceRef string, servedBootGeneration *atomic.Uint64, cancel context.CancelFunc) liveThreadEnvelopeSource {
+func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, live *liveSession, bridge *serveBridge, retiring *serveRetirement, rvRegistration *rvreg.Registration, sessionCfg agent.SessionConfig, client *llm.Client, profile *provider.Profile, wd, sd string, workspaceRef string, servedBootGeneration *atomic.Uint64, cancel context.CancelFunc) liveThreadEnvelopeSource {
 	srv.SetSandboxEscalationResolveFunc(func(id string, approve bool) error {
 		return live.session().ResolveSandboxEscalation(id, approve)
 	})
@@ -119,25 +118,26 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 	srv.SetThreadEnvelopeSource(envelopeSource)
 	srv.SetModelFunc(func(provider, model string) error {
 		sess := live.session()
-		// SetModelOn queues a pick made while a turn runs (applied at the turn
+		// SetModel queues a pick made while a turn runs (applied at the turn
 		// boundary) and applies one made at rest immediately. The provider is
 		// what the picker named: passing it separately keeps a model id that
 		// contains slashes (OpenRouter's "anthropic/...") from deciding the
 		// instance the switch lands on.
-		if err := sess.SetModelOn(provider, model); err != nil {
+		if err := sess.SetModel(provider, model); err != nil {
 			return err
 		}
 		// Refresh the daemon's cached session info for the RPC's own reply
 		// window (G2): the bridge's EventModelChanged effect refreshes it on
 		// its drain goroutine, so a switch that committed at RPC time would
-		// read stale from thread/read until that drain runs. The sampled form
-		// reads the profile inside the write's critical section: a queued
-		// pick's boundary commit racing this refresh cannot have a stale
-		// snapshot installed after the projection already installed the new
-		// model.
+		// read stale from thread/read until that drain runs. ReportedModelRef
+		// reads inside the write's critical section and is acceptance-aware:
+		// a pick accepted mid-turn samples as the queued pair, and one whose
+		// boundary application is mid-validation keeps sampling as that pick,
+		// until a newer pick commits past it, so thread/read reflects the
+		// acceptance now and holds it through the boundary, never regressing
+		// to the pre-pick model between the two or past a committed pick.
 		srv.UpdateSessionInfoFrom(sess.ID(), func() (string, string) {
-			p := sess.Profile()
-			return p.Model(), p.ID()
+			return sess.ReportedModelRef()
 		})
 		return nil
 	})
@@ -342,7 +342,7 @@ func bindServerCallbacks(ctx context.Context, srv serveServer, deps serveDeps, l
 		// since the top of this func keeps the controller resident, so this
 		// cannot fail; the idle interval restarts against the new root.
 		if err := retiring.retirement.AttachRoot(newSess); err != nil {
-			serveLogf(logOut, newSess.ID(), "retirement root re-attach failed: %v", err)
+			serveLogf(deps.serveDiagnosticOut(), newSess.ID(), "retirement root re-attach failed: %v", err)
 		}
 		retiring.observe("root_published", newSess.ID())
 		// The commit above zeroed the envelope with the identity it described.

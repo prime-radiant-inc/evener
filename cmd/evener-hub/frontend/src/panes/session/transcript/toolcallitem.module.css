@@ -1,17 +1,18 @@
-/* One tool call: a row of a tool card (styles/surface.module.css owns the
- * card and the insets every row of one reads). The
- * row owns its whole inset, including the seat column its kind icon sits in,
- * so it lays out the same wherever a card holds it and at every width: the
- * icon's slot pulls one --speaker-gutter left into the padding reserved here
- * (see .rowIconSlot), and the row's text lands one gutter in from the card's
- * inset. A call's own lines sit TIGHT (the row's row-gap below); separate
- * calls are separated by the card's hairline divider plus this padding. */
+/* Tool rows align on the shared transcript reading margin: above 700px their
+ * leading icon pulls into .runContent / .intentGroupItems' --speaker-gutter
+ * while text and evidence sit flush with prose; below 700px the icon leads
+ * inline with no extra horizontal card inset. */
 .call {
   composes: toolRowInsets from "../../../styles/surface.module.css";
   display: flex;
   flex-direction: column;
-  padding: var(--tool-card-row-pad) var(--tool-card-inset);
-  padding-left: calc(var(--tool-card-inset) + var(--speaker-gutter));
+  padding: var(--tool-card-row-pad) 0;
+}
+
+/* Keep a failed call visible even when its evidence is folded. The cross on
+ * its kind icon supplies the status independently of this contrast. */
+.call[data-failed="true"] {
+  background: var(--surface-1);
 }
 
 /* The shared row (ToolRow.tsx) - see that file for the row grammar it
@@ -45,14 +46,13 @@
 /* The visual header is a non-interactive layout wrapper. The real disclosure
  * button is kept separate from the summary line so links and action buttons
  * can remain siblings rather than becoming nested controls. */
+/* The summary trigger and the body-trigger chevron are both native buttons
+ * whose chrome is reset: one reset, declared once. */
+.bodyTrigger,
 .trigger {
   flex: none;
   display: inline-flex;
-  flex-wrap: wrap;
   align-items: baseline;
-  column-gap: var(--space-2);
-  row-gap: 0;
-  min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
@@ -63,6 +63,13 @@
   text-align: left;
   appearance: none;
   cursor: pointer;
+}
+
+.trigger {
+  flex-wrap: wrap;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  min-width: 0;
 }
 
 .row[data-intent="true"] .trigger {
@@ -83,9 +90,14 @@
 /* One semantic disclosure button still owns the full intent-only line,
  * including the chevron after Open. Its visible siblings ignore pointer input;
  * the Open slot opts back in below and already stopPropagates. */
-.intentOverlayTrigger {
+.intentOverlayTrigger,
+.summaryLine[data-body-trigger="true"] .bodyTrigger,
+.row:not([data-intent="true"]) .trigger {
   position: absolute;
   inset: 0;
+}
+
+.intentOverlayTrigger {
   width: 100%;
   height: 100%;
 }
@@ -197,14 +209,21 @@
   flex: 1 1 100%;
 }
 
+/* Below 700px the turn gutter collapses and .rowIconSlot leads inline ahead of
+ * .intent; offset the wrapped second line by one --speaker-gutter so the
+ * verb/target line stays aligned with the rationale above it. */
+@media (max-width: 699px) {
+  .row[data-intent="true"] .summaryLine {
+    margin-left: var(--speaker-gutter);
+  }
+}
+
 /* An intent-less row keeps its visible summary and inline actions as siblings
  * of the disclosure button. The button still owns the whole visual row: its
  * transparent box sits under the summary line, while real links/buttons opt
  * back into pointer hit testing. This restores the old full-row disclosure
  * target without nesting interactive controls. */
 .row:not([data-intent="true"]) .trigger {
-  position: absolute;
-  inset: 0;
   width: 100%;
   height: 100%;
   justify-content: flex-end;
@@ -238,22 +257,6 @@
   outline: var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-control);
-}
-
-.bodyTrigger {
-  flex: none;
-  display: inline-flex;
-  align-items: baseline;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  appearance: none;
-  cursor: pointer;
 }
 
 .bodyTrigger:hover {
@@ -367,29 +370,19 @@
  * avatar-column slot geometry is composed, not restated here, so the seat's
  * arithmetic (slot + margin + column gap = one --speaker-gutter) is the same
  * one the notification head's status glyph uses. The seat alone, without the
- * rail's ambient strength: the slot's --field ground is what sets the glyph
- * back from the text, and half opacity would only fade it into that ground.
- *
- * Positioned, so the glyph paints after that ground (a positioned
- * pseudo-element that precedes it in tree order) rather than under it. */
+ * rail's ambient strength: the glyph sits bare and at full strength. */
 .rowIcon {
   composes: seat from "../../../styles/railseat.module.css";
-  position: relative;
 }
 
-/* The kind icon's slot: the row's first flex item. It carries the pull into
- * the seat column .call reserves (the column is the row's own, so the pull
- * holds at every width), paints the field seat behind the glyph, and is the
- * positioning context the failure cross (Jesse, 2026-10-20) pins to. The
+/* The kind icon's slot: the row's first flex item. Above 700px it pulls one
+ * --speaker-gutter left into the shared avatar column; below 700px it leads
+ * inline. It is also the positioning context the failure cross pins to. The
  * slot's layout box stays one line tall, so the icon pins to the row's first
- * line and a second line sits tight beneath the first; the seat's overhang
- * above and below a one-line row fits inside .call's padding. A clean row
- * renders the slot with only the seat inside it, so success costs no extra
- * column. */
+ * line and a second line sits tight beneath the first. */
 .rowIconSlot {
-  composes: columnPull from "../../../styles/railseat.module.css";
-  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
-  composes: fieldSeatBehind from "../../../styles/surface.module.css";
+  composes: gutterPull from "../../../styles/railseat.module.css";
+  position: relative;
   /* ToolRow's ROW_ICON_SIZE, which it also passes to ToolIcon. The seat
    * centres that square box in its wider avatar column, and the badge anchors
    * to the GLYPH's corner rather than the seat's. Two spellings of one number
@@ -483,8 +476,6 @@
 }
 
 .summaryLine[data-body-trigger="true"] .bodyTrigger {
-  position: absolute;
-  inset: 0;
   justify-content: flex-end;
   overflow: hidden;
 }
@@ -528,20 +519,16 @@
 }
 
 .clampedHead {
+  composes: truncate from "../../../styles/text.module.css";
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .clampedTail {
+  composes: truncate from "../../../styles/text.module.css";
   flex: none;
   max-width: 60%;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The row's trailing affordance (e.g. "Open beside"), riding INLINE at the
@@ -666,16 +653,6 @@
   align-items: center;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .chevron > svg {
-    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
-  }
-}
-
-.chevron[data-open="true"] > svg {
-  transform: rotate(90deg);
-}
-
 /* The .bodyTrigger button's chevron has no preceding text, so the default
  * margin-left (designed for chevrons after inline text) is removed to
  * prevent the button from adding 8px to the row's width. */
@@ -699,23 +676,13 @@
   z-index: var(--z-raised);
 }
 
-/* The evidence band: an inset ground running edge to edge inside the card
- * under the row it belongs to, closed off by one hairline above. It bleeds
- * through .call's own padding to the card's edges and takes the card's lower
- * corners when it is the last thing in it, so the band never draws a card of
- * its own inside the card. Native renderers keep their own output boundaries.
- * Size is deliberately not declared: the Markdown widget composes with its
- * host (1em fallback), so a renderer's text inherits the ambient body step
- * (see widgets/markdown). The band fades in as it opens (the reveal recipe);
- * closing is instant. */
+/* Expanded evidence has its own inset ground, flush with the row edges.
+ * Native renderers keep their bounds and inherit the ambient type size. */
 .body {
   composes: bodyReveal from "../../../styles/motion.module.css";
-  margin: var(--tool-card-row-pad) calc(-1 * var(--tool-card-inset)) calc(-1 * var(--tool-card-row-pad))
-    calc(-1 * (var(--tool-card-inset) + var(--speaker-gutter)));
+  margin: var(--tool-card-row-pad) 0 calc(-1 * var(--tool-card-row-pad));
   padding: var(--tool-card-inset);
   border-top: 1px solid var(--edge);
-  border-bottom-left-radius: inherit;
-  border-bottom-right-radius: inherit;
   background: var(--surface-inset);
   min-width: 0;
 }

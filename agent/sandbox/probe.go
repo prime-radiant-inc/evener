@@ -26,8 +26,8 @@ import (
 // HostFacts are the backend-relevant capabilities of the host, gathered once at
 // session start. They are plain data so the resolver stays a pure function of
 // (policy, facts, cwd): the real prober fills them by probing the kernel/binaries;
-// unit tests inject a FakeProber and never touch the host. The three fields that
-// matter to the fail-closed floor are OS, BwrapCapable, and (macOS)
+// unit tests inject a sandboxtest.FakeProber and never touch the host. The three
+// fields that matter to the fail-closed floor are OS, BwrapCapable, and (macOS)
 // SandboxExecPath.
 type HostFacts struct {
 	// OS is runtime.GOOS: "linux", "darwin", "windows", …. Sandboxing is only
@@ -52,7 +52,7 @@ type HostFacts struct {
 	// trivial fully namespaced sandbox and reports true only if it exits 0, so a
 	// host with apparmor_restrict_unprivileged_userns=1 (which `--version` fine but
 	// cannot namespace) reports false and the floor refuses. Tests set it directly
-	// via FakeProber.
+	// via sandboxtest.FakeProber.
 	BwrapCapable bool
 
 	// OverlaySupported reports that bwrap can mount a read-real/write-private
@@ -330,19 +330,10 @@ func (h HostFacts) SeatbeltAvailable() bool {
 }
 
 // Prober produces HostFacts. Injecting it keeps the resolver's tests hermetic:
-// FakeProber returns canned facts, RealProber probes the live host (opt-in).
+// sandboxtest.FakeProber returns canned facts, RealProber probes the live host.
 type Prober interface {
 	Probe() HostFacts
 }
-
-// FakeProber returns fixed HostFacts. It is the only prober used on the unit
-// path, so no unit test ever shells out to bwrap.
-type FakeProber struct {
-	Facts HostFacts
-}
-
-// Probe returns the canned facts.
-func (f FakeProber) Probe() HostFacts { return f.Facts }
 
 // RealProber probes the live host. It is used only behind explicit opt-in (the
 // gated TestRealProberOptIn / eventual production wiring in M3+): the unit path
@@ -955,7 +946,7 @@ func environValue(environ []string, name string) (string, bool) {
 // parseGitCeilingDirs parses GIT_CEILING_DIRECTORIES for the workspace search:
 // absolute directories only, relative entries ignored as git ignores them. Each
 // is resolved so the walk compares it against the same spelling
-// ClassifyWorkspaceWithCeilings uses.
+// ClassifyWorkspace uses.
 func parseGitCeilingDirs(value string) []string {
 	if value == "" {
 		return nil

@@ -173,6 +173,9 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 					continue
 				}
 				if p.ToolResult.Name == resultToolName {
+					if state, ok := schema.DecodeCommunicateToolState(p.ToolResult.ToolState); ok && (state.IsQuiet() || state.Accepted != nil && !*state.Accepted) {
+						continue
+					}
 					endTurn, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
 					if endTurn && msg != "" && !p.ToolResult.IsError {
 						data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: msg})
@@ -182,8 +185,12 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			}
 
 		case schema.TurnAssistant:
-			// Capture assistant analytical text as working notes.
-			if text := t.Message.Text(); len(text) > 50 {
+			if t.AcceptedReply {
+				if text := strings.TrimSpace(t.Message.Text()); text != "" {
+					data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: text})
+				}
+			} else if text := t.Message.Text(); len(text) > 50 {
+				// Capture assistant analytical text as working notes.
 				note := text
 				if len(note) > 500 {
 					note = note[:500] + "..."
@@ -321,18 +328,9 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	}
 
 	// Activated skills.
-	allSkills := map[string]bool{}
-	for s := range data.activatedSkills {
-		allSkills[s] = true
-	}
-	if meta != nil {
-		for _, s := range meta.ActivatedSkills {
-			allSkills[s] = true
-		}
-	}
-	if len(allSkills) > 0 {
-		skillNames := make([]string, 0, len(allSkills))
-		for s := range allSkills {
+	if len(data.activatedSkills) > 0 {
+		skillNames := make([]string, 0, len(data.activatedSkills))
+		for s := range data.activatedSkills {
 			skillNames = append(skillNames, s)
 		}
 		sort.Strings(skillNames)

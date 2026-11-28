@@ -5,10 +5,13 @@ import (
 	"time"
 )
 
-// LiveModelListTimeout bounds one instance's live model listing. The launch
-// check, the hub's prefetch and model picker, a Codex roster retry at launch,
-// and a model switch all use this one per-instance budget so they cannot
-// drift apart.
+// LiveModelListTimeout bounds one instance's live model listing on every
+// provider route. The launch check, the hub's prefetch and model picker, a
+// Codex roster retry at launch, and a model switch all use this budget. Two
+// stalled endpoints then cost 16s of the hub's 30s launch-check child budget,
+// so the healthy providers after them still answer. A Copilot listing may
+// resolve its stored session before it fetches, but the auth service bounds
+// that opportunistic exchange itself, so the route needs no longer budget.
 const LiveModelListTimeout = 8 * time.Second
 
 type modelListingTimeoutKey struct{}

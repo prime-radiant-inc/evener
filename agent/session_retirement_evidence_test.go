@@ -2093,7 +2093,7 @@ func TestRetirementWatchTerminalPendingSend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registered, err := jm.configureWatch(watchArgs{Target: rec.JobID, Source: rec.JobID, OutputMatch: "never-seen", Send: &watchSendArgs{To: "caller", Message: "original-send-message"}})
+	registered, err := jm.configureWatch(watchArgs{Target: rec.JobID, Source: rec.JobID, OutputMatch: "never-seen", Note: "original-send-message", Send: &watchSendArgs{To: "caller"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3451,12 +3451,11 @@ func TestRetirementSafetyColdJobWatchContent(t *testing.T) {
 	if _, err := root2.ProcessInput(context.Background(), "drain-original-crash-attention", nil); err != nil {
 		t.Fatal(err)
 	}
-	settledAttn, err := readExistingDelegateAttentionFold(transcriptPath, d.ChildSessionID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pending := settledAttn.pendingIDs(); len(pending) != 0 {
-		t.Fatalf("settled delegate still owes original shell attention: %v", pending)
+	// The store queue is the authority; the transcript keeps the steering
+	// turns as rendered history.
+	settledAttn := pendingAttentionRowsForTest(t, tree2, d.DelegateID)
+	if len(settledAttn) != 0 {
+		t.Fatalf("settled delegate still owes original shell attention: %#v", settledAttn)
 	}
 	if err := root2.reclaimDelegateRuntimeCapacity(tree2.maxRetainedTerminal); err != nil {
 		t.Fatal(err)
@@ -3608,7 +3607,14 @@ func TestRetirementEnvironmentWorktreeCreate(t *testing.T) {
 func TestRetirementWatchFiredRepeating(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Unix(1_700_000_000, 0))
-	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("repeat acknowledged") })
+	adapter := newFakeAdapter("openai",
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("first-repeat-ack", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+		},
+		func(llm.Request) llm.Response {
+			return quietYieldResponse("second-repeat-ack", `{"message":"waiting on work","next":"log_quietly_and_end_turn"}`)
+		},
+	)
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), clock: clk}), withAdapter(adapter))
 	c := retirementEvidenceController(t, root)
 	registered, err := root.jobManager.configureWatch(watchArgs{Target: "caller", Source: "self", RepeatSeconds: 60, Note: "repeating-timer-note"})

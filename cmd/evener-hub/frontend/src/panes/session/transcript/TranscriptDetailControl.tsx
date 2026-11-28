@@ -1,8 +1,9 @@
 import { resolveEffectiveConfig, type ViewportClass } from "@evener/appwire-client";
 import type { RefObject } from "react";
 import { useRef } from "react";
+import { ResponsiveModal } from "../../../shell/ResponsiveModal";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../../stores/transcriptDisplay";
-import { Button, Dialog, Sheet } from "../../../widgets";
+import { Button, InlineNotice } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
 import styles from "./transcriptDisplay.module.css";
@@ -19,8 +20,6 @@ const CLASS = {
   content: requireClass(styles.detailContent, "transcriptDisplay.module.css", "detailContent"),
   sheetContent: requireClass(styles.detailSheetContent, "transcriptDisplay.module.css", "detailSheetContent"),
   scope: requireClass(styles.detailScope, "transcriptDisplay.module.css", "detailScope"),
-  status: requireClass(styles.detailStatus, "transcriptDisplay.module.css", "detailStatus"),
-  warning: requireClass(styles.detailWarning, "transcriptDisplay.module.css", "detailWarning"),
   actions: requireClass(styles.detailActions, "transcriptDisplay.module.css", "detailActions"),
 };
 
@@ -101,20 +100,20 @@ function DetailPanel({
         {localExists ? `Local ${layoutName} view` : "Using hub default"}
       </p>
       {statusMessages.length > 0 && (
-        <div className={CLASS.status} role="status" aria-live="polite">
+        <InlineNotice tone="neutral">
           {statusMessages.map((message) => (
             <p key={message.kind} data-kind={message.kind}>
               {message.text}
             </p>
           ))}
-        </div>
+        </InlineNotice>
       )}
       {failureMessages.size > 0 && (
-        <div className={CLASS.warning} role="alert">
+        <InlineNotice tone="danger">
           {[...failureMessages.values()].map((message) => (
             <p key={message}>{message}</p>
           ))}
-        </div>
+        </InlineNotice>
       )}
       <TranscriptDetailEditor value={effectiveConfig} compact onChange={onChange} />
       {!isMobile && (
@@ -179,13 +178,16 @@ export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaul
     />
   );
 
-  return isMobile ? (
-    <Sheet open={open} side="bottom" size="wide" onClose={onClose} title="Verbosity" footer={footer}>
+  return (
+    <ResponsiveModal
+      open={open}
+      onClose={onClose}
+      title="Verbosity"
+      footer={isMobile ? footer : undefined}
+      mobile={isMobile}
+      sheetSize="wide"
+    >
       {panel}
-    </Sheet>
-  ) : (
-    <Dialog open={open} onClose={onClose} title="Verbosity">
-      {panel}
-    </Dialog>
+    </ResponsiveModal>
   );
 }

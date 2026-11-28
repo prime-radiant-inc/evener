@@ -493,7 +493,7 @@ func (s *Store) ReconcileMirror(view MirrorView) (MirrorReconcileResult, error) 
 // recreate a boundary the store's own retention rule discards again: the name
 // is genuinely removed, past the tombstoneRetention horizon, and holds no
 // records — the state in which the historical boundary goes with the host's
-// last record. It is the same rule MirrorHostState applies to a proposed
+// last record. It is the same rule applyMirrorLocked applies to a proposed
 // boundary, so a boot and a mutation cannot disagree about whether a removed
 // name keeps a mirror.
 func (s *Store) mirrorPushBlocked(state *snapshot, name string, now time.Time, policy RetentionPolicy) bool {

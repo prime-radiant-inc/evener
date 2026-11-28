@@ -52,28 +52,21 @@ func (p PreparedAppIdentity) WithRecordedLength(length int64) PreparedAppIdentit
 	return p
 }
 
-// PrepareAppIdentity validates transcriptPath's header against threadID and
-// builds the matching event projector. It touches no Server state, so a caller
-// can abandon the result on any later failure.
+// PrepareAppIdentityForRef validates ref against sourceID and transcriptPath's
+// header against threadID, then builds the matching event projector for ref. It
+// touches no Server state, so a caller can abandon the result on any later
+// failure.
 //
 // An empty transcript path gives the thread no history. A transcript that does
 // not exist yet is not an error: the session simply has nothing recorded. A
 // transcript whose header names a DIFFERENT session is an error -- serving one
 // thread from another thread's history would publish a conversation that never
 // happened.
-func PrepareAppIdentity(sourceID, threadID, transcriptPath string) (PreparedAppIdentity, error) {
-	if sourceID == "" {
-		sourceID = "local"
-	}
-	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
-	return PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath)
-}
-
-// PrepareAppIdentityForRef is PrepareAppIdentity for a replacement that keeps
-// the same stable workspace ref while advancing the live session instance.
-// The projector must use that ref too: otherwise the first event after clear
-// would be published to the replacement session's derived ref and existing
-// subscribers would miss it.
+//
+// Passing ref explicitly lets a replacement keep a stable workspace ref while
+// advancing the live session instance. The projector must use that ref too:
+// otherwise the first event after clear would be published to the replacement
+// session's derived ref and existing subscribers would miss it.
 func PrepareAppIdentityForRef(sourceID, threadID, ref, transcriptPath string) (PreparedAppIdentity, error) {
 	if sourceID == "" {
 		sourceID = "local"
@@ -183,7 +176,6 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		s.appTurnEndStated = false
 		s.appPendingStableTurnID = ""
 		s.appDeferredTerminalNotifications = nil
-		s.appHeldSettledEffect = nil
 		s.appPushedFailedToolCalls = nil
 		// The envelope describes the session that just stopped being this
 		// daemon's session, so it is replaced in the SAME commit as the identity
@@ -228,19 +220,6 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		return notifications
 	})
 	closeHistories(detached)
-}
-
-// SetAppIdentity installs an identity with no history. Production serve
-// prepares from the session's transcript instead; this is the shorthand for a
-// thread that has none. It runs the same validation, so an identity
-// PrepareAppIdentity would reject is not installed through this door either --
-// it is rejected here and nothing changes.
-func (s *Server) SetAppIdentity(sourceID, threadID string) {
-	prepared, err := PrepareAppIdentity(sourceID, threadID, "")
-	if err != nil {
-		return
-	}
-	s.ReplaceAppIdentity(prepared, nil)
 }
 
 // SetDescendantTranscriptPathFunc installs the resolver that names a

@@ -45,8 +45,11 @@ func FuzzToolDefinitionsProgram(f *testing.F) {
 		// Empty and non-empty values each have meaningful definition branches.
 		// Check both independently, then use the fuzz-varying versions below for
 		// the package-wide registration pass.
-		toolProgramDefinitionShape(t, DefDelegate(nil))
-		toolProgramDefinitionShape(t, DefDelegate([]string{"analysis"}))
+		toolProgramDefinitionShape(t, DefDelegate())
+		toolProgramDefinitionShape(t, DefDelegateWithResultTool([]string{"analysis"}, DelegateSandboxSchema{
+			Available: true,
+			Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+		}, DefaultResultToolName))
 		toolProgramDefinitionShape(t, DefJobWatch(nil))
 		toolProgramDefinitionShape(t, DefJobWatch([]string{"output"}))
 		toolProgramDefinitionShape(t, DefTaskList(nil))
@@ -120,7 +123,10 @@ func toolProgramDefinitions(agentTypes, eventKinds, effortLevels []string, custo
 		DefListDir(),
 		DefEditFile(),
 		DefShell(),
-		DefDelegate(agentTypes),
+		DefDelegateWithResultTool(agentTypes, DelegateSandboxSchema{
+			Available: true,
+			Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+		}, DefaultResultToolName),
 		DefDelegateSend(),
 		DefJobWatch(eventKinds),
 		DefJobStatus(),
@@ -130,7 +136,6 @@ func toolProgramDefinitions(agentTypes, eventKinds, effortLevels []string, custo
 		DefGlob(),
 		DefApplyPatch(),
 		DefWebFetch(),
-		DefWebSearch(),
 		DefCommunicate(),
 		DefCommunicateNamed(customName),
 		DefTaskList(effortLevels),

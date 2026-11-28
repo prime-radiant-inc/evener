@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 )
 
 func TestLoadSessionJobActivityTree_FollowsOnlyDelegateChildren(t *testing.T) {
@@ -2384,4 +2385,97 @@ func TestLoadSessionJobActivityTree_PagesWithAnUnreadableDelegateJournal(t *test
 	if len(delivered) != jobCount {
 		t.Fatalf("delivered %d jobs across the walk, want %d", len(delivered), jobCount)
 	}
+}
+
+// The historical status must read pending attention from the journal, not from
+// the child transcript alone: a child delegate's transcript keeps a report's
+// rendered message after the journal resolved it, so the transcript read would
+// report a settled report as owed forever. A row the journal never carried is
+// still a pre-upgrade row and still reads owed.
+func TestLoadHistoricalStableActivityWithAttention_JournalResolutionWinsOverTranscript(t *testing.T) {
+	t.Parallel()
+	const (
+		rootID      = "attnresolvedroot"
+		childID     = "childattnresolved"
+		delegateID  = "dlg_attnresolved"
+		presentedID = "delegate:presented"
+		legacyID    = "delegate:legacy-pending"
+	)
+	run := func(t *testing.T, attentionIDs []string, journal []delegatestore.Event) map[string]delegateSnapshot {
+		t.Helper()
+		stateDir := t.TempDir()
+		writePastDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, childID, "task"))
+		writer, err := transcript.NewWriter(transcriptPath(stateDir, childID), transcript.Header{SessionID: childID, ParentSessionID: rootID})
+		if err != nil {
+			t.Fatalf("create child transcript: %v", err)
+		}
+		for _, attentionID := range attentionIDs {
+			turn := schema.NewTurn(schema.TurnSteering, llm.User(attentionID))
+			turn.AttentionID = attentionID
+			if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
+				t.Fatalf("append attention %s: %v", attentionID, err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close child transcript: %v", err)
+		}
+		store, err := delegatestore.Open(filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl"))
+		if err != nil {
+			t.Fatalf("open journal: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+		existing, err := store.Load()
+		if err != nil {
+			t.Fatalf("load journal: %v", err)
+		}
+		state, err := delegatestore.Fold(existing)
+		if err != nil {
+			t.Fatalf("fold journal: %v", err)
+		}
+		if _, _, err := store.AppendBatch(state, journal); err != nil {
+			t.Fatalf("seed journal: %v", err)
+		}
+		rows, _, err := loadHistoricalStableActivityWithAttention(context.Background(), stateDir, rootID, rootID)
+		if err != nil {
+			t.Fatalf("load historical activity: %v", err)
+		}
+		return rows
+	}
+	attentionEvent := func(kind delegatestore.EventKind) delegatestore.Event {
+		event := delegatestore.Event{Kind: kind, TS: time.Unix(10, 0).UTC(), DelegateID: delegateID}
+		switch kind {
+		case delegatestore.EventDelegateAttentionQueued:
+			event.AttentionQueued = &delegatestore.AttentionQueued{AttentionID: presentedID, Committed: true}
+		case delegatestore.EventDelegateAttentionResolved:
+			event.AttentionResolved = &delegatestore.AttentionResolved{AttentionID: presentedID}
+		}
+		return event
+	}
+
+	t.Run("journal resolved", func(t *testing.T) {
+		t.Parallel()
+		rows := run(t, []string{presentedID}, []delegatestore.Event{
+			attentionEvent(delegatestore.EventDelegateAttentionQueued),
+			attentionEvent(delegatestore.EventDelegateAttentionResolved),
+		})
+		row, ok := rows[delegateID]
+		if !ok {
+			t.Fatalf("delegate row missing from %v", rows)
+		}
+		if row.needsAttention {
+			t.Fatal("a journal-resolved report still read as owed attention")
+		}
+	})
+
+	t.Run("legacy unjournaled", func(t *testing.T) {
+		t.Parallel()
+		rows := run(t, []string{legacyID}, nil)
+		row, ok := rows[delegateID]
+		if !ok {
+			t.Fatalf("delegate row missing from %v", rows)
+		}
+		if !row.needsAttention {
+			t.Fatal("a genuinely unjournaled transcript row read as quiet")
+		}
+	})
 }

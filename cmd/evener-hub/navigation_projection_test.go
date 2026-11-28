@@ -34,8 +34,8 @@ func TestPinnedArchivedLiveSessionReachesTheBoardAsArchived(t *testing.T) {
 	metas := []schema.SessionMeta{{ID: "pinned", Name: "Pinned", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}}
 	live := []hubcore.LiveEntry{{SessionID: "pinned", Status: "active", Entry: rendezvous.Entry{SessionID: "pinned", StartedAt: now}}}
 	decisions := map[hubcore.ArchiveKey]bool{{Kind: "session", ID: "pinned"}: true}
-	tree := hubcore.BuildTreeAtWithProjects(metas, live, decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	tree := hubcore.BuildTreeAt(metas, live, decisions, now, map[string]identifier.Project{"/w": {ID: "p"}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Revision:     1,
 		Tree:         tree,
@@ -71,7 +71,7 @@ func TestPinSectionRowCarriesTheArchivedFlag(t *testing.T) {
 	at := time.Unix(1_700_000_000, 0).UTC()
 	archived := hubcore.TreeNode{ID: "pinned", Title: "Pinned", Kind: "session", State: "active", Archived: true, UpdatedAt: at}
 	unarchived := hubcore.TreeNode{ID: "pinned-live", Title: "Live", Kind: "session", State: "active", UpdatedAt: at}
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Revision:     1,
 		Tree: hubcore.Tree{
@@ -109,7 +109,7 @@ func TestPinSectionRowCarriesTheArchivedFlag(t *testing.T) {
 func TestNavigationSectionFlattensDeepTrees(t *testing.T) {
 	// A 40-deep subagent chain no longer costs the list anything: the row is
 	// flat, and the tree arrives through the per-session location instead.
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Revision:     7,
 		Tree:         hubcore.Tree{Live: []hubcore.TreeNode{deepNavigationNode(40)}},
@@ -135,14 +135,14 @@ func TestNavigationProjectPagePreservesOrderAndUint32Offset(t *testing.T) {
 	for i := range rows {
 		rows[i] = hubcore.TreeNode{ID: fmt.Sprintf("session-%03d", i), Title: fmt.Sprintf("row %03d", i), Kind: "session", State: "idle", UpdatedAt: time.Unix(int64(i), 0).UTC()}
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation", Revision: 3,
 		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", Current: rows}}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := projection.ProjectPage("project", "current", 50, 50)
+	page, err := projection.ProjectPage("", "project", "current", 50, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestNavigationProjectPagePreservesOrderAndUint32Offset(t *testing.T) {
 	if got, want := page.Sessions[0].SessionID, "session-050"; got != want {
 		t.Fatalf("session=%q, want %q", got, want)
 	}
-	empty, err := projection.ProjectPage("project", "current", ^uint32(0), 50)
+	empty, err := projection.ProjectPage("", "project", "current", ^uint32(0), 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestNavigationProjectPagePreservesOrderAndUint32Offset(t *testing.T) {
 
 func TestNavigationManifestHasNoRowsAndLocationHasSummary(t *testing.T) {
 	project := hubcore.TreeProject{Key: "project", Name: "project", Current: []hubcore.TreeNode{{ID: "session-parent", Title: "parent", Kind: "session", State: "idle", Children: []hubcore.TreeNode{{ID: "session-child", Title: "child", Kind: "subagent", State: "ended"}}}}}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Revision: 2, Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Revision: 2, Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestNavigationListsCarryNoChildren(t *testing.T) {
 		{ID: "session-sub", Title: "sub", Kind: "subagent", State: "active"},
 		{ID: "session-original", Title: "original", Kind: "fork", State: "ended"},
 	}}
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation", Revision: 2,
 		Tree: hubcore.Tree{Live: []hubcore.TreeNode{parent}},
 	})
@@ -239,11 +239,11 @@ func TestNavigationSessionProjectMatchesCodecIdentityBytes(t *testing.T) {
 			ID: "session-a", Title: "a", Project: overLong, Kind: "session", State: "idle",
 		}},
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resource, ok := projection.Project("project")
+	resource, ok := projection.Project("", "project")
 	if !ok {
 		t.Fatal("project missing")
 	}
@@ -276,14 +276,14 @@ func TestValidateNavigationPageProgressRejectsSessionlessLocation(t *testing.T) 
 }
 
 func TestNavigationProjectionRejectsMalformedIdentity(t *testing.T) {
-	_, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{{ID: "bad ref", Title: "bad", Kind: "session", State: "idle"}}}})
+	_, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{{ID: "bad ref", Title: "bad", Kind: "session", State: "idle"}}}})
 	if err == nil {
 		t.Fatal("malformed identity accepted")
 	}
 }
 
 func TestNavigationProjectionUsesStableTreeNodeRef(t *testing.T) {
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Tree: hubcore.Tree{Live: []hubcore.TreeNode{{
 			ID: "new-instance", Ref: "local:old-instance", Title: "session", Kind: "session", State: "idle",
@@ -311,7 +311,7 @@ func TestNavigationBoundsLimitRowsCatalogAndStrings(t *testing.T) {
 	for i := range projects {
 		projects[i] = hubcore.TreeProject{Key: fmt.Sprintf("project-%03d", i), Name: strings.Repeat("b", maxNavigationLabelRunes)}
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: live, Projects: projects}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: live, Projects: projects}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestNavigationProjectionSanitizesOversizedUnicodeStrings(t *testing.T) {
 	title := strings.Repeat("界", maxNavigationTitleRunes+10) + string([]byte{0xff})
 	label := strings.Repeat("界", maxNavigationLabelRunes+10) + string([]byte{0xfe})
 	workingDir := strings.Repeat("界", maxNavigationWorkingDirBytes)
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Sources:      []hubapi.Source{{ID: "source", Label: label, Kind: "appwire"}},
 		Tree: hubcore.Tree{
@@ -378,7 +378,7 @@ func TestNavigationProjectionPinsDecorationsAndOrder(t *testing.T) {
 		{ID: "session-ended", Title: "ended", Kind: "session", State: "ended", UpdatedAt: now},
 		{ID: "session-dangling", Title: "dangling", Kind: "session", State: "idle", UpdatedAt: now},
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Tree:         hubcore.Tree{Live: rows, Projects: []hubcore.TreeProject{{Key: "project", Name: "project", Current: rows}}},
 		Live:         map[string]bool{"session-ended": true},
@@ -427,7 +427,7 @@ func TestNavigationProjectionPinsDecorationsAndOrder(t *testing.T) {
 func TestNavigationProjectionRetainsIndependentInputsAndReturnsCopies(t *testing.T) {
 	tree := hubcore.Tree{Live: []hubcore.TreeNode{{ID: "session", Title: "before", Kind: "session", State: "idle", Children: []hubcore.TreeNode{{ID: "child", Title: "child", Kind: "subagent", State: "ended"}}}}}
 	inputs := navigationBuildInputs{GenerationID: "generation", Sources: []hubapi.Source{{ID: "source", Label: "before", Kind: "remote"}}, Tree: tree}
-	projection, err := buildNavigationProjection(inputs)
+	projection, err := buildNavigationProjection(t.Context(), inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestNavigationProjectionEnforcesExactEncodedCeilings(t *testing.T) {
 	for index := range projects {
 		projects[index] = hubcore.TreeProject{Key: strings.Repeat(fmt.Sprintf("%03d", index), 342)[:maxNavigationIdentityBytes], Name: strings.Repeat("n", maxNavigationLabelRunes), WorkingDir: strings.Repeat("/", maxNavigationWorkingDirBytes)}
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: roots, Projects: projects}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: roots, Projects: projects}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +513,7 @@ func TestNavigationByteTruncatedCatalogContinuationIsContiguous(t *testing.T) {
 			WorkingDir: strings.Repeat("/", maxNavigationWorkingDirBytes),
 		}
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Tree:         hubcore.Tree{Projects: projects},
 	})
@@ -553,7 +553,7 @@ func TestNavigationByteTruncatedCatalogContinuationIsContiguous(t *testing.T) {
 func TestNavigationCompactProjectPageContinuationIsContiguous(t *testing.T) {
 	// Compact flat rows page by requested offsets without skipping identities.
 	rows := navigationMaxFieldSectionNodes(time.Unix(1_700_000_000, 0).UTC())
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: "generation",
 		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{
 			Key:     "project",
@@ -566,7 +566,7 @@ func TestNavigationCompactProjectPageContinuationIsContiguous(t *testing.T) {
 	}
 
 	const offset, limit = uint32(0), uint32(20)
-	first, err := projection.ProjectPage("project", "current", offset, int(limit))
+	first, err := projection.ProjectPage("", "project", "current", offset, int(limit))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func TestNavigationCompactProjectPageContinuationIsContiguous(t *testing.T) {
 		t.Fatalf("compact page did not retain its bounded rows: got %d of %d", got, limit)
 	}
 	nextOffset := offset + uint32(len(firstRows))
-	second, err := projection.ProjectPage("project", "current", nextOffset, int(limit))
+	second, err := projection.ProjectPage("", "project", "current", nextOffset, int(limit))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,18 +596,18 @@ func TestNavigationCompactProjectPageContinuationIsContiguous(t *testing.T) {
 
 func TestNavigationProjectionValidatesIdentitiesAndTruncatesWorkingDir(t *testing.T) {
 	badUTF8 := string([]byte{0xff})
-	if _, err := buildNavigationProjection(navigationBuildInputs{GenerationID: badUTF8}); err == nil {
+	if _, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: badUTF8}); err == nil {
 		t.Fatal("invalid UTF-8 generation accepted")
 	}
-	if _, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Sources: []hubapi.Source{{ID: "source", Label: "label", Kind: badUTF8}}}); err == nil {
+	if _, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Sources: []hubapi.Source{{ID: "source", Label: "label", Kind: badUTF8}}}); err == nil {
 		t.Fatal("invalid UTF-8 source kind accepted")
 	}
-	if _, err := buildNavigationProjection(navigationBuildInputs{GenerationID: strings.Repeat("g", maxNavigationIdentityBytes+1)}); err == nil {
+	if _, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: strings.Repeat("g", maxNavigationIdentityBytes+1)}); err == nil {
 		t.Fatal("overlength generation accepted")
 	}
 	// An over-limit working dir is sanitized at the wire boundary.
 	oversizedDir := strings.Repeat("界", maxNavigationWorkingDirBytes)
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: oversizedDir}}}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: oversizedDir}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +617,7 @@ func TestNavigationProjectionValidatesIdentitiesAndTruncatesWorkingDir(t *testin
 	}
 	// A within-limit working dir passes validation and is safely bounded in the catalog.
 	workingDir := strings.Repeat("/", maxNavigationWorkingDirBytes)
-	projection, err = buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: workingDir}}}})
+	projection, err = buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: workingDir}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestNavigationProjectionPreservesRowFieldsAndCapsTheLocationTree(t *testing
 	}
 	updated := time.Unix(123, 0).UTC()
 	root := hubcore.TreeNode{ID: "session-root", Title: "title", Project: "project", Branch: "branch", State: "awaiting", Kind: "session", AskPending: true, ApprovalPending: true, Dormant: true, UpdatedAt: updated, Children: children}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{root}}, Live: map[string]bool{"session-root": true}, Renameable: map[string]bool{"session-root": true}, SessionFavorite: map[string]bool{"session-root": true}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{root}}, Live: map[string]bool{"session-root": true}, Renameable: map[string]bool{"session-root": true}, SessionFavorite: map[string]bool{"session-root": true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,8 +663,8 @@ func TestNavigationProjectionSnapshotsAuthoritativeTierRows(t *testing.T) {
 	for index := range 60 {
 		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("session-snapshot-%03d", index), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/snapshot"}})
 	}
-	tree := hubcore.BuildTreeAt(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree})
+	tree := buildTreeAtResolved(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: tree})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,7 +687,7 @@ func TestNavigationProjectionSnapshotsAuthoritativeTierRows(t *testing.T) {
 
 func TestNavigationProjectionFittingUsesLogarithmicEnvelopeProbes(t *testing.T) {
 	roots := navigationLargeDetailRoots()
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: roots}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: roots}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +833,7 @@ func TestNavigationFittingRowOutweighsTheCountsItShrinks(t *testing.T) {
 }
 
 func TestNavigationProjectionFingerprintSurvivesReturnedOutputMutation(t *testing.T) {
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{{ID: "session", Title: "before", Kind: "session", State: "idle"}}}})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{{ID: "session", Title: "before", Kind: "session", State: "idle"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -973,7 +973,7 @@ func TestNavigationProjectionChecksContextWhileMergingDuplicateKeys(t *testing.T
 		})
 	}
 	inputs := navigationBuildInputs{GenerationID: "generation", Revision: 1, Tree: hubcore.Tree{Projects: projects}}
-	projection, err := buildNavigationProjection(inputs)
+	projection, err := buildNavigationProjection(t.Context(), inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -982,7 +982,7 @@ func TestNavigationProjectionChecksContextWhileMergingDuplicateKeys(t *testing.T
 	}
 
 	ctx := &cancelAfterChecksContext{Context: context.Background(), limit: 690}
-	if _, err := buildNavigationProjectionContext(ctx, inputs); !errors.Is(err, context.Canceled) {
+	if _, err := buildNavigationProjection(ctx, inputs); !errors.Is(err, context.Canceled) {
 		t.Fatalf("projection error = %v, want cancellation while merging duplicate keys", err)
 	}
 	if got := ctx.checks.Load(); got > ctx.limit+2 {
@@ -1224,7 +1224,7 @@ func TestNavigationMergeProjectBucketsOrdersMergedRowByName(t *testing.T) {
 				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAZ")}},
 		},
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "00112233445566778899aabbccddeeff", Revision: 1, Tree: tree})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "00112233445566778899aabbccddeeff", Revision: 1, Tree: tree})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1299,7 +1299,7 @@ func TestNavigationMergeProjectKeepsFirstGroupArchivedFlag(t *testing.T) {
 				Current: []hubcore.TreeNode{session("01ARZ3NDEKTSV4RRFFQ69G5FAW")}},
 		},
 	}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "00112233445566778899aabbccddeeff", Revision: 1, Tree: tree})
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "00112233445566778899aabbccddeeff", Revision: 1, Tree: tree})
 	if err != nil {
 		t.Fatal(err)
 	}

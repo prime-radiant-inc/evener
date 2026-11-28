@@ -98,7 +98,7 @@ func ProjectToolSchemas(baseline []ToolDefinition, project func(t ToolDefinition
 func samplingPaths(protocol string) (temperature, topP, stop string) {
 	switch protocol {
 	case registry.ProtocolGoogle:
-		return "generationConfig.temperature", "generationConfig.topP", "generationConfig.stopSequences"
+		return "generation_config.temperature", "generation_config.top_p", "generation_config.stop_sequences"
 	case registry.ProtocolAnthropic:
 		return "temperature", "top_p", "stop_sequences"
 	case registry.ProtocolOpenAIResponses:
@@ -170,6 +170,13 @@ func ShapeRequest(req Request, res registry.Resolved) Request {
 		req.HistoryMode == HistoryModeResponsesDelta && strings.TrimSpace(req.PreviousResponseID) != ""
 	if plannedContinuation && req.Store == nil {
 		req.Store = new(true)
+	}
+	// The Copilot subscription never inherits the public OpenAI continuation
+	// contract: whatever anchor a caller carries, the request is sent as full
+	// history with no server-side storage.
+	if res.Transport.Auth == registry.AuthOAuthGitHubCopilot {
+		req.PreviousResponseID, req.ConversationID, req.Store = "", "", nil
+		req.HistoryMode = HistoryModeFullHistory
 	}
 	// A target receives only tool-result media its row can see; direct client
 	// callers go through this shaping too, so the estimate and the wire agree

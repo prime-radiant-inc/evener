@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -20,10 +21,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/githubcopilot"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -44,6 +48,9 @@ type hubInstancesController struct {
 	mu sync.RWMutex
 	// providerFileSignature is the last external file observation, guarded by mu.
 	providerFileSignature string
+	// copilotAuthSignature is the last Copilot record observation, guarded by
+	// mu. A hub write refreshes it so the watcher does not echo that write.
+	copilotAuthSignature map[string]string
 	// beforeCredentialLock, when set, runs after a removal's pre-lock work and
 	// just before it takes auth.credMu. A race test uses it as a barrier: the
 	// test holds the credential lock, waits for this signal, and only then
@@ -66,6 +73,25 @@ type hubInstancesController struct {
 	// taken. A race test holds a post-mutation listing until a racing write
 	// completes. Nil in production.
 	beforeList func()
+	// beforeCopilotMove, when set, runs at the start of a Copilot record move,
+	// after the rename's destination snapshot and before the record locks. A
+	// test lands an external login inside that window deterministically. Nil
+	// in production.
+	beforeCopilotMove func()
+	// beforeCopilotRestore, when set, runs at the start of a Copilot record
+	// restore, before the record lock. A test plants a newer login inside that
+	// window deterministically. Nil in production.
+	beforeCopilotRestore func()
+	// afterCopilotRestore, when set, runs after a Copilot record restore has
+	// written its bytes and released the record lock, before the rollback
+	// adopts them. A test lands a login inside that window deterministically.
+	// Nil in production.
+	afterCopilotRestore func()
+	// deleteCopilotAuth removes one Copilot record. It is a test seam:
+	// fsatomic.Remove unlinks the record before it syncs the directory, and a
+	// real filesystem cannot be made to fail that sync deterministically. Nil
+	// means githubcopilot.DeleteAuth.
+	deleteCopilotAuth func(stateDir, instance string) error
 
 	commitMu    sync.Mutex
 	onCommitted func(instanceCommitted)
@@ -130,6 +156,33 @@ func (c *hubInstancesController) write(l *registry.Layer) error {
 		c.providerFileSignature = providerConfigSignature(raw)
 	}
 	return err
+}
+
+// setCopilotAuthSignature records one instance's observation as already
+// announced, so the notice watcher does not echo a write this hub just made.
+// A caller passes the signature of the bytes it wrote, not a fresh snapshot:
+// a login that lands after that write must stay visible to the sweep. Called
+// with mu held.
+func (c *hubInstancesController) setCopilotAuthSignature(name, signature string) {
+	if c.copilotAuthSignature == nil {
+		c.copilotAuthSignature = make(map[string]string)
+	}
+	c.copilotAuthSignature[name] = signature
+}
+
+// forgetCopilotAuthSignature records that one instance's record is gone from
+// the announced observation. Called with mu held.
+func (c *hubInstancesController) forgetCopilotAuthSignature(name string) {
+	delete(c.copilotAuthSignature, name)
+}
+
+// adoptCopilotAuthSignature adopts the exact record this hub's device login
+// wrote, for that one instance. It takes mu itself; the mutation paths update
+// their own instance with setCopilotAuthSignature while holding mu.
+func (c *hubInstancesController) adoptCopilotAuthSignature(instance string, record githubcopilot.AuthRecord) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setCopilotAuthSignature(instance, registry.CopilotSignature(record, time.Now()))
 }
 
 // lockForWrite takes mu exclusively and clears the applied-write record, so
@@ -223,8 +276,7 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 // listLocked builds the listing from state the caller has ALREADY locked, using
 // a fingerprint key resolved before that lock. A mutation that captured its
 // answer under its own write lock uses this so the answer is the state that
-// mutation produced, not a second read a concurrent edit can slip into (see
-// Edit).
+// mutation produced, not a second read a concurrent write can slip into.
 func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.InstanceListResponse {
 	entries := make([]appwire.InstanceEntry, 0)
 	providers := make([]appwire.ProviderDescriptor, 0)
@@ -244,6 +296,14 @@ func (c *hubInstancesController) listLocked(key []byte, keyErr error) appwire.In
 			entry := c.entryFor(r, inst, authored, key)
 			entries = append(entries, entry)
 			builtEntries[inst.Name] = entry
+		}
+		broken := r.BrokenProviders()
+		for _, name := range slices.Sorted(maps.Keys(broken)) {
+			var authored *registry.Provider
+			if p, ok := r.AuthoredProvider(name); ok {
+				authored = &p
+			}
+			entries = append(entries, c.brokenEntryFor(name, broken[name], authored))
 		}
 		for _, id := range r.ProviderIDs() {
 			p, ok := r.Provider(id)
@@ -387,15 +447,51 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		Models:              instanceModels(r, inst.Name),
 	}
 	if authored != nil {
-		entry.CodexClientVersion = authored.Transport.CodexClientVersion
-		// api_key_env names an environment variable, and the loader takes
-		// whatever string the TOML grammar spells, so a key pasted into that
-		// field loads. It is omitted rather than sent, exactly as
-		// credentialHeaderField omits a header the authoring rule refuses.
-		if len(authored.APIKeyEnv) > 0 && registry.CheckAPIKeyEnvName(authored.APIKeyEnv[0]) == nil {
-			entry.APIKeyEnv = authored.APIKeyEnv[0]
+		populateAuthoredEntryFields(&entry, authored)
+	}
+	return entry
+}
+
+func populateAuthoredEntryFields(entry *appwire.InstanceEntry, authored *registry.Provider) {
+	entry.CodexClientVersion = authored.Transport.CodexClientVersion
+	// api_key_env names an environment variable, and the loader takes
+	// whatever string the TOML grammar spells, so a key pasted into that
+	// field loads. It is omitted rather than sent, exactly as
+	// credentialHeaderField omits a header the authoring rule refuses.
+	if len(authored.APIKeyEnv) > 0 && registry.CheckAPIKeyEnvName(authored.APIKeyEnv[0]) == nil {
+		entry.APIKeyEnv = authored.APIKeyEnv[0]
+	}
+	entry.CredentialHeader = credentialHeaderField(authored.CredentialHeaders)
+}
+
+// brokenEntryFor builds the Settings row for an isolated broken providers.toml
+// stanza so the user can inspect the load error, repair its base/fields, or
+// remove it. Hidden is true and ActiveSource is "none" so clients that do not
+// read LoadError never treat it as a usable provider.
+func (c *hubInstancesController) brokenEntryFor(name string, loadErr error, authored *registry.Provider) appwire.InstanceEntry {
+	entry := appwire.InstanceEntry{
+		Name:               name,
+		ProviderID:         name,
+		Hidden:             true,
+		ActiveSource:       "none",
+		CredentialRequired: false,
+		LoadError:          loadErr.Error(),
+	}
+	if authored != nil {
+		entry.Base = authored.Base
+		if authored.Base != "" {
+			entry.ProviderID = authored.Base
 		}
-		entry.CredentialHeader = credentialHeaderField(authored.CredentialHeaders)
+		entry.Protocol = authored.Protocol
+		entry.Surface = authored.Surface
+		entry.BaseURL = sanitizeEndpointURL(authored.Transport.BaseURL)
+		if len(authored.Transport.Vars) > 0 {
+			entry.Vars = maps.Clone(authored.Transport.Vars)
+		}
+		populateAuthoredEntryFields(&entry, authored)
+	}
+	if c.auth != nil {
+		entry.HasStoredFile, entry.HasStoredOAuth = c.auth.storedCredentialPresence(name)
 	}
 	return entry
 }
@@ -998,9 +1094,13 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 	return nil
 }
 
-// Create authors a new instance entry. APIKeyEnv is a variable name and
-// CredentialHeader must reference a $VAR: a literal secret never crosses this
-// boundary, and none is ever written to the file (spec §11.2).
+// Create authors a new instance entry and returns the listing captured while
+// its write locks are still held, so the answer describes the state this create
+// authored rather than a later List() a concurrent edit can slip into.
+//
+// APIKeyEnv is a variable name and CredentialHeader must reference a $VAR: a
+// literal secret never crosses this boundary, and none is ever written to the
+// file (spec §11.2).
 //
 // Every refusal that blames the fields the caller sent comes back as a wire
 // error naming its class — InvalidParams for a field that is malformed or
@@ -1009,74 +1109,57 @@ func (c *hubInstancesController) refuseWhenBroken() error {
 // shapes. A refusal about the hub's own state (the registry not loaded, a
 // read or write failure) stays a plain error: that is not the caller's to
 // fix.
-func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (err error) {
-	return c.create(params, nil)
-}
-
-// create applies a create. When out is non-nil it receives the listing captured
-// while this create's write lock is still held, so the answer describes the
-// state this create authored rather than a later List() a concurrent edit can
-// slip into. The RPC handler uses it that way for its response, exactly as
-// edit's captured answer does: a create's response is the only proof a client
-// has of which endpoint its credential belongs to.
-func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out *appwire.InstanceListResponse) (err error) {
+func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) (_ appwire.InstanceListResponse, err error) {
 	if err := c.refuseWhenBroken(); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	if err := c.requireAuth(); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	name := strings.TrimSpace(params.Name)
 	if !registry.ValidInstanceName(name) {
-		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
+		return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
 	base := strings.TrimSpace(params.Base)
 	baseProvider, ok := c.reg.Get().Provider(base)
 	if !ok {
-		return appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
+		return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
 	}
 	codexClientVersion := strings.TrimSpace(params.CodexClientVersion)
 	if codexClientVersion != "" && baseProvider.Transport.Auth != registry.AuthOAuthOpenAICodex {
-		return appwire.InvalidParams("codexClientVersion requires a Codex provider")
+		return appwire.InstanceListResponse{}, appwire.InvalidParams("codexClientVersion requires a Codex provider")
 	}
 	credentialHeaders, err := credentialHeaderFrom(params.CredentialHeader)
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	apiKeyEnv := strings.TrimSpace(params.APIKeyEnv)
 	if apiKeyEnv != "" {
 		if err := registry.CheckAPIKeyEnvName(apiKeyEnv); err != nil {
-			return appwire.InvalidParams(err.Error())
+			return appwire.InstanceListResponse{}, appwire.InvalidParams(err.Error())
 		}
 	}
 	if err := validVarNames(params.Vars); err != nil {
-		return invalidParamsFor(err)
+		return appwire.InstanceListResponse{}, invalidParamsFor(err)
 	}
 	// Resolved before the locks, as Edit resolves its own: resolving can repair
 	// the key file (an inter-process lock and a write), so doing it while c.mu
 	// and credMu are held would hold every listing and credential op behind it.
-	// Only a capture needs it: a plain Create is a write that installs no
-	// listing, and the controller's other callers must keep the pre-existing
-	// property that creating an entry does not touch the fingerprint key.
-	var key []byte
-	var keyErr error
-	if out != nil {
-		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
-	}
+	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
 	defer c.lockMutation(params.OriginClientId, &err)()
 	// before is an independent parse from l below — a fresh read sharing no
 	// maps with it — so a create whose config parses but cannot load (#711) can
 	// be written back exactly as the file was, the way Edit restores its own.
 	before, _, err := c.read()
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	l, _, err := c.read()
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	if _, exists := l.Providers[name]; exists {
-		return appwire.Conflict(fmt.Sprintf("instance %q already exists", name))
+		return appwire.InstanceListResponse{}, appwire.Conflict(fmt.Sprintf("instance %q already exists", name))
 	}
 	p := registry.Provider{
 		ID:       name,
@@ -1095,9 +1178,9 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 	p.CredentialHeaders = credentialHeaders
 	l.Providers[name] = p
 	if err := c.writeLoadable(l); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
-	if err := c.reg.Reload(); err != nil {
+	if err := c.reloadAndCheckProvider(name); err != nil {
 		// writeLoadable's dry parse only checks the layer against the registry
 		// schema; Reload resolves it, so a config that parses can still fail to
 		// load - a protocol or transport the base does not offer, for instance.
@@ -1110,22 +1193,19 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 			// stands and every other client's list is stale: the write primitive
 			// already marked the applied state, so the marker rides the plain
 			// error and the commit port broadcasts it.
-			return fmt.Errorf("%w (and %w: %w)", err, errConfigRestoreFailed, restoreErr)
+			return appwire.InstanceListResponse{}, fmt.Errorf("%w (and %w: %w)", err, errConfigRestoreFailed, restoreErr)
 		}
 		// The rollback put the previous file back, so the write this call made is
 		// undone: nothing for other clients to hear about.
 		c.applied.resetApplied()
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
-		return invalidParamsFor(fmt.Errorf("instance %q %w: %w", name, errInstanceUnloadable, err))
+		return appwire.InstanceListResponse{}, invalidParamsFor(fmt.Errorf("instance %q %w: %w", name, errInstanceUnloadable, err))
 	}
-	if out != nil {
-		// Still under this create's write locks, so no concurrent edit can land
-		// between the write and this read. The row (and its immutable endpoint
-		// fingerprint) is the one this create authored, not a destination that
-		// replaced it before the handler answered.
-		*out = c.listLocked(key, keyErr)
-	}
-	return nil
+	// Still under this create's write locks, so no concurrent edit can land
+	// between the write and this read. The row (and its immutable endpoint
+	// fingerprint) is the one this create authored, not a destination that
+	// replaced it before the handler answered.
+	return c.listLocked(key, keyErr), nil
 }
 
 // Edit applies the fields the form set, leaving every other authored key
@@ -1152,24 +1232,20 @@ func (c *hubInstancesController) create(params appwire.InstanceCreateParams, out
 // that would leave the instance unable to load — come back as
 // appwire.InvalidParams; the hub's own faults (the registry not loaded, a
 // read, write, or restore failure) stay plain errors.
-func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
-	return c.edit(params, nil)
-}
-
-// edit applies an edit. When out is non-nil it receives the listing captured
-// while this edit's write lock is still held, so the answer describes the state
-// this edit produced rather than a later List() a concurrent write can slip
-// into; the RPC handler uses it that way for its response.
-func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *appwire.InstanceListResponse) (err error) {
+//
+// The returned listing is captured while this edit's write locks are still
+// held, so it describes the state this edit produced rather than a later List()
+// a concurrent write can slip into.
+func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) (_ appwire.InstanceListResponse, err error) {
 	if err := c.refuseWhenBroken(); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	if err := c.requireAuth(); err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	req, err := parseEditRequest(params)
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	name := req.name
 
@@ -1177,9 +1253,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// on resolving the fingerprint key before the locks): resolving can repair
 	// the key file - an inter-process lock and a write - so doing it while c.mu
 	// and credMu are held would hold every listing and credential op behind it.
-	// This edit's own endpoint assertion needs it, and so does the listing the
-	// edit captures under its write locks (listLocked), so it is resolved for
-	// every caller rather than only the captured-listing one.
+	// This edit's own endpoint assertion and its lock-scoped listing both need it.
 	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
 	defer c.lockMutation(params.OriginClientId, &err)()
 	// before is an independent parse from l below — a fresh read sharing no
@@ -1187,23 +1261,22 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// writing it back restores exactly what was on disk before this call.
 	before, _, err := c.read()
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	l, _, err := c.read()
 	if err != nil {
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	p, authored := l.Providers[name]
 	if !authored {
 		if _, ok := c.reg.Get().Instance(name); !ok {
-			return instanceNotFound(name)
+			return appwire.InstanceListResponse{}, instanceNotFound(name)
 		}
 		p = registry.Provider{ID: name}
 	}
-	if strings.TrimSpace(params.CodexClientVersion) != "" {
-		inst, ok := c.reg.Get().Instance(name)
-		if !ok || inst.Auth != registry.AuthOAuthOpenAICodex {
-			return appwire.InvalidParams("codexClientVersion requires a Codex provider")
+	if !params.ClearBase && req.base != "" {
+		if _, ok := c.reg.Get().Provider(req.base); !ok {
+			return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown base provider %q", params.Base))
 		}
 	}
 	// The edit is applied to the row the client listed, so the endpoint that row
@@ -1219,16 +1292,27 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// cannot say the name resolves where the caller was told it does.
 	if params.ExpectedEndpointFingerprint != "" {
 		if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
-			return err
+			return appwire.InstanceListResponse{}, err
 		}
 	}
 	renaming := req.newName != "" && req.newName != name
 	if renaming {
 		if err := c.checkRenameTarget(l, params, name, req.newName); err != nil {
-			return err
+			return appwire.InstanceListResponse{}, err
 		}
 	}
 	applyEditFields(&p, params, req)
+	if strings.TrimSpace(params.CodexClientVersion) != "" && !params.ClearCodexClientVersion {
+		baseID := p.Base
+		if baseID == "" {
+			baseID = name
+		}
+		baseP, ok := c.reg.Get().Provider(baseID)
+		isCodex := p.Transport.Auth == registry.AuthOAuthOpenAICodex || (ok && baseP.Transport.Auth == registry.AuthOAuthOpenAICodex)
+		if !isCodex {
+			return appwire.InstanceListResponse{}, appwire.InvalidParams("codexClientVersion requires a Codex provider")
+		}
+	}
 	// A clear-only edit on an implicit instance (one the environment or a
 	// curated provider supplies, with no authored entry) has no authored
 	// value to change: the entry it would write carries nothing but its id.
@@ -1237,16 +1321,13 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	// the edit is a no-op rather than a write. A rename is not this case: it
 	// re-keys the entry, and it pins a base below, so it always writes.
 	if !renaming && !authored && providerIsBare(p) {
-		if out != nil {
-			// Still under this edit's write locks, like the listing captured
-			// on the write path, so a concurrent edit cannot slip in.
-			*out = c.listLocked(key, keyErr)
-		}
-		return nil
+		// Still under this edit's write locks, like the listing captured on the
+		// write path, so a concurrent edit cannot slip in.
+		return c.listLocked(key, keyErr), nil
 	}
 	if renaming {
 		if err := c.rekeyProvider(l, p, name, req.newName); err != nil {
-			return err
+			return appwire.InstanceListResponse{}, err
 		}
 	} else {
 		l.Providers[name] = p
@@ -1274,7 +1355,11 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	}
 	// writeAndReload restores before when the reload fails (see #711
 	// on its comment); a rename continues below on success.
-	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
+	targetName := name
+	if renaming {
+		targetName = req.newName
+	}
+	if err := c.writeAndReload(before, l, targetName, "edit"); err != nil {
 		// A write that landed although its rollback could not run is standing:
 		// retire the probes of the access it replaced. A clean rollback leaves
 		// the old access in place, and its probes remain current. The reload
@@ -1292,9 +1377,9 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 		// A non-rename edit has no rename to report, so it keeps the error as
 		// it came.
 		if renaming && c.applied.peekApplied() {
-			return renamePersistedError{err}
+			return appwire.InstanceListResponse{}, renamePersistedError{err}
 		}
-		return err
+		return appwire.InstanceListResponse{}, err
 	}
 	if !renaming {
 		afterAccess := effectiveAccessIdentity(key, c.reg.Get(), name, p, true)
@@ -1312,16 +1397,13 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 	}
 	if renaming {
 		if err := c.moveCredentialsAfterRename(name, req.newName); err != nil {
-			return err
+			return appwire.InstanceListResponse{}, err
 		}
 	}
-	if out != nil {
-		// Still under this edit's write locks, so no concurrent edit can land
-		// between the write and this read. Reached for a plain edit AND a clean
-		// rename (the rename branch above only returns on an applied error).
-		*out = c.listLocked(key, keyErr)
-	}
-	return nil
+	// Still under this edit's write locks, so no concurrent edit can land
+	// between the write and this read. Reached for a plain edit AND a clean
+	// rename (the rename branch above only returns on an applied error).
+	return c.listLocked(key, keyErr), nil
 }
 
 // editRequest is the part of an edit that is validated and normalized before
@@ -1329,6 +1411,7 @@ func (c *hubInstancesController) edit(params appwire.InstanceEditParams, out *ap
 type editRequest struct {
 	name    string
 	newName string
+	base    string
 	// apiKeyEnv is the trimmed environment variable name, "" when unset.
 	apiKeyEnv string
 	// credentialHeaders is nil when the request clears the header or sends none.
@@ -1348,6 +1431,7 @@ func refuseEditSetClearPair(params appwire.InstanceEditParams) error {
 		set   string
 		clear bool
 	}{
+		{"base", params.Base, params.ClearBase},
 		{"baseUrl", params.BaseURL, params.ClearBaseURL},
 		{"protocol", params.Protocol, params.ClearProtocol},
 		{"surface", params.Surface, params.ClearSurface},
@@ -1369,6 +1453,7 @@ func parseEditRequest(params appwire.InstanceEditParams) (editRequest, error) {
 	req := editRequest{
 		name:    strings.TrimSpace(params.Name),
 		newName: strings.TrimSpace(params.NewName),
+		base:    strings.TrimSpace(params.Base),
 	}
 	if err := validVarSets(params.Vars); err != nil {
 		return req, invalidParamsFor(err)
@@ -1441,6 +1526,11 @@ func (c *hubInstancesController) checkRenameTarget(l *registry.Layer, params app
 
 // applyEditFields lays the request's field changes over p.
 func applyEditFields(p *registry.Provider, params appwire.InstanceEditParams, req editRequest) {
+	if params.ClearBase {
+		p.Base = ""
+	} else if req.base != "" {
+		p.Base = req.base
+	}
 	if params.ClearBaseURL {
 		// Drops the authored override and goes back to the registry
 		// default, restoring spec §10's credential inheritance from the
@@ -1691,8 +1781,11 @@ func (c *hubInstancesController) credentialsUnder(name string) []string {
 	if _, ok := c.auth.storedKey(name); ok {
 		held = append(held, fmt.Sprintf("a credentials.toml entry for %q", name))
 	}
-	if _, err := c.auth.loadAuth(c.auth.stateDir, name); !errors.Is(err, authopenai.ErrAuthNotFound) {
+	if c.auth.hasStoredOpenAIOAuth(name) {
 		held = append(held, fmt.Sprintf("an OAuth record for %q", name))
+	}
+	if c.auth.hasStoredCopilotOAuth(name) {
+		held = append(held, fmt.Sprintf("a Copilot OAuth record for %q", name))
 	}
 	return held
 }
@@ -1754,8 +1847,10 @@ var (
 
 	errStoredKeyNotRestored     = errors.New("its stored key could not be restored")
 	errOAuthRecordNotRestored   = errors.New("its OAuth record could not be restored")
+	errCopilotRecordNotRestored = errors.New("its Copilot OAuth record could not be restored")
 	errRefusalMarkerNotRestored = errors.New("its refresh-refusal marker could not be restored")
 	errStoredKeyNotCopied       = errors.New("stored key not copied")
+	errCopilotRecordChanged     = errors.New("the Copilot OAuth record changed while it was being removed")
 	errRefusalMarkerNotCopied   = errors.New("refresh-refusal marker not copied")
 )
 
@@ -1817,20 +1912,63 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		c.auth.forgetCredentialRejection(oldName)
 		c.auth.forgetCredentialRejection(newName)
 	}
+	problems = append(problems, c.moveOAuthRecord(oldName, newName)...)
+	if err := c.moveCopilotRecord(oldName, newName); err != nil {
+		problems = append(problems, err)
+	}
+	if len(problems) > 0 {
+		// The rename reached the file, so it is as persisted as one that ended
+		// cleanly: renamePersistedError is what the RPC handler reads to hand
+		// the client the discriminator, and the config write the rename landed
+		// marked the applied state the commit port broadcasts on.
+		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %w", oldName, newName, joinedError{errs: problems, sep: "; "})}
+	}
+	return nil
+}
+
+// moveOAuthRecord carries the OAuth record from oldName to newName and clears
+// the old name, returning the problems it hit. The whole move is one locked
+// section: a runtime refresh in another process (a child daemon or the
+// credential probe) re-checks the record under the same cross-process lock
+// before it writes, so it can neither land between the copy and the delete nor
+// recreate the old name after the rename deleted it (#1045). The refusal marker
+// is keyed by name too, so it is read under the old name before the copy and
+// written under the new one.
+//
+// It takes no credMu: the caller holds it, and the store lock is the innermost
+// of the two everywhere in this process.
+func (c *hubInstancesController) moveOAuthRecord(oldName, newName string) []error {
+	// Nothing to move when no record is filed under the old name. This is also
+	// the answer when the auth directory has never been created, and it keeps a
+	// rename of an instance that never signed in to OAuth from taking the lock.
+	if _, err := c.auth.loadAuth(c.auth.stateDir, oldName); err != nil {
+		if errors.Is(err, authopenai.ErrAuthNotFound) {
+			return nil
+		}
+		return []error{fmt.Errorf("OAuth record not read: %w", err)}
+	}
+
+	// The record is filed, so the directory exists: take the store's
+	// cross-process lock, then re-read under it, because a refresh or a delete
+	// may have landed since the read above.
+	lock, err := c.auth.lockAuthStore(c.auth.stateDir)
+	if err != nil {
+		return []error{fmt.Errorf("OAuth record not moved: %w", err)}
+	}
+	defer lock.Release()
+
+	var problems []error
 	record, err := c.auth.loadAuth(c.auth.stateDir, oldName)
 	switch {
 	case errors.Is(err, authopenai.ErrAuthNotFound):
 	case err != nil:
 		problems = append(problems, fmt.Errorf("OAuth record not read: %w", err))
 	default:
-		// The refusal marker (#2479) is keyed by the old instance name, so it
-		// does not follow the rename on its own: read it before the copy,
-		// under the name it is actually filed under.
 		refused := authopenai.RefreshRejected(c.auth.stateDir, oldName, record)
 		// The record's provider field names the instance it belongs to (the
 		// OAuth completion paths set it), so it follows the rename.
 		record.Provider = newName
-		if err := c.auth.saveAuth(c.auth.stateDir, newName, record); err != nil {
+		if err := lock.Save(newName, record); err != nil {
 			problems = append(problems, fmt.Errorf("OAuth record not copied: %w", err))
 		} else {
 			if refused {
@@ -1848,18 +1986,82 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 					problems = append(problems, fmt.Errorf("%w: %w", errRefusalMarkerNotCopied, err))
 				}
 			}
-			if _, err := c.auth.deleteAuth(c.auth.stateDir, oldName); err != nil {
+			if _, err := lock.Delete(oldName); err != nil {
 				problems = append(problems, fmt.Errorf("OAuth record for %q left behind: %w", oldName, err))
 			}
 		}
 	}
-	if len(problems) > 0 {
-		// The rename reached the file, so it is as persisted as one that ended
-		// cleanly: renamePersistedError is what the RPC handler reads to hand
-		// the client the discriminator, and the config write the rename landed
-		// marked the applied state the commit port broadcasts on.
-		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %w", oldName, newName, joinedError{errs: problems, sep: "; "})}
+	return problems
+}
+
+// moveCopilotRecord moves a signed-in Copilot account with the instance name.
+// The record validates its instance field, so the move rewrites it, under the
+// source record's lifecycle lock and only while the generation read before the
+// lock still matches: a login that landed in between is newer than this rename
+// and must not be overwritten by it. The destination lock makes the move's own
+// absence check final, so a login that landed after the rename's up-front
+// snapshot is seen and kept rather than overwritten.
+func (c *hubInstancesController) moveCopilotRecord(oldName, newName string) error {
+	if c.auth.stateDir == "" {
+		return nil
 	}
+	if c.beforeCopilotMove != nil {
+		c.beforeCopilotMove()
+	}
+	expected, err := githubcopilot.LoadAuth(c.auth.stateDir, oldName)
+	if errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("copilot OAuth record not read: %w", err)
+	}
+	// Both locks are taken in canonical path order so opposite renames (A to B
+	// and B to A) cannot deadlock on each other's destination.
+	first, second := oldName, newName
+	if githubcopilot.AuthFilePath(c.auth.stateDir, second) < githubcopilot.AuthFilePath(c.auth.stateDir, first) {
+		first, second = second, first
+	}
+	return githubcopilot.WithRecordLock(c.auth.stateDir, first, func() error {
+		return githubcopilot.WithRecordLock(c.auth.stateDir, second, func() error {
+			return c.moveCopilotRecordLocked(oldName, newName, expected)
+		})
+	})
+}
+
+// moveCopilotRecordLocked is the source and destination locks' body: re-read
+// the source at the generation the move decided on, require the destination to
+// be empty, then save and delete. A destination record that appeared since the
+// rename's snapshot is a newer login, so the move leaves both records where
+// they are and reports the source as the leftover.
+func (c *hubInstancesController) moveCopilotRecordLocked(oldName, newName string, expected githubcopilot.AuthRecord) error {
+	record, err := githubcopilot.LoadAuth(c.auth.stateDir, oldName)
+	if errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("copilot OAuth record not read: %w", err)
+	}
+	if !record.SameGeneration(expected) {
+		return fmt.Errorf("copilot OAuth record changed during the rename; log in again under %q", newName)
+	}
+	if _, err := githubcopilot.LoadAuth(c.auth.stateDir, newName); err == nil {
+		return fmt.Errorf("copilot OAuth record for %q already exists; it was left in place", newName)
+	} else if !errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		return fmt.Errorf("copilot OAuth record for %q not read: %w", newName, err)
+	}
+	sourceSignature := registry.CopilotSignature(record, time.Now())
+	record.Instance = newName
+	if err := githubcopilot.SaveAuth(c.auth.stateDir, newName, record); err != nil {
+		return fmt.Errorf("copilot OAuth record not copied: %w", err)
+	}
+	c.setCopilotAuthSignature(newName, registry.CopilotSignature(record, time.Now()))
+	if err := githubcopilot.DeleteAuth(c.auth.stateDir, oldName); err != nil {
+		// The source file is still the record this move read, so keep it
+		// announced as that record.
+		c.setCopilotAuthSignature(oldName, sourceSignature)
+		return fmt.Errorf("copilot OAuth record for %q left behind: %w", oldName, err)
+	}
+	c.forgetCopilotAuthSignature(oldName)
 	return nil
 }
 
@@ -2000,10 +2202,11 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// between the two would hand the deletion to whatever holds the name
 	// afterwards.
 	inst, ok := c.reg.Get().Instance(name)
-	if !ok {
+	broken := !ok && c.reg.Get().ProviderError(name) != nil
+	if !ok && !broken {
 		return instanceNotFound(name)
 	}
-	if environmentBacked(inst) {
+	if ok && environmentBacked(inst) {
 		return invalidParamsFor(newEnvironmentBackedError(name, inst))
 	}
 
@@ -2045,10 +2248,11 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// this call - existence first, because a rename landing between the two
 	// would have taken the name away entirely.
 	locked, ok := c.reg.Get().Instance(name)
-	if !ok {
+	lockedBroken := !ok && c.reg.Get().ProviderError(name) != nil
+	if !ok && !lockedBroken {
 		return instanceNotFound(name)
 	}
-	if environmentBacked(locked) {
+	if ok && environmentBacked(locked) {
 		// The same caller-fixable condition the pre-lock check classified as
 		// InvalidParams, so the locked re-check answers the same way rather than
 		// letting a concurrent credential clear change the wire class of one
@@ -2060,9 +2264,13 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// a name another client has re-pointed since (a removal and a recreation
 	// under it, or an edit to its base_url) is refused rather than having its
 	// replacement instance removed. Asked here, under the exclusive lock, so it
-	// describes the instance the cleanup below acts on.
-	if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
-		return err
+	// describes the instance the cleanup below acts on. A broken entry serves
+	// no fingerprint, so an empty assertion is accepted without a key, while a
+	// stale non-empty assertion is still refused as an endpoint conflict.
+	if !lockedBroken || strings.TrimSpace(params.ExpectedEndpointFingerprint) != "" {
+		if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+			return err
+		}
 	}
 
 	// The credential cleanup below reads and clears the store, and a removal
@@ -2091,6 +2299,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	if err != nil {
 		return err
 	}
+	rm.copilotBytes, rm.hasCopilot, err = c.captureCopilotFile(name)
+	if err != nil {
+		return err
+	}
 	rm.refusalBytes, rm.hasRefusal = c.captureRefreshRejectionFile(name)
 
 	// Whether the config authored this instance is read before the cleanup, so
@@ -2100,7 +2312,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	// cleanup changes nothing it observes.
 	_, rm.authored = before.Providers[name]
 
-	removed, err := c.removeCredentials(name)
+	removed, err := c.removeCredentialsAndCopilot(name, rm.copilotBytes, rm.hasCopilot)
 	if err != nil {
 		return rm.failedCleanup(removed, err)
 	}
@@ -2133,6 +2345,21 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) (er
 	return nil
 }
 
+// removalCredentials is the credential material one removal captured and its
+// rollback has to put back: each layer's bytes and whether this call is
+// restoring that layer. The failed-cleanup rollback keeps a layer only when
+// the cleanup actually deleted it.
+type removalCredentials struct {
+	storedKey    string
+	hasStoredKey bool
+	oauthBytes   []byte
+	hasOAuth     bool
+	copilotBytes []byte
+	hasCopilot   bool
+	refusalBytes []byte
+	hasRefusal   bool
+}
+
 // removal is one Remove call's snapshot of what its cleanup deletes, and the
 // rollbacks that put it back when a later step fails. Every rollback runs
 // inside the locks Remove holds.
@@ -2143,17 +2370,12 @@ type removal struct {
 	// authored is whether providers.toml carries an entry for the instance.
 	authored bool
 
-	storedKey    string
-	hasStoredKey bool
-	oauthBytes   []byte
-	hasOAuth     bool
-	refusalBytes []byte
-	hasRefusal   bool
+	removalCredentials
 }
 
 // restore puts back everything the removal captured.
 func (r *removal) restore(cause, frame error, supplies removalSupply) (bool, error) {
-	return r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey, r.oauthBytes, r.hasOAuth, r.refusalBytes, r.hasRefusal, cause, frame, supplies)
+	return r.c.restoreFailedRemoval(r.name, r.removalCredentials, cause, frame, supplies)
 }
 
 // restoreFrame says how a failed restore is reported, and which layer the
@@ -2190,7 +2412,12 @@ func (r *removal) restoreFrame() (removalSupply, error) {
 // wraps its own result in that case.
 func (r *removal) failedCleanup(removed deletedCredentials, err error) error {
 	supplies, frame := r.restoreFrame()
-	_, restoreErr := r.c.restoreFailedRemoval(r.name, r.storedKey, r.hasStoredKey && removed.storedKey, r.oauthBytes, r.hasOAuth && removed.oauthRecord, r.refusalBytes, r.hasRefusal && removed.oauthRecord, err, frame, supplies)
+	creds := r.removalCredentials
+	creds.hasStoredKey = creds.hasStoredKey && removed.storedKey
+	creds.hasOAuth = creds.hasOAuth && removed.oauthRecord
+	creds.hasCopilot = creds.hasCopilot && removed.copilotRecord
+	creds.hasRefusal = creds.hasRefusal && removed.oauthRecord
+	_, restoreErr := r.c.restoreFailedRemoval(r.name, creds, err, frame, supplies)
 	return restoreErr
 }
 
@@ -2369,6 +2596,54 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
 }
 
+// captureCopilotFile reads the Copilot record a removal's cleanup is about to
+// delete, raw: a record the hub cannot parse is still deleted by path, and
+// only its bytes can put it back. One that exists but cannot be read refuses
+// the removal here, before anything is deleted.
+func (c *hubInstancesController) captureCopilotFile(name string) ([]byte, bool, error) {
+	if c.auth.stateDir == "" {
+		return nil, false, nil
+	}
+	raw, err := os.ReadFile(githubcopilot.AuthFilePath(c.auth.stateDir, name))
+	if err == nil {
+		return raw, true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("remove %s: read the Copilot OAuth record to preserve it: %w", name, err)
+}
+
+// restoreCopilotRecord puts the captured bytes back under the record lock,
+// reports whether it wrote them, and signs those exact bytes while the lock is
+// still held. A record that exists again is a login newer than the capture and
+// wins; writing over it would discard the account the user just signed in
+// with, and that login is not this hub's write to adopt.
+func (c *hubInstancesController) restoreCopilotRecord(name string, raw []byte) (bool, string, error) {
+	if c.beforeCopilotRestore != nil {
+		c.beforeCopilotRestore()
+	}
+	restored := false
+	signature := ""
+	err := githubcopilot.WithRecordLock(c.auth.stateDir, name, func() error {
+		path := githubcopilot.AuthFilePath(c.auth.stateDir, name)
+		_, err := os.Stat(path)
+		switch {
+		case err == nil:
+			return nil
+		case !errors.Is(err, os.ErrNotExist):
+			return err
+		}
+		if err := fsatomic.Write(path, raw, 0o600); err != nil {
+			return err
+		}
+		restored = true
+		signature = registry.CopilotRawSignature(name, raw, time.Now())
+		return nil
+	})
+	return restored, signature, err
+}
+
 // captureRefreshRejectionFile reads the refresh-refusal marker (#2479) beside
 // the OAuth state file a removal's cleanup is about to delete, so a later
 // failure can write it back too. DeleteAuth clears the marker once the record
@@ -2403,16 +2678,20 @@ const (
 	supplyConfig
 	supplyStoredKey
 	supplyOAuth
+	supplyCopilotOAuth
 )
 
-// supplyOf reports which removed credential layer carries inst: the OAuth
-// record for the Codex scheme, the stored key for the "store" source, and
-// neither when the authored entry or the provider itself is what holds the
-// instance up. It mirrors credential()'s precedence - the source it reports is
-// the one that actually won.
+// supplyOf reports which removed credential layer carries inst: the Copilot
+// record for the Copilot scheme, the Codex OAuth record, the stored key for
+// the "store" source, and neither when the authored entry or the provider
+// itself is what holds the instance up. It mirrors credential()'s precedence -
+// the source it reports is the one that actually won.
 func supplyOf(inst registry.Instance) removalSupply {
 	switch inst.CredentialSource {
 	case "oauth":
+		if inst.Auth == registry.AuthOAuthGitHubCopilot {
+			return supplyCopilotOAuth
+		}
 		return supplyOAuth
 	case "store":
 		return supplyStoredKey
@@ -2449,35 +2728,58 @@ func supplyOf(inst registry.Instance) removalSupply {
 // rewrites - and never reports a failure to rewrite - a credential that is
 // still where it was. A restore that puts every deleted layer back clears the
 // applied mark, because the removal is then undone.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, refusalBytes []byte, hasRefusal bool, cause, frame error, supplies removalSupply) (bool, error) {
+func (c *hubInstancesController) restoreFailedRemoval(name string, creds removalCredentials, cause, frame error, supplies removalSupply) (bool, error) {
 	var problems []error
 	storedKeyRestored := true
-	if hasStoredKey {
-		if err := c.auth.setCredential(name, storedKey); err != nil {
+	if creds.hasStoredKey {
+		if err := c.auth.setCredential(name, creds.storedKey); err != nil {
 			storedKeyRestored = false
 			problems = append(problems, fmt.Errorf("%w (%w)", errStoredKeyNotRestored, err))
 		}
 	}
 	oauthRestored := true
-	if hasOAuth {
+	if creds.hasOAuth {
 		// Through the writer the auth store uses, so the record this puts back
 		// is replaced atomically: an in-place rewrite of a credential is a
 		// file a reader can catch half written, and a crash inside it leaves
 		// truncated state where this call exists to restore the whole thing.
-		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
+		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), creds.oauthBytes); err != nil {
 			oauthRestored = false
 			problems = append(problems, fmt.Errorf("%w (%w)", errOAuthRecordNotRestored, err))
-		} else if hasRefusal {
+		} else if creds.hasRefusal {
 			// The refresh-refusal marker (#2479) is a sidecar of the record
 			// that just came back: restore it too, best effort, so the
 			// instance does not report signed-in and healthy while its
 			// refresh token is still permanently refused. It never carries
 			// the instance on its own, so a failure here is a stray leftover
 			// rather than a reason to call the restore incomplete.
-			if err := authopenai.WriteAuthFile(authopenai.RefreshRejectionPath(c.auth.stateDir, name), refusalBytes); err != nil {
+			if err := authopenai.WriteAuthFile(authopenai.RefreshRejectionPath(c.auth.stateDir, name), creds.refusalBytes); err != nil {
 				problems = append(problems, fmt.Errorf("%w (%w)", errRefusalMarkerNotRestored, err))
 			}
 		}
+	}
+	copilotRestored := true
+	copilotRestoredHere := false
+	copilotSignature := ""
+	if creds.hasCopilot {
+		restored, signature, err := c.restoreCopilotRecord(name, creds.copilotBytes)
+		copilotRestoredHere = restored
+		copilotSignature = signature
+		if err != nil {
+			copilotRestored = false
+			problems = append(problems, fmt.Errorf("%w (%w)", errCopilotRecordNotRestored, err))
+		}
+		if c.afterCopilotRestore != nil {
+			c.afterCopilotRestore()
+		}
+	}
+	if copilotRestoredHere {
+		// The hub's own captured bytes are back, signed under the record
+		// lock, so adopt exactly that record: the next sweep must not report
+		// the restore as an external login. A login that landed after the
+		// lock was released is a different observation, and a newer login the
+		// restore preserved is not adopted at all.
+		c.setCopilotAuthSignature(name, copilotSignature)
 	}
 	var carried bool
 	switch supplies {
@@ -2485,12 +2787,14 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		carried = storedKeyRestored
 	case supplyOAuth:
 		carried = oauthRestored
+	case supplyCopilotOAuth:
+		carried = copilotRestored
 	default:
 		carried = len(problems) == 0
 	}
 	if !carried {
 		standing := fmt.Errorf("%w; %w, but %w", cause, frame, joinedError{errs: problems, sep: " and "})
-		if supplies == supplyStoredKey || supplies == supplyOAuth {
+		if supplies == supplyStoredKey || supplies == supplyOAuth || supplies == supplyCopilotOAuth {
 			return false, removeApplied(standing)
 		}
 		return false, standing
@@ -2537,6 +2841,14 @@ type removalLeftoversError struct{ joinedError }
 // in place - rewriting either would be a false alarm on a disk that is already
 // refusing writes.
 func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
+	return c.removeCredentialsAndCopilot(name, nil, false)
+}
+
+// removeCredentialsAndCopilot is removeCredentials plus the Copilot record the
+// removal captured. Only a removal that captured a record deletes one, so a
+// login that landed after the capture is not removed as if it were the account
+// the user asked to remove.
+func (c *hubInstancesController) removeCredentialsAndCopilot(name string, copilotBytes []byte, hasCopilot bool) (deletedCredentials, error) {
 	var deleted deletedCredentials
 	// A backstop for the removal flow's own up-front refusal (see
 	// requireCredentialStore): the read below must not dereference a nil store,
@@ -2561,6 +2873,18 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	if removedRecord {
 		c.applied.markApplied()
 	}
+	removedCopilot, err := c.deleteCopilotRecord(name, copilotBytes, hasCopilot)
+	// A delete error can still have removed the record (fsatomic.Remove
+	// unlinks before it syncs), and the rollback restores exactly the layers
+	// this call reports as deleted.
+	deleted.copilotRecord = removedCopilot
+	if err != nil {
+		return deleted, fmt.Errorf("remove %s: delete the Copilot OAuth record: %w", name, err)
+	}
+	if removedCopilot {
+		c.applied.markApplied()
+		c.forgetCopilotAuthSignature(name)
+	}
 	// No probe that dialed the deleted credential may settle. The rejection
 	// itself stays until Remove knows the removal stands: a later failure
 	// puts the credential back.
@@ -2568,11 +2892,51 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 	return deleted, nil
 }
 
+// deleteCopilotRecord removes the captured Copilot record when the removal
+// found one, under the record lock and only while it is still the bytes this
+// removal read: a login that landed in between is a newer account and stays.
+func (c *hubInstancesController) deleteCopilotRecord(name string, captured []byte, hasCaptured bool) (bool, error) {
+	if !hasCaptured {
+		return false, nil
+	}
+	deleteAuth := c.deleteCopilotAuth
+	if deleteAuth == nil {
+		deleteAuth = githubcopilot.DeleteAuth
+	}
+	removed := false
+	err := githubcopilot.WithRecordLock(c.auth.stateDir, name, func() error {
+		raw, err := os.ReadFile(githubcopilot.AuthFilePath(c.auth.stateDir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(raw, captured) {
+			return errCopilotRecordChanged
+		}
+		if err := deleteAuth(c.auth.stateDir, name); err != nil {
+			// fsatomic.Remove unlinks the record before it syncs the
+			// directory, so a sync failure leaves the captured account gone.
+			// Report that deletion to the caller's rollback, which restores
+			// the captured bytes under the same rule.
+			if _, readErr := os.ReadFile(githubcopilot.AuthFilePath(c.auth.stateDir, name)); errors.Is(readErr, os.ErrNotExist) {
+				removed = true
+			}
+			return err
+		}
+		removed = true
+		return nil
+	})
+	return removed, err
+}
+
 // deletedCredentials names which credential layers a removal's cleanup
 // actually removed, so a restore rewrites only those.
 type deletedCredentials struct {
-	storedKey   bool
-	oauthRecord bool
+	storedKey     bool
+	oauthRecord   bool
+	copilotRecord bool
 }
 
 // describeImplicit names what makes an implicit instance exist, so the remove
@@ -2749,22 +3113,26 @@ func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwi
 	return fetchInstanceLive(ctx, c.reg, c.auth, name)
 }
 
-// writeAndReload persists a mutated layer and reloads the registry: the
-// tail Edit and SetModelDisabled share. writeLoadable's dry parse only
-// checks TOML syntax against the registry schema; it does not resolve the
-// config the way Reload does. A standalone instance (no base, and its own
-// name is not a registry id either) that just lost its only base_url is a
-// config that parses fine but cannot resolve an endpoint (llm/registry:
-// "no base URL: set base_url = … or base = <registry id>"), and one bad
-// instance record fails the whole reload, not just this one (#711).
-// Restore the file this call just overwrote instead of leaving every
-// instance operation refused by a config only this write produced. verb
-// names the write in the refusal ("edit", "toggle").
+// reloadAndCheckProvider reloads the registry and rejects the mutation if the
+// targeted provider entry was isolated as broken.
+func (c *hubInstancesController) reloadAndCheckProvider(name string) error {
+	if err := c.reg.Reload(); err != nil {
+		return err
+	}
+	return c.reg.Get().ProviderError(name)
+}
+
+// writeAndReload persists a mutated layer and reloads the registry, rolling
+// back to before if the reload fails or leaves name broken. writeLoadable's
+// dry parse only checks TOML syntax against the registry schema; it does not
+// resolve endpoints or validate provider rules the way Reload does. Restore
+// the previous file instead of committing a broken provider stanza. verb names
+// the write in the refusal ("edit", "toggle").
 func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name, verb string, validate ...func(*registry.Registry) error) error {
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-	err := c.reg.Reload()
+	err := c.reloadAndCheckProvider(name)
 	if err == nil && len(validate) > 0 && validate[0] != nil {
 		err = validate[0](c.reg.Get())
 	}

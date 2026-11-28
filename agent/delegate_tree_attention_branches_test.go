@@ -7,13 +7,23 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
-// attentionWakeIDsOf returns delegateID's owed attention wake IDs from its
-// per-delegate attention state, nil when it owes none.
+// attentionWakeIDsOf returns delegateID's durable attention queue IDs, nil when
+// it owes none. It reads the aggregate without taking c.mu because its callers
+// include tests that already hold the controller lock; callers must not race it
+// with a mutation of the same controller.
 func attentionWakeIDsOf(c *delegateTreeController, delegateID string) map[string]struct{} {
-	if state := c.attention[delegateID]; state != nil {
-		return state.wakeIDs
+	if c == nil {
+		return nil
 	}
-	return nil
+	aggregate := c.durable[delegateID]
+	if aggregate == nil || len(aggregate.PendingAttention) == 0 {
+		return nil
+	}
+	ids := make(map[string]struct{}, len(aggregate.PendingAttention))
+	for _, row := range aggregate.PendingAttention {
+		ids[row.AttentionID] = struct{}{}
+	}
+	return ids
 }
 
 // attentionRestoreFailuresOf returns delegateID's consecutive cold-restore
@@ -32,13 +42,13 @@ func attentionParkedOf(c *delegateTreeController, delegateID string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// delegateAttentionProjectionEligible
+// delegatestore.AttentionProjectionEligible
 // ---------------------------------------------------------------------------
 
 func TestDelegateAttentionProjectionEligibleNilAggregate(t *testing.T) {
 	t.Parallel()
 	state := delegatestore.State{"dlg_1": nil}
-	if delegateAttentionProjectionEligible(state, "dlg_1") {
+	if delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected false for nil aggregate")
 	}
 }
@@ -48,7 +58,7 @@ func TestDelegateAttentionProjectionEligibleNotResumable(t *testing.T) {
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: false},
 	}
-	if delegateAttentionProjectionEligible(state, "dlg_1") {
+	if delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected false for non-resumable")
 	}
 }
@@ -58,7 +68,7 @@ func TestDelegateAttentionProjectionEligiblePendingStop(t *testing.T) {
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: true, PendingStopSeq: 5},
 	}
-	if delegateAttentionProjectionEligible(state, "dlg_1") {
+	if delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected false for pending stop")
 	}
 }
@@ -68,7 +78,7 @@ func TestDelegateAttentionProjectionEligiblePhaseClosed(t *testing.T) {
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: true, Phase: delegatestore.PhaseClosed},
 	}
-	if delegateAttentionProjectionEligible(state, "dlg_1") {
+	if delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected false for closed phase")
 	}
 }
@@ -78,7 +88,7 @@ func TestDelegateAttentionProjectionEligiblePhaseStopping(t *testing.T) {
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: true, Phase: delegatestore.PhaseStopping},
 	}
-	if delegateAttentionProjectionEligible(state, "dlg_1") {
+	if delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected false for stopping phase")
 	}
 }
@@ -88,7 +98,7 @@ func TestDelegateAttentionProjectionEligibleEligible(t *testing.T) {
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: true, Phase: delegatestore.PhaseIdle},
 	}
-	if !delegateAttentionProjectionEligible(state, "dlg_1") {
+	if !delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected true for eligible delegate")
 	}
 }
@@ -103,7 +113,7 @@ func TestDelegateAttentionProjectionEligibleAncestorNotResumable(t *testing.T) {
 		},
 		"dlg_parent": &delegatestore.Aggregate{Resumable: false},
 	}
-	if delegateAttentionProjectionEligible(state, "dlg_1") {
+	if delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected false for non-resumable ancestor")
 	}
 }
@@ -117,7 +127,7 @@ func TestDelegateAttentionProjectionEligibleAncestorNil(t *testing.T) {
 			Descriptor: delegatestore.Descriptor{ParentDelegateID: "dlg_missing"},
 		},
 	}
-	if delegateAttentionProjectionEligible(state, "dlg_1") {
+	if delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected false for nil ancestor")
 	}
 }
@@ -132,7 +142,7 @@ func TestDelegateAttentionProjectionEligibleAncestorEligible(t *testing.T) {
 		},
 		"dlg_parent": &delegatestore.Aggregate{Resumable: true, Phase: delegatestore.PhaseIdle},
 	}
-	if !delegateAttentionProjectionEligible(state, "dlg_1") {
+	if !delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected true for eligible with resumable ancestor")
 	}
 }
@@ -151,7 +161,7 @@ func TestDelegateAttentionProjectionEligibleCycle(t *testing.T) {
 			Descriptor: delegatestore.Descriptor{ParentDelegateID: "dlg_1"},
 		},
 	}
-	if delegateAttentionProjectionEligible(state, "dlg_1") {
+	if delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected false for cycle")
 	}
 }
@@ -165,19 +175,19 @@ func TestDelegateAttentionProjectionEligibleEmptyParent(t *testing.T) {
 			Descriptor: delegatestore.Descriptor{ParentDelegateID: ""},
 		},
 	}
-	if !delegateAttentionProjectionEligible(state, "dlg_1") {
+	if !delegatestore.AttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected true for empty parent (root delegate)")
 	}
 }
 
 // ---------------------------------------------------------------------------
-// noteDelegateAttentionLocked
+// noteDelegateAttentionLocked (through noteDelegateAttentionForTest)
 // ---------------------------------------------------------------------------
 
 func TestNoteDelegateAttentionLockedEmptyDelegateID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	if c.noteDelegateAttentionLocked("", "att_1") {
+	if c.noteDelegateAttentionForTest("", "att_1") {
 		t.Fatalf("expected false for empty delegate ID")
 	}
 }
@@ -187,7 +197,7 @@ func TestNoteDelegateAttentionLockedEmptyAttentionID(t *testing.T) {
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{"dlg_1": {}},
 	}
-	if c.noteDelegateAttentionLocked("dlg_1", "") {
+	if c.noteDelegateAttentionForTest("dlg_1", "") {
 		t.Fatalf("expected false for empty attention ID")
 	}
 }
@@ -197,61 +207,59 @@ func TestNoteDelegateAttentionLockedNilAggregate(t *testing.T) {
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{},
 	}
-	if c.noteDelegateAttentionLocked("dlg_missing", "att_1") {
+	if c.noteDelegateAttentionForTest("dlg_missing", "att_1") {
 		t.Fatalf("expected false for nil aggregate")
 	}
 }
 
 func TestNoteDelegateAttentionLockedNew(t *testing.T) {
 	t.Parallel()
-	c := &delegateTreeController{
-		durable:   map[string]*delegatestore.Aggregate{"dlg_1": {}},
-		attention: map[string]*delegateAttentionState{},
-	}
-	if !c.noteDelegateAttentionLocked("dlg_1", "att_1") {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_1", "")
+	if !c.noteDelegateAttentionForTest("dlg_1", "att_1") {
 		t.Fatalf("expected true for new attention")
 	}
-	if len(attentionWakeIDsOf(c, "dlg_1")) != 1 {
-		t.Fatalf("expected 1 attention ID")
+	if got := c.attentionWakeIDsForTest("dlg_1"); len(got) != 1 {
+		t.Fatalf("queue holds %v, want 1 attention ID", got)
 	}
-	if _, committed := c.attention["dlg_1"].committedWakeIDs["att_1"]; !committed {
+	if _, committed := c.attentionCommittedWakeIDsForTest("dlg_1")["att_1"]; !committed {
 		t.Fatal("noting new attention did not mark its wake committed")
+	}
+	c.mu.Lock()
+	needsAttention := c.durable["dlg_1"].NeedsAttention
+	c.mu.Unlock()
+	if !needsAttention {
+		t.Fatal("noting new attention did not derive NeedsAttention from its row")
 	}
 }
 
 func TestNoteDelegateAttentionLockedDuplicate(t *testing.T) {
 	t.Parallel()
-	c := &delegateTreeController{
-		durable: map[string]*delegatestore.Aggregate{"dlg_1": {}},
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {
-				wakeIDs:          map[string]struct{}{"att_1": {}},
-				committedWakeIDs: map[string]struct{}{"att_1": {}},
-			},
-		},
-	}
-	if c.noteDelegateAttentionLocked("dlg_1", "att_1") {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_1", "")
+	c.seedAttentionRowForTest("dlg_1", "att_1", true)
+	if c.noteDelegateAttentionForTest("dlg_1", "att_1") {
 		t.Fatalf("expected false for duplicate attention")
 	}
 }
 
-// A start commit copies the rows its generation carries into the owed set
-// alone. Committing one of them for the first time is new attention to the
-// drive: it reports true, so the caller knows the wake published, and it takes
-// the committed mark every other owed row it joins has.
+// A start commit copies the rows its generation carries into the durable queue
+// uncommitted. Committing one of them for the first time is new attention to
+// the drive: it reports true, so the caller knows the wake published, and the
+// row takes the committed mark its arm's wake owns.
 func TestNoteDelegateAttentionLockedCommitsACopiedRider(t *testing.T) {
 	t.Parallel()
-	c := &delegateTreeController{
-		durable: map[string]*delegatestore.Aggregate{"dlg_1": {}},
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
-		},
-	}
-	if !c.noteDelegateAttentionLocked("dlg_1", "att_1") {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_1", "")
+	c.seedAttentionRowForTest("dlg_1", "att_1", false)
+	if !c.noteDelegateAttentionForTest("dlg_1", "att_1") {
 		t.Fatalf("expected true for a copied rider's first commit")
 	}
-	if _, committed := c.attention["dlg_1"].committedWakeIDs["att_1"]; !committed {
+	if _, committed := c.attentionCommittedWakeIDsForTest("dlg_1")["att_1"]; !committed {
 		t.Fatal("the copied rider was not marked committed")
+	}
+	if got := c.attentionWakeIDsForTest("dlg_1"); len(got) != 1 {
+		t.Fatalf("committing the rider changed the queue to %v, want its one row", got)
 	}
 }
 
@@ -261,143 +269,66 @@ func TestNoteDelegateAttentionLockedCommitsACopiedRider(t *testing.T) {
 
 func TestForgetDelegateAttentionLocked(t *testing.T) {
 	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {
-				wakeIDs:          map[string]struct{}{"att_1": {}, "att_2": {}},
-				committedWakeIDs: map[string]struct{}{"att_1": {}, "att_2": {}},
-			},
-		},
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_1", "")
+	c.seedAttentionRowForTest("dlg_1", "att_1", true)
+	c.seedAttentionRowForTest("dlg_1", "att_2", true)
+	c.mu.Lock()
+	err := c.forgetDelegateAttentionLocked("dlg_1", "att_1")
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("forget att_1: %v", err)
 	}
-	c.forgetDelegateAttentionLocked("dlg_1", "att_1")
 	if _, exists := attentionWakeIDsOf(c, "dlg_1")["att_1"]; exists {
-		t.Fatalf("expected att_1 to be deleted")
+		t.Fatalf("expected att_1 to be resolved")
 	}
-	if _, exists := c.attention["dlg_1"].committedWakeIDs["att_1"]; exists {
-		t.Fatalf("forgetting att_1 left its committed mark behind")
+	if _, committed := c.attentionCommittedWakeIDsForTest("dlg_1")["att_1"]; committed {
+		t.Fatalf("forgetting att_1 left its committed row behind")
 	}
-	if state := c.attention["dlg_1"]; state == nil || len(state.wakeIDs) != 1 {
-		t.Fatalf("expected dlg_1 to still owe att_2")
+	if ids := c.attentionWakeIDsForTest("dlg_1"); len(ids) != 1 {
+		t.Fatalf("queue = %v, want dlg_1 to still owe att_2", ids)
 	}
 }
 
 func TestForgetDelegateAttentionLockedLastID(t *testing.T) {
 	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
-		},
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_1", "")
+	c.seedAttentionRowForTest("dlg_1", "att_1", true)
+	c.mu.Lock()
+	err := c.forgetDelegateAttentionLocked("dlg_1", "att_1")
+	rows := len(c.durable["dlg_1"].PendingAttention)
+	needsAttention := c.durable["dlg_1"].NeedsAttention
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("forget att_1: %v", err)
 	}
-	c.forgetDelegateAttentionLocked("dlg_1", "att_1")
-	if state := c.attention["dlg_1"]; state != nil {
-		t.Fatalf("expected dlg_1's attention state to be dropped when no IDs remain")
+	if rows != 0 {
+		t.Fatalf("expected an empty queue once the last ID is forgotten, got %d rows", rows)
+	}
+	if needsAttention {
+		t.Fatal("forgetting the last row left NeedsAttention raised")
 	}
 }
 
 func TestForgetDelegateAttentionLockedNonExistent(t *testing.T) {
 	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{},
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_1", "")
+	c.seedAttentionRowForTest("dlg_1", "att_1", true)
+	c.mu.Lock()
+	before := c.durable["dlg_1"].ProjectionRevision
+	err := c.forgetDelegateAttentionLocked("dlg_1", "att_missing")
+	after := c.durable["dlg_1"].ProjectionRevision
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("forgetting a missing ID: %v", err)
 	}
-	c.forgetDelegateAttentionLocked("dlg_missing", "att_1") // should be a no-op
-}
-
-// ---------------------------------------------------------------------------
-// replaceDelegateAttentionLocked
-// ---------------------------------------------------------------------------
-
-func TestReplaceDelegateAttentionLockedEmpty(t *testing.T) {
-	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}, driveTurn: 3},
-		},
+	if after != before {
+		t.Fatalf("forgetting a missing ID appended an event: revision %d -> %d", before, after)
 	}
-	c.replaceDelegateAttentionLocked("dlg_1", nil)
-	// A delegate that no longer owes attention leaves the drive's line: its
-	// whole attention state, wake IDs and drive turn together.
-	if _, exists := c.attention["dlg_1"]; exists {
-		t.Fatalf("expected dlg_1's attention state to be dropped for empty list")
-	}
-}
-
-func TestReplaceDelegateAttentionLockedWithIDs(t *testing.T) {
-	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{},
-	}
-	c.replaceDelegateAttentionLocked("dlg_1", []string{"att_1", "att_2"})
-	if len(attentionWakeIDsOf(c, "dlg_1")) != 2 {
-		t.Fatalf("expected 2 IDs")
-	}
-	if got := len(c.attention["dlg_1"].committedWakeIDs); got != 0 {
-		t.Fatalf("the replacement marked %d newly copied riders committed, want none", got)
-	}
-}
-
-// A replacement prunes the committed marks its new set no longer carries and
-// keeps the ones it still does: the fold's pending set says what is owed, and a
-// row it stops owing cannot keep a mark that would make its next arm look like a
-// duplicate.
-func TestReplaceDelegateAttentionLockedPrunesOnlyTheMarksItDrops(t *testing.T) {
-	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {
-				wakeIDs:          map[string]struct{}{"att_kept": {}, "att_dropped": {}},
-				committedWakeIDs: map[string]struct{}{"att_kept": {}, "att_dropped": {}},
-			},
-		},
-	}
-	c.replaceDelegateAttentionLocked("dlg_1", []string{"att_kept", "att_new"})
-	committed := c.attention["dlg_1"].committedWakeIDs
-	if _, kept := committed["att_kept"]; !kept {
-		t.Fatal("the replacement dropped a committed wake it still owed")
-	}
-	if _, dropped := committed["att_dropped"]; dropped {
-		t.Fatal("the replacement kept a committed mark for a row it no longer owes")
-	}
-	if _, copied := committed["att_new"]; copied {
-		t.Fatal("the replacement marked a newly copied rider committed: its first arm would be skipped")
-	}
-}
-
-func TestReplaceDelegateAttentionLockedEmptyStringsFiltered(t *testing.T) {
-	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{},
-	}
-	c.replaceDelegateAttentionLocked("dlg_1", []string{"att_1", "", "att_2", ""})
-	if len(attentionWakeIDsOf(c, "dlg_1")) != 2 {
-		t.Fatalf("expected 2 IDs (empty strings filtered)")
-	}
-}
-
-func TestReplaceDelegateAttentionLockedAllEmptyStrings(t *testing.T) {
-	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {driveTurn: 3},
-		},
-	}
-	c.replaceDelegateAttentionLocked("dlg_1", []string{"", ""})
-	if _, exists := c.attention["dlg_1"]; exists {
-		t.Fatalf("expected dlg_1's attention state to be dropped when all IDs are empty")
-	}
-}
-
-func TestReplaceDelegateAttentionLockedEmptyDelegateID(t *testing.T) {
-	t.Parallel()
-	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
-		},
-	}
-	c.replaceDelegateAttentionLocked("", []string{"att_1"})
-	// empty delegateID should delete from the map key ""
-	// but dlg_1 should still exist
-	if _, exists := c.attention["dlg_1"]; !exists {
-		t.Fatalf("dlg_1 should still exist")
+	if _, kept := attentionWakeIDsOf(c, "dlg_1")["att_1"]; !kept {
+		t.Fatal("forgetting a missing ID resolved an existing row")
 	}
 }
 
@@ -427,11 +358,14 @@ func TestHasPendingDelegateAttentionEmpty(t *testing.T) {
 func TestHasPendingDelegateAttentionWithPending(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
-		},
 		durable: map[string]*delegatestore.Aggregate{
-			"dlg_1": {Resumable: true, PendingStopSeq: 0, Phase: delegatestore.PhaseIdle},
+			"dlg_1": {
+				Resumable: true,
+				Phase:     delegatestore.PhaseIdle,
+				PendingAttention: []delegatestore.PendingAttention{
+					{AttentionID: "att_1", Committed: true},
+				},
+			},
 		},
 	}
 	if !c.hasPendingDelegateAttention() {
@@ -442,11 +376,13 @@ func TestHasPendingDelegateAttentionWithPending(t *testing.T) {
 func TestHasPendingDelegateAttentionNotResumable(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {wakeIDs: map[string]struct{}{"att_1": {}}},
-		},
 		durable: map[string]*delegatestore.Aggregate{
-			"dlg_1": {Resumable: false},
+			"dlg_1": {
+				Resumable: false,
+				PendingAttention: []delegatestore.PendingAttention{
+					{AttentionID: "att_1", Committed: true},
+				},
+			},
 		},
 	}
 	if c.hasPendingDelegateAttention() {
@@ -476,18 +412,15 @@ func TestHasPendingDelegateAttentionClosedPhase(t *testing.T) {
 	}
 }
 
-func TestHasPendingDelegateAttentionEmptyIDs(t *testing.T) {
+func TestHasPendingDelegateAttentionEmptyQueue(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {},
-		},
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Resumable: true},
 		},
 	}
 	if c.hasPendingDelegateAttention() {
-		t.Fatalf("expected false for empty IDs")
+		t.Fatalf("expected false for an empty queue")
 	}
 }
 
@@ -599,7 +532,7 @@ func TestReconcileDelegateAttentionFromTranscriptsNil(t *testing.T) {
 func TestTryOpenDelegateAttentionNilController(t *testing.T) {
 	t.Parallel()
 	var c *delegateTreeController
-	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
+	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -608,7 +541,7 @@ func TestTryOpenDelegateAttentionNilController(t *testing.T) {
 func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	_, _, _, _, _, err := c.tryOpenDelegateAttention("", "att_1")
+	_, _, _, _, err := c.tryOpenDelegateAttention("", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -617,7 +550,7 @@ func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
 func TestTryOpenDelegateAttentionEmptyAttentionID(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{}
-	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "")
+	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable, got %v", err)
 	}
@@ -626,10 +559,9 @@ func TestTryOpenDelegateAttentionEmptyAttentionID(t *testing.T) {
 func TestTryOpenDelegateAttentionNilAggregate(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
-		durable:   map[string]*delegatestore.Aggregate{},
-		attention: map[string]*delegateAttentionState{},
+		durable: map[string]*delegatestore.Aggregate{},
 	}
-	_, _, _, _, _, err := c.tryOpenDelegateAttention("dlg_missing", "att_1")
+	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_missing", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
 		t.Fatalf("expected errDelegateNotControllable for nil aggregate, got %v", err)
 	}
@@ -637,23 +569,15 @@ func TestTryOpenDelegateAttentionNilAggregate(t *testing.T) {
 
 func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
 	t.Parallel()
-	c := &delegateTreeController{
-		durable: map[string]*delegatestore.Aggregate{
-			"dlg_1": {NeedsAttention: true},
-		},
-		attention: map[string]*delegateAttentionState{
-			"dlg_1": {
-				wakeIDs:          map[string]struct{}{"att_1": {}},
-				committedWakeIDs: map[string]struct{}{"att_1": {}},
-			},
-		},
-	}
-	added, blocker, _, emit, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_1", "")
+	c.seedAttentionRowForTest("dlg_1", "att_1", true)
+	added, blocker, _, emit, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if added {
-		t.Fatalf("expected added=false for duplicate")
+		t.Fatalf("expected added=false for a committed row")
 	}
 	if blocker != nil {
 		t.Fatalf("expected nil blocker")
@@ -663,168 +587,81 @@ func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
 	}
 }
 
-// A start commit copies the rows the generation carries into the delegate's
-// wake set without any of them having been admitted. That copy is the transcript
-// fold's word on what the generation owes, not evidence that a wake passed the
-// gate: the first arm of such a row must still publish its wake and journal the
-// release a settled user-stop quiet owes, exactly as an arm of any other owed
-// row does. Only once it has committed is a repeat arm the duplicate it looks
-// like.
-func TestTryOpenDelegateAttentionCommitsACopiedPendingRider(t *testing.T) {
-	t.Parallel()
-	c, _ := newDelegateControllerTestHarness(t, 2, 1)
-	seedDelegateControllerIdle(t, c, "dlg_rider", "")
-	journalStopAtGeneration(t, c, "dlg_rider", 1)
-
-	const attentionID = "delegate:copied-rider"
-	c.mu.Lock()
-	c.replaceDelegateAttentionLocked("dlg_rider", []string{attentionID})
-	_, copied := attentionWakeIDsOf(c, "dlg_rider")[attentionID]
-	_, committed := c.attention["dlg_rider"].committedWakeIDs[attentionID]
-	c.mu.Unlock()
-	if !copied || committed {
-		t.Fatalf("premise broken: rider copied=%t committed=%t, want the copy alone", copied, committed)
-	}
-
-	added, blocker, _, _, generation, err := c.tryOpenDelegateAttention("dlg_rider", attentionID)
-	if err != nil {
-		t.Fatalf("arm the copied rider: %v", err)
-	}
-	if blocker != nil {
-		t.Fatal("the copied rider's first arm was blocked")
-	}
-	if !added {
-		t.Fatal("the copied rider's first arm did not commit it")
-	}
-	if generation != 1 {
-		t.Fatalf("the copied rider's first arm superseded generation %d, want the settled generation 1", generation)
-	}
-	c.mu.Lock()
-	floor := c.durable["dlg_rider"].AttentionHoldReleasedGeneration
-	recorded := c.attention["dlg_rider"].releasedGeneration
-	_, committed = c.attention["dlg_rider"].committedWakeIDs[attentionID]
-	c.mu.Unlock()
-	if floor != 1 {
-		t.Fatalf("the copied rider's arm journaled no release (floor %d, want 1): a cold restore rebuilds the quiet over the row the wake freed", floor)
-	}
-	if recorded != 1 {
-		t.Fatalf("the copied rider's arm recorded released generation %d, want 1", recorded)
-	}
-	if !committed {
-		t.Fatal("the copied rider's arm did not mark the wake committed")
-	}
-
-	added, blocker, _, _, generation, err = c.tryOpenDelegateAttention("dlg_rider", attentionID)
-	if err != nil {
-		t.Fatalf("repeat the copied rider's arm: %v", err)
-	}
-	if added || blocker != nil || generation != 0 {
-		t.Fatalf("repeat arm = added:%t blocked:%t generation:%d, want an idempotent no-op", added, blocker != nil, generation)
-	}
-	c.mu.Lock()
-	repeat := c.durable["dlg_rider"].AttentionHoldReleasedGeneration
-	c.mu.Unlock()
-	if repeat != 1 {
-		t.Fatalf("repeat arm moved the release floor to %d: a committed wake must not publish again", repeat)
-	}
-}
-
 // ---------------------------------------------------------------------------
-// delegateAttentionOpenEventLocked
+// delegateAttentionWillRaiseLocked
 // ---------------------------------------------------------------------------
 
-func TestDelegateAttentionOpenEventLockedNilAggregate(t *testing.T) {
+func TestDelegateAttentionWillRaiseLockedNilAggregate(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{},
 	}
-	_, err := c.delegateAttentionOpenEventLocked("dlg_missing")
-	if !errors.Is(err, errDelegateNotControllable) {
-		t.Fatalf("expected errDelegateNotControllable, got %v", err)
+	if c.delegateAttentionWillRaiseLocked("dlg_missing") {
+		t.Fatalf("expected false for a nil aggregate")
 	}
 }
 
-func TestDelegateAttentionOpenEventLockedNeedsAttention(t *testing.T) {
+func TestDelegateAttentionWillRaiseLockedNeedsAttention(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
-			"dlg_1": {NeedsAttention: true},
+			"dlg_1": {NeedsAttention: true, Resumable: true, Phase: delegatestore.PhaseIdle},
 		},
 	}
-	event, err := c.delegateAttentionOpenEventLocked("dlg_1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if event != nil {
-		t.Fatalf("expected nil event when already NeedsAttention")
+	if c.delegateAttentionWillRaiseLocked("dlg_1") {
+		t.Fatalf("expected false when NeedsAttention is already raised")
 	}
 }
 
-func TestDelegateAttentionOpenEventLockedNotResumable(t *testing.T) {
+func TestDelegateAttentionWillRaiseLockedNotResumable(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: false, Resumable: false},
 		},
 	}
-	event, err := c.delegateAttentionOpenEventLocked("dlg_1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if event != nil {
-		t.Fatalf("expected nil event for non-resumable")
+	if c.delegateAttentionWillRaiseLocked("dlg_1") {
+		t.Fatalf("expected false for a non-resumable delegate")
 	}
 }
 
-func TestDelegateAttentionOpenEventLockedPendingStop(t *testing.T) {
+func TestDelegateAttentionWillRaiseLockedPendingStop(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: false, Resumable: true, PendingStopSeq: 5},
 		},
 	}
-	event, err := c.delegateAttentionOpenEventLocked("dlg_1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if event != nil {
-		t.Fatalf("expected nil event for pending stop")
+	if c.delegateAttentionWillRaiseLocked("dlg_1") {
+		t.Fatalf("expected false for a pending stop")
 	}
 }
 
-func TestDelegateAttentionOpenEventLockedPhaseClosed(t *testing.T) {
+func TestDelegateAttentionWillRaiseLockedPhaseClosed(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: false, Resumable: true, Phase: delegatestore.PhaseClosed},
 		},
 	}
-	event, err := c.delegateAttentionOpenEventLocked("dlg_1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if event != nil {
-		t.Fatalf("expected nil event for closed phase")
+	if c.delegateAttentionWillRaiseLocked("dlg_1") {
+		t.Fatalf("expected false for a closed phase")
 	}
 }
 
-func TestDelegateAttentionOpenEventLockedPhaseStopping(t *testing.T) {
+func TestDelegateAttentionWillRaiseLockedPhaseStopping(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: false, Resumable: true, Phase: delegatestore.PhaseStopping},
 		},
 	}
-	event, err := c.delegateAttentionOpenEventLocked("dlg_1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if event != nil {
-		t.Fatalf("expected nil event for stopping phase")
+	if c.delegateAttentionWillRaiseLocked("dlg_1") {
+		t.Fatalf("expected false for a stopping phase")
 	}
 }
 
-func TestDelegateAttentionOpenEventLockedEligible(t *testing.T) {
+func TestDelegateAttentionWillRaiseLockedEligible(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
@@ -835,15 +672,30 @@ func TestDelegateAttentionOpenEventLockedEligible(t *testing.T) {
 			},
 		},
 	}
-	event, err := c.delegateAttentionOpenEventLocked("dlg_1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !c.delegateAttentionWillRaiseLocked("dlg_1") {
+		t.Fatalf("expected true for an eligible delegate with an empty queue")
 	}
-	if event == nil {
-		t.Fatalf("expected non-nil event for eligible delegate")
+}
+
+// A queued row with the projection still false is exactly the inconsistent
+// state the next queue-changing event repairs: the projection is derived from
+// the unheld rows, so the raise is still owed.
+func TestDelegateAttentionWillRaiseLockedRepairsAnUnraisedQueuedRow(t *testing.T) {
+	t.Parallel()
+	c := &delegateTreeController{
+		durable: map[string]*delegatestore.Aggregate{
+			"dlg_1": {
+				NeedsAttention: false,
+				Resumable:      true,
+				Phase:          delegatestore.PhaseIdle,
+				PendingAttention: []delegatestore.PendingAttention{
+					{AttentionID: "att_1", Committed: true},
+				},
+			},
+		},
 	}
-	if event.AttentionChanged == nil || !event.AttentionChanged.NeedsAttention {
-		t.Fatalf("expected NeedsAttention=true in event")
+	if !c.delegateAttentionWillRaiseLocked("dlg_1") {
+		t.Fatalf("expected true: the unraised pending row still owes its projection")
 	}
 }
 
@@ -979,5 +831,47 @@ func TestDelegateAttentionWakeEligibleLockedWithNonAttentionReservation(t *testi
 	}
 	if c.delegateAttentionWakeEligibleLocked("dlg_1") {
 		t.Fatalf("expected false for non-attention reservation")
+	}
+}
+
+// A finalizer can read a pending row, lose the controller lock to a stop that
+// resolves or discards it, and then arm that stale identity. The arm must see
+// the journal resolution under c.mu and become a clean no-op, while a fresh
+// delivery still queues and raises NeedsAttention.
+func TestOpenDelegateAttentionIgnoresResolvedRow(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	const (
+		staleID = "attention-resolved-late"
+		freshID = "attention-fresh-after-resolved"
+	)
+	if !c.noteDelegateAttentionForTest("dlg_target", staleID) {
+		t.Fatal("seed the stale attention row")
+	}
+	if err := c.forgetDelegateAttention("dlg_target", staleID); err != nil {
+		t.Fatalf("resolve the stale attention row: %v", err)
+	}
+	added, err := c.openDelegateAttention("dlg_target", staleID)
+	if err != nil || added {
+		t.Fatalf("late arm of a resolved row = added:%t err:%v, want a no-op", added, err)
+	}
+	if rows := pendingAttentionRowsForTest(t, c, "dlg_target"); len(rows) != 0 {
+		t.Fatalf("resolved row was resurrected: %#v", rows)
+	}
+	if needsAttentionForTest(t, c, "dlg_target") {
+		t.Fatal("late arm of a resolved row raised NeedsAttention")
+	}
+
+	added, err = c.openDelegateAttention("dlg_target", freshID)
+	if err != nil || !added {
+		t.Fatalf("fresh arm = added:%t err:%v, want the row queued and its wake raised", added, err)
+	}
+	rows := pendingAttentionRowsForTest(t, c, "dlg_target")
+	if len(rows) != 1 || rows[0].AttentionID != freshID || !rows[0].Committed {
+		t.Fatalf("fresh delivery rows = %#v, want one committed %q row", rows, freshID)
+	}
+	if !needsAttentionForTest(t, c, "dlg_target") {
+		t.Fatal("fresh arm did not raise NeedsAttention")
 	}
 }

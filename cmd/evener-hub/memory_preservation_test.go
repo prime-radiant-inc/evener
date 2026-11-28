@@ -53,7 +53,7 @@ func (a *memoryPreservationAdapter) Complete(_ context.Context, req llm.Request)
 		a.reads++
 	}
 	if a.stage == 2 {
-		raw, _ := json.Marshal(map[string]any{"message": "surviving wiki read", "end_turn": true, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
+		raw, _ := json.Marshal(map[string]any{"message": "surviving wiki read", "next": "send_and_end_turn", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
 		call := llm.ToolCallData{ID: "memory-finished", Name: "communicate", Type: "function", Arguments: raw}
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}, nil
 	}

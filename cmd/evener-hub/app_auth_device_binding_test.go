@@ -8,9 +8,39 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/githubcopilot"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 )
+
+// TestAuth_CopilotDevicePollRejectsAFlowForAnotherInstance pins the same
+// provider binding on the Copilot flow: a flow started for one instance is not
+// pollable under another's name, and the refusal must not reach GitHub.
+func TestAuth_CopilotDevicePollRejectsAFlowForAnotherInstance(t *testing.T) {
+	ctrl, transport, now := newCopilotDeviceTestController(t,
+		"[providers.alpha]\nbase = \"github-copilot\"\n[providers.beta]\nbase = \"github-copilot\"\n")
+	ctrl.generateState = func() (string, error) { return "flow-alpha", nil }
+	start, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "alpha"})
+	if err != nil {
+		t.Fatalf("DeviceStart(alpha): %v", err)
+	}
+	_, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "beta", FlowID: start.FlowID})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("DevicePoll(beta) error = %v, want invalid params", err)
+	}
+	if calls := transport.callCount("/login/oauth/access_token"); calls != 0 {
+		t.Fatalf("GitHub poll calls = %d, want 0 for a mismatched provider", calls)
+	}
+	if _, err := githubcopilot.LoadAuth(ctrl.stateDir, "alpha"); !errors.Is(err, githubcopilot.ErrAuthNotFound) {
+		t.Fatalf("alpha record err = %v, want ErrAuthNotFound", err)
+	}
+	*now = now.Add(5 * time.Second)
+	pending, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "alpha", FlowID: start.FlowID})
+	if err != nil || pending.State != "pending" {
+		t.Fatalf("alpha poll = %+v err=%v, want the original flow still pending", pending, err)
+	}
+}
 
 func TestAuth_DevicePollRejectsAFlowForAnotherCodexInstance(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)

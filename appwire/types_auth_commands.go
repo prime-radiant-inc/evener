@@ -241,6 +241,12 @@ type InstanceEntry struct {
 	// Warnings are the registry's own notes about this instance, chiefly
 	// what is missing and how to supply it.
 	Warnings []string `json:"warnings,omitempty"`
+	// LoadError is non-empty when this authored providers.toml entry failed
+	// load or validation and was isolated from active instances. Hidden is
+	// also true so clients that do not read LoadError never treat the row as
+	// usable, while Settings can inspect, repair (including changing Base),
+	// or remove it.
+	LoadError string `json:"loadError,omitempty"`
 	// Models is the instance's known models with their effective
 	// disabled state, for the sheet's per-model toggles: live ids plus
 	// additive overlay/config rows when usable, otherwise static fallback
@@ -355,6 +361,8 @@ type InstanceCreateParams struct {
 type InstanceEditParams struct {
 	Name                    string            `json:"name"`
 	NewName                 string            `json:"newName,omitempty"`
+	Base                    string            `json:"base,omitempty"`
+	ClearBase               bool              `json:"clearBase,omitempty"`
 	BaseURL                 string            `json:"baseUrl,omitempty"`
 	ClearBaseURL            bool              `json:"clearBaseUrl,omitempty"`
 	Protocol                string            `json:"protocol,omitempty"`
@@ -1018,6 +1026,10 @@ type SettingsHubOverview struct {
 	Commit string `json:"commit,omitempty"`
 	// BuildChannel is buildinfo.BuildChannel(): release, snapshot, or dev.
 	BuildChannel string `json:"buildChannel,omitempty"`
+	// BuildTime is the ISO8601 timestamp embedded at build time (buildinfo.BuildTime).
+	BuildTime string `json:"buildTime,omitempty"`
+	// ReleaseTag is the GitHub release tag this build was published from (buildinfo.ReleaseTag).
+	ReleaseTag string `json:"releaseTag,omitempty"`
 	// ListenAddr is the hub HTTP server's bind address.
 	// Source: web_settings.go settingsData.HubAddr (cfg.HubAddr).
 	ListenAddr string `json:"listenAddr,omitempty"`

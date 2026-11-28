@@ -21,7 +21,7 @@ func confirmedStoppedDeletionFixture(t *testing.T) (hubcore.WebConfig, string) {
 	id := hubtest.SessionID(t)
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{id})
-	if err := locks.PersistForceStop([]string{id}, id); err != nil {
+	if _, err := locks.PersistForceStop([]string{id}, id, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(id); err != nil {

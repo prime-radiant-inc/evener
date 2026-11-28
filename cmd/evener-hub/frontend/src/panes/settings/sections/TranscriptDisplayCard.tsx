@@ -12,6 +12,7 @@ import { Button, Card, Disclosure, InlineNotice } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptBody } from "../../session/transcript/TranscriptBody";
 import { TranscriptDetailEditor } from "../../session/transcript/TranscriptDetailEditor";
+import { SectionStatus } from "./sectionStatus";
 import styles from "./transcriptDisplayCard.module.css";
 
 export interface TranscriptDisplayCardProps {
@@ -37,7 +38,6 @@ const CLASS = {
   inventory: requireClass(styles.inventory, "transcriptDisplayCard.module.css", "inventory"),
   inventoryRow: requireClass(styles.inventoryRow, "transcriptDisplayCard.module.css", "inventoryRow"),
   scope: requireClass(styles.scope, "transcriptDisplayCard.module.css", "scope"),
-  status: requireClass(styles.status, "transcriptDisplayCard.module.css", "status"),
 };
 
 const CATEGORY_LABELS: Readonly<Record<TranscriptDisplayCategory, string>> = {
@@ -121,11 +121,7 @@ export function TranscriptDisplayCard({
             <TranscriptDetailEditor value={config} onChange={onChange} compact={false} disabled={disabled} />
           </div>
 
-          {saveState === "saving" && (
-            <p className={CLASS.status} role="status" aria-live="polite">
-              Saving hub default…
-            </p>
-          )}
+          {saveState === "saving" && <SectionStatus>Saving hub default…</SectionStatus>}
           {saveState === "error" && (
             <InlineNotice
               tone="danger"

@@ -31,24 +31,30 @@
           <span class="textCol">
             <span class="titleLine">
               <span class="label bandLabel">Needs you</span>
+              <span class="railCount"><span aria-hidden="true">&middot;</span><span class="countNum" data-testid="rail-row-band-count">3</span></span>
               <button type="button" class="chevronButton" aria-hidden="true" tabindex="-1">&#8250;</button>
             </span>
           </span>
-          <span class="bandCount" data-testid="rail-row-band-count"><span class="badge badgeAttention">3</span></span>
         </span>
       </div>
       <div role="group" class="group">
 
-        <div role="treeitem" class="row" aria-level="2">
+        <div role="treeitem" class="row selectableRow" aria-selected="true" aria-level="2">
           <span class="railRow" id="row-long">
             <span class="textCol">
               <span class="titleLine">
                 <span class="signal"></span>
-                <span class="label" id="label-why">Verify Vite Build</span>
+                <span class="wrapper block"><button type="button" class="label sessionTitleButton">
+                  <span class="label" id="label-why">Verify Vite Build</span>
+                  <span class="why" id="why-long" data-testid="rail-row-why"><span class="whyReason" data-hue="attention">Waiting on approval</span> &middot; a-remarkably-long-host-name-that-cannot-possibly-fit-in-a-narrow-rail.internal.example.com (offline) and then some more words to be sure</span>
+                </button></span>
               </span>
-              <span class="why" id="why-long" data-testid="rail-row-why"><span class="whyReason" data-hue="attention">Waiting on approval</span> &middot; a-remarkably-long-host-name-that-cannot-possibly-fit-in-a-narrow-rail.internal.example.com (offline) and then some more words to be sure</span>
             </span>
-            <span class="rightSlot"><span class="time">4m</span></span>
+            <span class="rightSlot">
+              <span class="meta"><span class="time">4m</span></span>
+              <!-- The menu's icon trigger is sized by the tap floor on phones. -->
+              <span class="actions" aria-hidden="true"><span class="tapFloorSquare"></span></span>
+            </span>
           </span>
         </div>
 
@@ -56,7 +62,9 @@
           <span class="railRow">
             <span class="textCol">
               <span class="titleLine">
-                <span class="label" id="label-quiet">Rename Session Gloss</span>
+                <span class="wrapper block"><button type="button" class="label sessionTitleButton">
+                  <span class="label" id="label-quiet">Rename Session Gloss</span>
+                </button></span>
               </span>
             </span>
             <span class="rightSlot"><span class="time">9m</span></span>
@@ -67,9 +75,10 @@
           <span class="railRow">
             <span class="textCol">
               <span class="titleLine">
-                <span class="label">Short Why</span>
+                <span class="wrapper block"><button type="button" class="label sessionTitleButton">
+                  <span class="label">Short Why</span><span class="why" id="why-short" data-testid="rail-row-why">Idle</span>
+                </button></span>
               </span>
-              <span class="why" id="why-short" data-testid="rail-row-why">Idle</span>
             </span>
             <span class="rightSlot"><span class="time">1h</span></span>
           </span>
@@ -86,7 +95,21 @@ window.measure = () => {
     const r = el(id).getBoundingClientRect();
     return { left: r.left, right: r.right, height: r.height };
   };
+  const textCenter = (element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const box = range.getBoundingClientRect();
+    return box.top + box.height / 2;
+  };
   return {
+    textStep: textCenter(el("why-long").firstElementChild) - textCenter(el("label-why")),
+    titleLineHeight: parseFloat(getComputedStyle(el("label-why")).lineHeight),
+    type: Object.fromEntries(Object.entries({
+      title: '#label-why', quiet: '#label-quiet', band: '.bandLabel', age: '#row-long .time', why: '#why-long',
+    }).map(([name, selector]) => {
+      const style = getComputedStyle(document.querySelector(selector));
+      return [name, { size: parseFloat(style.fontSize), weight: Number(style.fontWeight) }];
+    })),
     why: rect("why-long"),
     whyShort: rect("why-short"),
     whyOverflows: el("why-long").scrollWidth > el("why-long").clientWidth,

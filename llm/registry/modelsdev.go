@@ -351,7 +351,7 @@ func convertModel(providerID, key string, mm mdModel) (Model, bool) {
 			m.Hidden = true
 		}
 	case "google-vertex":
-		if strings.Contains(m.ID, "/") && (mm.Provider == nil || mm.Provider.API == "") {
+		if (strings.Contains(m.ID, "/") && (mm.Provider == nil || mm.Provider.API == "")) || !VertexSupportsGeminiModel(m.ID) {
 			m.Hidden = true
 		}
 	}

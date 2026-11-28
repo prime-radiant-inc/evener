@@ -129,7 +129,13 @@ func TestGrepNativeArmsAgreeOnOneTree(t *testing.T) {
 			target := filepath.Join(root, tc.path)
 
 			wantOut, wantErr := plain.grepNativeSkipping(context.Background(), "needle", target, tc.glob, false, 100, tc.mode, 0, tc.skip)
-			gotOut, gotErr := sandboxed.GrepSkipping(context.Background(), "needle", target, tc.glob, false, 100, tc.mode, 0, tc.skip)
+			var gotOut string
+			var gotErr error
+			if tc.skip != nil {
+				gotOut, gotErr = sandboxed.GrepConfinedFiles(context.Background(), "needle", target, tc.glob, false, 100, tc.mode, 0, tc.skip)
+			} else {
+				gotOut, gotErr = sandboxed.Grep(context.Background(), "needle", target, tc.glob, false, 100, tc.mode)
+			}
 			if want := cmp.Or(tc.wantErr, "none"); grepErrClass(wantErr) != want {
 				t.Fatalf("unsandboxed err class = %s (%v), want %s", grepErrClass(wantErr), wantErr, want)
 			}
@@ -166,7 +172,7 @@ func TestGrepNativeArmsDifferOnSymlinksAndMissingTargets(t *testing.T) {
 	search := func(path string) (plainOut string, plainErr error, sandboxedOut string, sandboxedErr error) {
 		target := filepath.Join(root, path)
 		plainOut, plainErr = plain.grepNativeSkipping(ctx, "needle", target, "", false, 100, "files_with_matches", 0, nil)
-		sandboxedOut, sandboxedErr = sandboxed.GrepSkipping(ctx, "needle", target, "", false, 100, "files_with_matches", 0, nil)
+		sandboxedOut, sandboxedErr = sandboxed.Grep(ctx, "needle", target, "", false, 100, "files_with_matches")
 		return
 	}
 

@@ -155,7 +155,7 @@ func (c *delegateTreeController) noteDelegateAttention(delegateID, attentionID s
 	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.noteDelegateAttentionLocked(delegateID, attentionID)
+	return c.noteDelegateAttentionLockedForTest(delegateID, attentionID)
 }
 
 func (c *delegateTreeController) nextIdleDelegateAttention() (string, string, bool) {
@@ -270,4 +270,23 @@ type HistoricalJobRecord struct {
 	OriginToolCallID string
 	OriginItemID     string
 	OutputBytes      int64
+}
+
+// writeTranscript records a turn in the durable transcript, holding it if the
+// session has not yet decided whether it has one.
+func (s *Session) writeTranscript(t schema.Turn) error {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.writeTranscriptLocked(t)
+}
+
+// writeTranscriptDurable is writeTranscript with an fsync before returning.
+func (s *Session) writeTranscriptDurable(t schema.Turn) error {
+	err := func() error {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		return s.writeTranscriptDurableLocked(t)
+	}()
+	s.surfaceTranscriptWarnings()
+	return err
 }

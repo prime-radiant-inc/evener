@@ -7,12 +7,15 @@
 package repair
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ChangeKind names the category of a single repair.
@@ -31,6 +34,8 @@ const (
 	ChangeCopy              ChangeKind = "copy"
 	ChangePromoteJSONObject ChangeKind = "promote_json_object"
 )
+
+const maxEditBatchJSONBytes = 2 << 20
 
 // Change records one repair for telemetry. Field is the affected key ("" for a
 // whole-document JSON repair); Detail is a human-readable summary.
@@ -53,19 +58,44 @@ var aliasTable = map[string]string{
 	"cmd":      "command",
 }
 
+var aliasTableKeys = slices.Sorted(maps.Keys(aliasTable))
+
+// editItemAliases maps off-distribution edit-item parameter names inside
+// edit_file / memory_edit's edits[] (and legacy top-level edit calls).
+var editItemAliases = map[string]string{
+	"old_str":    "old_string",
+	"oldText":    "old_string",
+	"old_text":   "old_string",
+	"new_str":    "new_string",
+	"newText":    "new_string",
+	"new_text":   "new_string",
+	"replaceAll": "replace_all",
+}
+
+var editItemAliasKeys = slices.Sorted(maps.Keys(editItemAliases))
+
 // RepairArgs normalizes args against the tool's JSON-Schema parameter object.
-// It applies, in order, aliasing, coercion, dropping empty optionals, and
-// drop-unknown. keep names argument paths (as "add[0].reasoning_effort") whose
-// explicit empty value the tool's handler judges itself, so repair leaves them.
-// It never mutates its input; it returns a fresh map plus the changes made.
+// It applies, in order, aliasing, edit-batch normalization (only when params
+// declares an edits array of {old_string, new_string} objects), coercion,
+// dropping empty optionals, and drop-unknown. keep names argument paths (as
+// "add[0].reasoning_effort") whose explicit empty value the tool's handler
+// judges itself, so repair leaves them. It never mutates its input; it returns
+// a fresh map plus the changes made.
 func RepairArgs(params, args map[string]any, keep ...string) (map[string]any, []Change) {
 	out := make(map[string]any, len(args))
 	maps.Copy(out, args)
 	var changes []Change
 	changes = append(changes, applyAliases(params, out)...)
-	changes = append(changes, applyCoercions(params, out)...)
+	itemsSchema, isEditBatch := editBatchItemsSchema(params)
+	var preserveRoot map[string]bool
+	if isEditBatch {
+		var editChanges []Change
+		editChanges, preserveRoot = normalizeEditBatchArgs(itemsSchema, out)
+		changes = append(changes, editChanges...)
+	}
+	changes = append(changes, applyCoercions(params, out, isEditBatch)...)
 	changes = append(changes, dropEmptyOptionals(params, out, nil, keep)...)
-	changes = append(changes, dropUnknown(params, out)...)
+	changes = append(changes, dropUnknown(params, out, preserveRoot)...)
 	return out, changes
 }
 
@@ -74,7 +104,8 @@ func RepairArgs(params, args map[string]any, keep ...string) (map[string]any, []
 // and Y is absent.
 func applyAliases(params, args map[string]any) []Change {
 	var changes []Change
-	for alias, canonical := range aliasTable {
+	for _, alias := range aliasTableKeys {
+		canonical := aliasTable[alias]
 		if _, hasAlias := args[alias]; !hasAlias {
 			continue
 		}
@@ -182,6 +213,178 @@ func applyAliases(params, args map[string]any) []Change {
 	return changes
 }
 
+func editBatchItemsSchema(params map[string]any) (map[string]any, bool) {
+	editsSchema, ok := schemaProps(params)["edits"].(map[string]any)
+	if !ok || editsSchema["type"] != "array" {
+		return nil, false
+	}
+	itemsSchema, ok := editsSchema["items"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	props := schemaProps(itemsSchema)
+	_, hasOld := props["old_string"]
+	_, hasNew := props["new_string"]
+	return itemsSchema, hasOld && hasNew
+}
+
+func isEditFieldKey(k string) bool {
+	if k == "old_string" || k == "new_string" || k == "replace_all" {
+		return true
+	}
+	_, ok := editItemAliases[k]
+	return ok
+}
+
+// resolveEditItemAliases renames editItemAliases in item (in place, caller owns
+// clone), returning keys whose competing aliases disagree so dropUnknown keeps
+// them for validation rejection.
+func resolveEditItemAliases(item map[string]any, fieldPrefix string) ([]Change, map[string]bool) {
+	var changes []Change
+	var preserve map[string]bool
+	for _, canonical := range []string{"old_string", "new_string", "replace_all"} {
+		var present []string
+		for _, alias := range editItemAliasKeys {
+			if editItemAliases[alias] != canonical {
+				continue
+			}
+			if _, ok := item[alias]; ok {
+				present = append(present, alias)
+			}
+		}
+		if len(present) == 0 {
+			continue
+		}
+		if _, hasCanon := item[canonical]; hasCanon {
+			continue
+		}
+		if len(present) == 1 || !slices.ContainsFunc(present[1:], func(a string) bool {
+			return !reflect.DeepEqual(item[a], item[present[0]])
+		}) {
+			winner := present[0]
+			item[canonical] = item[winner]
+			delete(item, winner)
+			changes = append(changes, Change{Kind: ChangeAlias, Field: fieldPrefix + canonical, Detail: winner + "→" + canonical})
+			for _, dup := range present[1:] {
+				delete(item, dup)
+				changes = append(changes, Change{Kind: ChangeDropUnknown, Field: fieldPrefix + dup, Detail: "dropped duplicate alias " + dup})
+			}
+			continue
+		}
+		if preserve == nil {
+			preserve = make(map[string]bool, len(present))
+		}
+		for _, a := range present {
+			preserve[a] = true
+		}
+	}
+	return changes, preserve
+}
+
+func normalizeEditBatchArgs(itemsSchema, out map[string]any) ([]Change, map[string]bool) {
+	var changes []Change
+	var preserveRoot map[string]bool
+
+	if _, hasEdits := out["edits"]; hasEdits {
+		for k := range out {
+			if isEditFieldKey(k) {
+				if preserveRoot == nil {
+					preserveRoot = make(map[string]bool)
+				}
+				preserveRoot[k] = true
+			}
+		}
+	} else {
+		item := make(map[string]any)
+		for _, k := range slices.Sorted(maps.Keys(out)) {
+			if isEditFieldKey(k) {
+				item[k] = out[k]
+			}
+		}
+		if len(item) > 0 {
+			_, conflict := resolveEditItemAliases(item, "")
+			_, hasOld := item["old_string"]
+			_, hasNew := item["new_string"]
+			if len(conflict) == 0 && hasOld && hasNew {
+				for k := range out {
+					if isEditFieldKey(k) {
+						delete(out, k)
+					}
+				}
+				out["edits"] = []any{item}
+				changes = append(changes, Change{Kind: ChangeCoerceType, Field: "edits", Detail: "fields→[object]"})
+			}
+		}
+	}
+
+	switch raw := out["edits"].(type) {
+	case string:
+		if len(raw) <= maxEditBatchJSONBytes && utf8.ValidString(raw) {
+			trimmed := strings.TrimSpace(raw)
+			if len(trimmed) > 0 && (trimmed[0] == '[' || trimmed[0] == '{') {
+				var decoded any
+				if json.Unmarshal([]byte(trimmed), &decoded) == nil {
+					switch v := decoded.(type) {
+					case []any:
+						out["edits"] = v
+						changes = append(changes, Change{Kind: ChangeCoerceType, Field: "edits", Detail: "json_string→array"})
+					case map[string]any:
+						out["edits"] = []any{v}
+						changes = append(changes, Change{Kind: ChangeCoerceType, Field: "edits", Detail: "json_string→[object]"})
+					}
+				}
+			}
+		}
+	case map[string]any:
+		out["edits"] = []any{raw}
+		changes = append(changes, Change{Kind: ChangeCoerceType, Field: "edits", Detail: "scalar→[scalar]"})
+	}
+
+	rawEdits, ok := out["edits"].([]any)
+	if !ok {
+		return changes, preserveRoot
+	}
+	var repairedEdits []any
+	itemProps := schemaProps(itemsSchema)
+	dropExtra := additionalPropsFalse(itemsSchema)
+	for i, raw := range rawEdits {
+		orig, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		item := maps.Clone(orig)
+		prefix := fmt.Sprintf("edits[%d].", i)
+		itemChanges, preserveItem := resolveEditItemAliases(item, prefix)
+		if raw := item["replace_all"]; raw != nil {
+			if val, ok := coerceBoolString(raw); ok {
+				item["replace_all"] = val
+				itemChanges = append(itemChanges, Change{Kind: ChangeCoerceType, Field: prefix + "replace_all", Detail: fmt.Sprintf("%q→%t", raw, val)})
+			}
+		}
+		if dropExtra {
+			for _, k := range slices.Sorted(maps.Keys(item)) {
+				if _, declared := itemProps[k]; declared || preserveItem[k] {
+					continue
+				}
+				delete(item, k)
+				itemChanges = append(itemChanges, Change{Kind: ChangeDropUnknown, Field: prefix + k, Detail: "dropped " + k})
+			}
+		}
+		if len(itemChanges) == 0 {
+			continue
+		}
+		if repairedEdits == nil {
+			repairedEdits = slices.Clone(rawEdits)
+		}
+		repairedEdits[i] = item
+		changes = append(changes, itemChanges...)
+	}
+	if repairedEdits != nil {
+		out["edits"] = repairedEdits
+	}
+	return changes, preserveRoot
+}
+
 func itemSchemaDeclaresOnly(params map[string]any, arrayKey, targetProp, aliasProp string) bool {
 	props := schemaProps(params)
 	if props == nil {
@@ -230,13 +433,28 @@ func additionalPropsFalse(params map[string]any) bool {
 	return ok && !ap
 }
 
+func coerceBoolString(raw any) (value bool, matched bool) {
+	s, ok := raw.(string)
+	if !ok {
+		return false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
+	return false, false
+}
+
 // applyCoercions converts unambiguously-mistyped scalar args to the declared
 // type. Numbers become float64 (JSON's native map type). It never coerces an
 // ambiguous value (e.g. a non-numeric string against a number schema).
-func applyCoercions(params, args map[string]any) []Change {
+func applyCoercions(params, args map[string]any, skipEditsArray bool) []Change {
 	props := schemaProps(params)
 	var changes []Change
-	for key, raw := range args {
+	for _, key := range slices.Sorted(maps.Keys(args)) {
+		raw := args[key]
 		p, ok := props[key].(map[string]any)
 		if !ok {
 			continue
@@ -244,17 +462,9 @@ func applyCoercions(params, args map[string]any) []Change {
 		typ := coercibleScalarType(p["type"])
 		switch typ {
 		case "boolean":
-			s, ok := raw.(string)
-			if !ok {
-				continue
-			}
-			switch strings.ToLower(strings.TrimSpace(s)) {
-			case "true":
-				args[key] = true
-				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→true`})
-			case "false":
-				args[key] = false
-				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→false`})
+			if val, ok := coerceBoolString(raw); ok {
+				args[key] = val
+				changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: fmt.Sprintf("%q→%t", raw, val)})
 			}
 		case "integer", "number":
 			s, ok := raw.(string)
@@ -268,6 +478,9 @@ func applyCoercions(params, args map[string]any) []Change {
 			args[key] = f
 			changes = append(changes, Change{Kind: ChangeCoerceType, Field: key, Detail: `"` + s + `"→` + s})
 		case "array":
+			if skipEditsArray && key == "edits" {
+				continue
+			}
 			if _, isArr := raw.([]any); isArr || raw == nil {
 				continue
 			}
@@ -339,7 +552,8 @@ func dropEmptyOptionals(schema, obj map[string]any, path []pathStep, keep []stri
 	props := schemaProps(schema)
 	required := asStringSlice(schema["required"])
 	var changes []Change
-	for key, raw := range obj {
+	for _, key := range slices.Sorted(maps.Keys(obj)) {
+		raw := obj[key]
 		p, ok := props[key].(map[string]any)
 		if !ok {
 			continue
@@ -477,14 +691,14 @@ func dropEmptyOptionalsWithin(schema map[string]any, value any, path []pathStep,
 
 // dropUnknown removes keys matching no declared property, but only when the
 // schema forbids extra properties. It runs last so aliased/coerced keys survive.
-func dropUnknown(params, args map[string]any) []Change {
+func dropUnknown(params, args map[string]any, preserve map[string]bool) []Change {
 	if !additionalPropsFalse(params) {
 		return nil
 	}
 	props := schemaProps(params)
 	var changes []Change
-	for key := range args {
-		if _, ok := props[key]; ok {
+	for _, key := range slices.Sorted(maps.Keys(args)) {
+		if _, ok := props[key]; ok || preserve[key] {
 			continue
 		}
 		delete(args, key)

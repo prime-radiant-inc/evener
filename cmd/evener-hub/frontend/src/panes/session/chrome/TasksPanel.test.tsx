@@ -16,7 +16,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import visuallyHiddenStyles from "../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { STATUS_TOUCH } from "../transcript/tools/taskCheck";
-import { TasksPanel, TasksPanelBody } from "./TasksPanel";
+import { TasksPanelBody } from "./TasksPanel";
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -153,33 +153,13 @@ function failedStateSentence(): string {
   return [heading.textContent, detail].filter((part) => part !== "").join(": ");
 }
 
-// --- trigger badge: unchanged, still driven by the live-pushed aggregate ---
-// (model.tasks stays the live signal per the plan's push-driven-plus-fetch-
-// on-open model - it's cheap and already-live without opening anything.)
-
-test("the trigger shows a bare 'Tasks' label when no aggregate has arrived yet", () => {
-  render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: null })} />);
-  expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
-});
-
-test("the trigger shows what is left once the aggregate has arrived", () => {
-  render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 7, done: 3 } })} />);
-  expect(screen.getByRole("button", { name: "4 of 7 tasks left" })).toBeTruthy();
-});
-
-test("outcome aggregates condense to what is left in the trigger and the body head", async () => {
+test("outcome aggregates condense to what is left in the body head", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
   const model = testModel({ tasks: { total: 7, done: 1, cancelled: 5, remaining: 1 } });
 
-  render(
-    <>
-      <TasksPanel sessionRef="ref_a" model={model} />
-      <TasksPanelBody sessionRef="ref_a" model={model} />
-    </>,
-  );
+  render(<TasksPanelBody sessionRef="ref_a" model={model} />);
 
-  expect(screen.getByRole("button", { name: "1 of 7 tasks left" })).toBeTruthy();
   await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
   expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 of 7 tasks left");
   expect(screen.queryByRole("meter")).toBeNull();
@@ -225,13 +205,11 @@ test("pins each task status's TaskCheck touch - open renders the pending box, ca
 // --- fetch-on-open: the per-task row list --------------------------------
 
 test("opening the panel fetches via listTasks(ref) and shows a loading state until it resolves", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   const box: { resolve: ((r: TaskListResponse) => void) | null } = { resolve: null };
   fake.on("evener/tasks/list", () => new Promise((resolve) => (box.resolve = resolve)));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
 
   expect(await screen.findByText(/loading tasks/i)).toBeTruthy();
   const call = fake.calls.find((c) => c.method === "evener/tasks/list");
@@ -248,12 +226,12 @@ test("rows group by status: the collapsed settled group first, then in progress,
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
 
   await waitFor(() => expect(screen.getAllByTestId("task-row")).toHaveLength(2));
   const liveGroups = screen.getAllByTestId("task-group-live");
   expect(liveGroups.map((group) => group.getAttribute("data-status"))).toEqual(["in_progress", "open"]);
+  expect(within(liveGroups[0]!).getByRole("heading", { level: 4 })).toBeTruthy();
   const settled = screen.getByTestId("task-settled-group");
   expect(settled.textContent).toContain("1");
   // The folded-away settled group sits above the current work, not at the bottom.
@@ -298,8 +276,7 @@ test("a live row shows its latest note inline; a settled row does not", async ()
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   expect((await screen.findByTestId("task-latest")).textContent).toContain(
     "Captured the compatibility changes for the release notes.",
   );
@@ -319,8 +296,7 @@ test("a cancelled row renders struck-through inside the settled group", async ()
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByTestId("task-settled-group-summary"));
 
   const cancelled = screen.getByText("Transition to implementation plan");
@@ -338,8 +314,7 @@ test("every row leads with the shared TaskCheck glyph matching its task's status
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByTestId("task-settled-group-summary"));
 
   const expectTouch = async (description: string, touch: string) => {
@@ -368,8 +343,7 @@ test("every row carries a visually hidden status word beside its aria-hidden gly
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByTestId("task-settled-group-summary"));
 
   const expectWord = async (description: string, word: string) => {
@@ -388,7 +362,6 @@ test("a task with an unrecognized status stays in the list, with a neutral glyph
   // The aggregate counts it as remaining, so dropping it made the list
   // shorter than its own footer (issue #2256). It renders as remaining work,
   // in the neutral unfilled box, with the wire word as written.
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   const futureStatus = {
     id: 4,
@@ -399,8 +372,7 @@ test("a task with an unrecognized status stays in the list, with a neutral glyph
   } as unknown as Task;
   fake.on("evener/tasks/list", () => ({ data: [...TASKS_DATA, futureStatus] }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
 
   const description = await screen.findByText("Wait on the review");
   const row = description.closest("[data-testid='task-row']");
@@ -421,26 +393,28 @@ test("a task with an unrecognized status stays in the list, with a neutral glyph
   expect(row?.textContent?.match(/blocked/g)).toHaveLength(1);
 });
 
-test("a live row shows a relative updated time", async () => {
-  const user = userEvent.setup();
+test("a live row's time is the shared activity time, marked as an update", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   const row = (await screen.findByText("Extend transcript API")).closest("[data-testid='task-row']");
 
-  expect(row?.querySelector("[data-testid='task-row-time']")).toBeTruthy();
+  const time = row?.querySelector("time[data-activity-time]");
+  expect(time?.getAttribute("data-meaning")).toBe("updated");
+  expect(time?.getAttribute("datetime")).toBe(DATED_TASKS[1].updated_at);
 });
 
-test("the standalone task body does not opt into the sidebar's compact presentation", async () => {
+// The sidebar tab and the standalone body are the same component tree: the
+// row's time is ActivityTime in both, not a body-specific relative span.
+test("the standalone task body carries the same activity time as the sidebar", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
   render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   const row = (await screen.findByText("Extend transcript API")).closest("[data-testid='task-row']");
-  expect(row?.querySelector("[data-testid='task-row-time']")?.tagName).not.toBe("TIME");
-  expect(row?.querySelector("[data-testid='task-row-time']")).toBeTruthy();
-  expect(row?.querySelector("[data-activity-time]")).toBeNull();
+  const time = row?.querySelector("time[data-activity-time]");
+  expect(time?.getAttribute("data-meaning")).toBe("updated");
+  expect(time?.getAttribute("datetime")).toBe(DATED_TASKS[1].updated_at);
 });
 
 test("the settled group defaults to collapsed and remembers being opened per session", async () => {
@@ -506,8 +480,7 @@ test("a task row starts collapsed; clicking its summary expands its meta and upd
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   const summary = await screen.findByText("Wire up expand/collapse");
 
   expect(screen.queryByTestId("task-expanded")).toBeNull();
@@ -527,8 +500,7 @@ test("notes render as a timeline with the latest note marked", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByText("Wire up expand/collapse"));
 
   const notes = screen.getByTestId("task-notes");
@@ -565,8 +537,7 @@ test("the prompt disclosure shows a one-line markdown preview collapsed and the 
     ],
   }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByText("Wire up expand/collapse"));
 
   const prompt = screen.getByTestId("task-prompt");
@@ -587,8 +558,7 @@ test("a task with a blank prompt renders no prompt disclosure", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [{ ...RICH_TASK, prompt: "" }] }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByText("Wire up expand/collapse"));
 
   expect(screen.queryByTestId("task-prompt")).toBeNull();
@@ -599,8 +569,7 @@ test("clicking an expanded row's summary again collapses it", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   const summary = await screen.findByText("Wire up expand/collapse");
   await user.click(summary);
   expect(screen.getByTestId("task-expanded")).toBeTruthy();
@@ -615,8 +584,7 @@ test("an expanded bare task shows only the type meta and 'No updates yet.'", asy
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   // TASKS_DATA's first row: type "implement", prompt "", and no timestamps,
   // dependsOn, notes, or reasoningEffort.
   await user.click(await screen.findByTestId("task-settled-group-summary"));
@@ -636,8 +604,7 @@ test("an expanded task shows the meta strip and timestamps line", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByTestId("task-settled-group-summary"));
   await user.click(await screen.findByText("Implement artifact store"));
 
@@ -668,8 +635,7 @@ test("the timestamps line omits updated when it equals created", async () => {
     ],
   }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByText("Check unchanged timestamps"));
 
   const times = screen.getByTestId("task-times");
@@ -695,8 +661,7 @@ test("the timestamps line omits completed for a non-done task even when complete
     ],
   }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByTestId("task-settled-group-summary"));
   await user.click(await screen.findByText("Ignore stale completed timestamp"));
 
@@ -710,8 +675,7 @@ test("each row's expand state is independent - opening one row leaves its siblin
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await user.click(await screen.findByTestId("task-settled-group-summary"));
   await user.click(await screen.findByText("Wire up the status row"));
 
@@ -723,8 +687,7 @@ test("the expanded row is a real native disclosure (<details open>), not just co
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [RICH_TASK] }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await screen.findByText("Wire up expand/collapse");
 
   const details = screen.getByRole("group") as HTMLDetailsElement;
@@ -736,29 +699,24 @@ test("the expanded row is a real native disclosure (<details open>), not just co
 });
 
 test("a confirmed-empty fetch (real daemon, genuinely zero tasks) shows the definitive empty state", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["empty"]));
   expect(screen.queryByTestId("tasks-stale")).toBeNull();
 });
 
 test("re-opening after closing re-fetches (the plan's fetch-on-open model, not a one-time fetch)", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  const { unmount } = render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await screen.findAllByTestId("task-row");
-  await user.keyboard("{Escape}");
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  unmount();
 
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await screen.findAllByTestId("task-row");
 
   expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(2);
@@ -767,35 +725,24 @@ test("re-opening after closing re-fetches (the plan's fetch-on-open model, not a
 test("re-fetches automatically when the live aggregate changes WHILE the panel stays open", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
-  const user = userEvent.setup();
 
-  const { rerender } = render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 0 } })} />);
-  await user.click(screen.getByRole("button", { name: "3 of 3 tasks left" }));
+  const { rerender } = render(
+    <TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 0 } })} />,
+  );
   await screen.findAllByTestId("task-row");
   expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(1);
 
   // A live evener/task/updated notification bumped the aggregate - the panel
   // is still open, so this should trigger a fresh fetch automatically
   // rather than leaving stale rows on screen.
-  rerender(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
+  rerender(<TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
 
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(2));
-});
-
-test("does not fetch at all while the panel is closed, even if the aggregate changes", () => {
-  const fake = connectReadyFakeClient();
-  fake.on("evener/tasks/list", () => ({ data: TASKS_DATA }));
-
-  const { rerender } = render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 0 } })} />);
-  rerender(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
-
-  expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(0);
 });
 
 // --- source-backed unsupported state (actionUnavailable) ------------------
 
 test("a source-backed actionUnavailable rejection shows the honest unsupported state, with no error toast (it's not a bug)", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw new WireError("remote source does not expose evener tasks", -32014, { evenerErrorInfo: "actionUnavailable" });
@@ -803,11 +750,10 @@ test("a source-backed actionUnavailable rejection shows the honest unsupported s
 
   render(
     <>
-      <TasksPanel sessionRef="ref_remote" model={testModel()} />
+      <TasksPanelBody sessionRef="ref_remote" model={testModel()} />
       <Toast />
     </>,
   );
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["unsupported"]));
   expect(errorToasts()).toEqual([]);
@@ -818,7 +764,6 @@ test("a source-backed actionUnavailable rejection shows the honest unsupported s
 // --- other failures: toast + inline error state ----------------------------
 
 test("a generic fetch failure surfaces an error toast AND an inline error state", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw new Error("tasks boom");
@@ -826,11 +771,10 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
 
   render(
     <>
-      <TasksPanel sessionRef="ref_a" model={testModel()} />
+      <TasksPanelBody sessionRef="ref_a" model={testModel()} />
       <Toast />
     </>,
   );
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
 
   await waitFor(() => expect(failedNotices()).toHaveLength(1));
   expect(emptyStateReasons(document.body)).toEqual([]);
@@ -886,7 +830,6 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
 // panel's two reports have to give way together: a toast blaming the daemon
 // beside an inline heading blaming the task list is worse than either alone.
 test("a failed auto-resume names the resume in BOTH the toast and the inline state", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" });
@@ -894,11 +837,10 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
 
   render(
     <>
-      <TasksPanel sessionRef="ref_a" model={testModel()} />
+      <TasksPanelBody sessionRef="ref_a" model={testModel()} />
       <Toast />
     </>,
   );
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
 
   await waitFor(() => expect(failedNotices()).toHaveLength(1));
   expect(emptyStateReasons(document.body)).toEqual([]);
@@ -923,14 +865,12 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
 // same rejection, or one failure reads as a headline in the toast and a
 // headline plus a blank line in the panel.
 test("a rejection with no text of its own shows the headline alone, with no empty detail line", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw new Error("");
   });
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
 
   await waitFor(() => expect(failedNotices()).toHaveLength(1));
   const [failed] = failedNotices();
@@ -968,12 +908,11 @@ async function openThenPush(fake: FakeClient): Promise<ReturnType<typeof userEve
   const user = userEvent.setup();
   const panel = (done: number) => (
     <>
-      <TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done } })} />
+      <TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: { total: 3, done } })} />
       <Toast />
     </>
   );
   const { rerender } = render(panel(0));
-  await user.click(screen.getByRole("button", { name: "3 of 3 tasks left" }));
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(1));
 
   rerender(panel(1));
@@ -1083,21 +1022,18 @@ function threadNotFoundError(): WireError {
 }
 
 test("thread-not-found on a session that never had a live aggregate still shows the honest 'No tasks yet' (unchanged)", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw threadNotFoundError();
   });
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: null })} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: null })} />);
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["empty"]));
   expect(screen.queryByTestId("tasks-daemon-gone")).toBeNull();
 });
 
 test("closing then re-opening after the daemon exits keeps the rows already shown, with a terminal notice instead of blanking them", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   let calls = 0;
   fake.on("evener/tasks/list", () => {
@@ -1106,13 +1042,11 @@ test("closing then re-opening after the daemon exits keeps the rows already show
     throw threadNotFoundError();
   });
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
-  await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
+  const { unmount } = render(<TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
   await screen.findAllByTestId("task-row");
-  await user.keyboard("{Escape}");
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  unmount();
 
-  await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
 
   await screen.findByTestId("tasks-daemon-gone");
   expect(screen.getAllByTestId("task-row")).toHaveLength(2);
@@ -1131,21 +1065,18 @@ test("that terminal notice offers no Try again - the hub never tracked this sess
 });
 
 test("thread-not-found with a known aggregate but no rows ever fetched shows a terminal message, not 'No tasks yet'", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw threadNotFoundError();
   });
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
-  await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["ended"]));
   expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
 });
 
 test("no toast for a dead-daemon rejection - it's not a bug, it's an expected terminal state", async () => {
-  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
   fake.on("evener/tasks/list", () => {
     throw threadNotFoundError();
@@ -1153,11 +1084,10 @@ test("no toast for a dead-daemon rejection - it's not a bug, it's an expected te
 
   render(
     <>
-      <TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />
+      <TasksPanelBody sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />
       <Toast />
     </>,
   );
-  await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
 
   await waitFor(() => expect(emptyStateReasons(document.body)).toEqual(["ended"]));
   expect(errorToasts()).toEqual([]);
@@ -1175,8 +1105,7 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
     return { data: TASKS_DATA };
   });
 
-  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  render(<TasksPanelBody sessionRef="ref_a" model={testModel()} />);
   await waitFor(() => expect(failedNotices()).toHaveLength(1));
   expect(failedStateSentence()).toContain("tasks boom");
   expect(screen.queryAllByTestId("task-row")).toHaveLength(0);

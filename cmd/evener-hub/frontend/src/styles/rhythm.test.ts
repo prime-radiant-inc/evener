@@ -18,14 +18,6 @@ const rule = (css: string, selector: string): string => {
   return match[1]!;
 };
 
-test("pane titles are sentence-case headings, not micro-labels", () => {
-  const title = rule(read("widgets/panescaffold/panescaffold.module.css"), ".title");
-  expect(title).not.toMatch(/text-transform/);
-  expect(title).toMatch(/font-size: var\(--font-size-pane-title\)/);
-  expect(title).toMatch(/font-weight: var\(--font-weight-semibold\)/);
-  expect(title).toMatch(/color: var\(--ink-hi\)/);
-});
-
 test("exchange boundaries, runs and pane bodies use the rhythm and space tokens", () => {
   const user = read("panes/session/transcript/messages/usermessageitem.module.css");
   // Only a message that OPENS an exchange takes the exchange step: mid-turn
@@ -38,7 +30,7 @@ test("exchange boundaries, runs and pane bodies use the rhythm and space tokens"
   // declared once by the card's owner.
   const surface = read("styles/surface.module.css");
   expect(rule(surface, ".toolRowInsets")).toMatch(/--tool-card-row-pad: var\(--rhythm-item\)/);
-  expect(rule(tool, ".call")).toMatch(/padding: var\(--tool-card-row-pad\) var\(--tool-card-inset\)/);
+  expect(rule(tool, ".call")).toMatch(/padding: var\(--tool-card-row-pad\) 0/);
   const scaffold = read("widgets/panescaffold/panescaffold.module.css");
   expect(rule(scaffold, ".body")).toMatch(/padding: var\(--space-5\)/);
   const separator = read("panes/session/transcript/messages/turnseparator.module.css");
@@ -54,7 +46,7 @@ test("every tool card row takes one padding step, open or collapsed", () => {
   expect(rule(run, ".summary")).toMatch(
     /composes: toolRowInsets from "\.\.\/\.\.\/\.\.\/styles\/surface\.module\.css"/,
   );
-  expect(rule(run, ".summary")).toMatch(/padding: var\(--tool-card-row-pad\) var\(--tool-card-inset\)/);
+  expect(rule(run, ".summary")).toMatch(/padding: var\(--tool-card-row-pad\) 0/);
 });
 
 test("the most-read quiet text sits in --ink-mid, not --ink-low", () => {
@@ -62,6 +54,10 @@ test("the most-read quiet text sits in --ink-mid, not --ink-low", () => {
   expect(rule(think, ".label")).toMatch(/color: var\(--ink-mid\)/);
   const liveness = read("panes/session/transcript/flow/livenessline.module.css");
   expect(rule(liveness, ".line")).toMatch(/color: var\(--ink-mid\)/);
-  const agent = read("panes/session/transcript/messages/agentmessageitem.module.css");
-  expect(rule(agent, ".meta")).toMatch(/color: var\(--ink-mid\)/);
+  const speaker = read("panes/session/transcript/messages/speakerheader.module.css");
+  // The ink now lives in the shared textSecondary recipe, pinned once in
+  // text.contract.test.ts; this site pins that it composes that recipe.
+  expect(rule(speaker, ".meta")).toMatch(
+    /composes: textSecondary from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/text\.module\.css"/,
+  );
 });

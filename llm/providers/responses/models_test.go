@@ -2,6 +2,7 @@ package responses
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -37,6 +38,122 @@ func TestListModelsCodexOmitsDelegationPreset(t *testing.T) {
 				t.Fatalf("model facts = %+v", caps)
 			}
 		})
+	}
+}
+
+// inklingModels is the /v1/models body a local OpenAI-compatible server
+// publishes: the reasoning fact is a plain boolean, the effort ladder and
+// its default arrive in the Codex spellings as strings, and the output cap
+// lives under a limits object. Captured verbatim from the live listing; the
+// data[] reader used to decode the row without any of those facts, because
+// it never modeled the fields at all.
+const inklingModels = `{"object":"list","data":[{"object":"model","id":"Inkling-2-Mini","created":1795417889,"owned_by":"local","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"input_modalities":["text"],"output_modalities":["text"],"reasoning":true,"supported_reasoning_levels":["none","minimal","low","medium","high","xhigh","max"],"default_reasoning_level":"high","context_length":262144,"limits":{"max_output_tokens":262144},"loom":{"kind":"text","endpoint":"/v1/chat/completions","tokenize":true,"input_tokens":true,"variants":{"selected":1,"count":1},"incarnation":1,"registration":"ready","device":"gpu","pool":"weights"}}]}`
+
+// TestListModelsLoadsInklingMiniRow pins the full decode of that listing
+// through the data[] arm: a gateway row whose reasoning facts arrive in
+// spellings the public-OpenAI reader never modeled must load with its
+// ladder, default effort, output cap and window intact.
+func TestListModelsLoadsInklingMiniRow(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, 200, inklingModels)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != "Inkling-2-Mini" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	c := rows[0].Caps
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true from the boolean verdict", c.Reasoning)
+	}
+	if got, want := c.EffortValues, []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v", got, want)
+	}
+	if got := registry.StringValue(c.DefaultEffort); got != "high" {
+		t.Fatalf("DefaultEffort = %q, want high", got)
+	}
+	if c.ContextWindow == nil || *c.ContextWindow != 262144 {
+		t.Fatalf("ContextWindow = %v, want 262144 from context_length", c.ContextWindow)
+	}
+	if c.MaxOutputTokens == nil || *c.MaxOutputTokens != 262144 {
+		t.Fatalf("MaxOutputTokens = %v, want 262144 from limits.max_output_tokens", c.MaxOutputTokens)
+	}
+	if got, want := c.InputModalities, []string{"text"}; !slices.Equal(got, want) {
+		t.Fatalf("InputModalities = %v, want %v", got, want)
+	}
+}
+
+// TestListModelsCodexRowAcceptsStringLevels pins the models[] arm's
+// tolerance: a server may publish supported_reasoning_levels as plain
+// strings where the Codex backend publishes effort objects, and that
+// spelling must not fail the listing the way a strict object decode once
+// did.
+func TestListModelsCodexRowAcceptsStringLevels(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, 200, `{"models":[{"id":"inkling-mini","supported_reasoning_levels":["low","high"],"default_reasoning_level":"high","context_window":262144}]}`)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != "inkling-mini" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	c := rows[0].Caps
+	if got, want := c.EffortValues, []string{"low", "high"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v", got, want)
+	}
+	if got := registry.StringValue(c.DefaultEffort); got != "high" {
+		t.Fatalf("DefaultEffort = %q, want high", got)
+	}
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true from the ladder", c.Reasoning)
+	}
+}
+
+// TestListModelsIsolatesUndecodableRows pins the listing's row isolation
+// across both arms: a row whose shape the reader cannot decode is dropped
+// while its siblings load, so one alien row cannot fail the whole live
+// refresh. A row with no id stays silently skipped as before.
+func TestListModelsIsolatesUndecodableRows(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, 200, `{"data":[
+	 {"id":"alien-row","context_window":"big"},
+	 {"object":"model","created":1},
+	 {"id":"healthy-row","context_window":8192}
+	],"models":[
+	 {"context_window":"big"},
+	 {"slug":"codex-healthy","context_window":4096}
+	]}`)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, r := range rows {
+		ids[r.ID] = true
+	}
+	if !ids["healthy-row"] || !ids["codex-healthy"] || ids["alien-row"] || len(rows) != 2 {
+		t.Fatalf("rows = %+v, want healthy-row and codex-healthy only", rows)
+	}
+}
+
+// TestListModelsFailsWhenNoRowDecodes keeps the tolerant decode honest: a
+// body whose rows are all undecodable is an alien server, and the refresh
+// must fail with the row's decode error rather than silently succeed with
+// no models.
+func TestListModelsFailsWhenNoRowDecodes(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, 200, `{"data":[
+	 {"id":"a","context_window":"big"},
+	 {"id":"b","max_input_tokens":"lots"}
+	]}`)
+	_, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err == nil {
+		t.Fatal("a listing with no decodable row must fail")
+	}
+	if _, ok := errors.AsType[*json.UnmarshalTypeError](err); !ok {
+		t.Fatalf("err = %v, want it to wrap the row's decode error", err)
 	}
 }
 

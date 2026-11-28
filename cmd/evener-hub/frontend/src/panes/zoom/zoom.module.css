@@ -15,11 +15,10 @@
 }
 
 .hint {
+  composes: helpMuted from "../../styles/help.module.css";
   flex: 0 0 auto;
   margin: 0;
   padding: var(--space-2) var(--space-3);
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
 
 .track {
@@ -63,27 +62,28 @@
   border-bottom: 1px solid var(--edge);
 }
 
-.columnFooterBar {
+/* A bar that closes its column: the header layout without its dividing rule.
+ * Both the phone footer and its desktop twin compose it. */
+.columnBar {
   composes: header;
   border-bottom: 0;
-  border-top: 1px solid var(--edge);
+}
+
+.columnFooterBar {
+  composes: columnBar;
 }
 
 /* The desktop twin of the phone footer bar: the conversation's composer
  * measure rides below the transcript inside the column. */
 .columnComposerBar {
-  composes: header;
-  border-bottom: 0;
-  border-top: 1px solid var(--edge);
+  composes: columnBar;
 }
 
 .title {
-  overflow: hidden;
+  composes: truncate from "../../styles/text.module.css";
   margin: 0;
   color: var(--ink-hi);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .heading {
@@ -91,12 +91,10 @@
 }
 
 .state {
+  composes: truncate from "../../styles/text.module.css";
   display: block;
-  overflow: hidden;
   color: var(--ink-low);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .state[data-runtime-state="active"] {
@@ -115,8 +113,6 @@
 .stateLabel {
   composes: visuallyHidden from "../../widgets/visuallyhidden/visuallyhidden.module.css";
   margin: 0;
-  clip: auto;
-  clip-path: inset(50%);
 }
 
 .content {
@@ -176,59 +172,15 @@
   align-items: center;
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--edge);
-}
-
-.activityChip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  min-width: 0;
-  padding: var(--space-1);
-  border: 0;
-  border-radius: var(--radius-pane);
-  background: transparent;
-  color: var(--ink-mid);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.activityChip:hover,
-.activityChip[aria-expanded="true"] {
-  background: var(--hover-1);
-  color: var(--ink-hi);
-}
-
-.activityChip:focus-visible {
-  outline: var(--focus-ring);
 }
 
 .spine .activityControls {
   flex-direction: column;
   padding: var(--space-2) var(--space-1);
-  border: 0;
-}
-
-.spine .activityChip {
-  flex-direction: column;
-  gap: 0;
-}
-
-.spine .activityLabel {
-  display: none;
 }
 
 .header .activityControls {
   padding: 0;
-  border-top: 0;
-}
-
-.header .activityLabel {
-  display: none;
 }
 
 .peek {
@@ -236,12 +188,8 @@
 }
 
 .peekHead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+  composes: header;
   padding: var(--space-2);
-  border-bottom: 1px solid var(--edge);
   color: var(--ink-hi);
   font-size: var(--font-size-caption);
 }
@@ -255,10 +203,6 @@
 @media (max-width: 899px) {
   .column[data-leaf] {
     min-width: 0;
-  }
-
-  .column .activityLabel {
-    display: none;
   }
 
   /* The cascade pane renders flush, and on the phone its column's activity

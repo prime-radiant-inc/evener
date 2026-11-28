@@ -456,31 +456,6 @@ func resumedDivergence(entries []transcript.Entry, divergence int, insertions []
 		insertions)
 }
 
-// latestAttemptStarts maps each TurnID that recovery reopened to the index in
-// resumed history (resumeHistoryIndexed's, with its repair insertions) of
-// the first turn its latest attempt recorded: everything the turn recorded
-// before that belongs to an attempt the rerun replaced. A reopen marker is
-// transcript-only, so history alone cannot tell the attempts apart.
-//
-// The entries' superseded attention identities arrive precomputed — the same
-// one fold resumeHistoryIndexedWithSuperseded consumes — so walking every
-// reopen marker costs no fold per marker.
-func latestAttemptStarts(entries []transcript.Entry, insertions []int, superseded map[string]bool) map[string]int {
-	var starts map[string]int
-	for i, e := range entries {
-		if e.Turn.Kind != schema.TurnReopen || e.Turn.TurnID == "" {
-			continue
-		}
-		if starts == nil {
-			starts = map[string]int{}
-		}
-		// A reopen before the compaction anchor maps below zero: the whole
-		// retained window then belongs to the latest attempt.
-		starts[e.Turn.TurnID] = max(0, resumedDivergence(entries, i, insertions, superseded))
-	}
-	return starts
-}
-
 // historyIndex is the number of entries before index i that resume keeps in
 // history: i less the transcript-only entries before it and the superseded
 // attention rows the history drop removes — the mappers and the build must
@@ -488,9 +463,12 @@ func latestAttemptStarts(entries []transcript.Entry, insertions []int, supersede
 // superseded identities arrive precomputed from the full entries slice — the
 // skip rule reads the same fold the build's drop reads, not a fresh fold per
 // position mapped.
+//
+// Only the scanned prefix clamps to len(entries), not kept: a 1-based tip
+// divergence (len(entries)+1, as AsideSession and ForkSessionAtUserTurn write)
+// sits one past the tip and must stay past every kept turn.
 func historyIndex(entries []transcript.Entry, i int, superseded map[string]bool) int {
-	i = min(i, len(entries))
-	prefix := entries[:max(i, 0)]
+	prefix := entries[:min(max(i, 0), len(entries))]
 	kept := i
 	for _, e := range prefix {
 		if e.Turn.Kind.TranscriptOnly() || (e.Turn.AttentionID != "" && superseded[e.Turn.AttentionID]) {

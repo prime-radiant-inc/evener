@@ -18,12 +18,12 @@ func TestFoldWatchSendPendingLatestWinsAndTerminalRemoves(t *testing.T) {
 		WatchGeneration:         "wg_1",
 	}
 	events := []Event{
-		{Kind: EventWatchSendPending, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Message: "first"}},
-		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2", Message: "latest", CoalescedCount: 1}},
+		{Kind: EventWatchSendPending, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Frame: "first"}},
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2", Frame: "latest", CoalescedCount: 1}},
 	}
 	rec := FoldWatchSends(events)
-	if got := rec.Pending[key].Message; got != "latest" {
-		t.Fatalf("message = %q, want latest", got)
+	if got := rec.Pending[key].Frame; got != "latest" {
+		t.Fatalf("frame = %q, want latest", got)
 	}
 	events = append(events, Event{Kind: EventWatchSendDelivered, Seq: 3, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2"}})
 	if got := FoldWatchSends(events).Pending; len(got) != 0 {
@@ -42,7 +42,7 @@ func TestFoldWatchSendTerminalKindsRemovePending(t *testing.T) {
 				WatchGeneration:         "wg_1",
 			}
 			events := []Event{
-				{Kind: EventWatchSendPending, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Message: "pending"}},
+				{Kind: EventWatchSendPending, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Frame: "pending"}},
 				{Kind: kind, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1"}},
 			}
 			if got := FoldWatchSends(events).Pending; len(got) != 0 {
@@ -61,8 +61,8 @@ func TestFoldWatchSendOlderTerminalDoesNotRemoveNewerPending(t *testing.T) {
 		WatchGeneration:         "wg_1",
 	}
 	events := []Event{
-		{Kind: EventWatchSendPending, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", UpdateSeq: 1, Message: "first"}},
-		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2", UpdateSeq: 2, Message: "newer"}},
+		{Kind: EventWatchSendPending, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", UpdateSeq: 1, Frame: "first"}},
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2", UpdateSeq: 2, Frame: "newer"}},
 		{Kind: EventWatchSendDelivered, Seq: 3, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", UpdateSeq: 1}},
 	}
 	rec := FoldWatchSends(events)
@@ -70,7 +70,7 @@ func TestFoldWatchSendOlderTerminalDoesNotRemoveNewerPending(t *testing.T) {
 	if got == nil {
 		t.Fatal("newer pending was removed by older delivered event")
 	}
-	if got.DeliveryID != "d2" || got.Message != "newer" {
+	if got.DeliveryID != "d2" || got.Frame != "newer" {
 		t.Fatalf("pending = %+v, want newer delivery", got)
 	}
 }
@@ -85,7 +85,7 @@ func TestFoldWatchSendNewerTerminalTombstoneRejectsOlderPending(t *testing.T) {
 	}
 	events := []Event{
 		{Kind: EventWatchSendDelivered, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2", UpdateSeq: 2}},
-		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", UpdateSeq: 1, Message: "stale"}},
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", UpdateSeq: 1, Frame: "stale"}},
 	}
 	if got := FoldWatchSends(events).Pending; len(got) != 0 {
 		t.Fatalf("pending after newer delivered tombstone = %+v, want none", got)
@@ -102,7 +102,7 @@ func TestFoldWatchSendZeroSeqTerminalTombstoneRejectsZeroSeqPending(t *testing.T
 	}
 	events := []Event{
 		{Kind: EventWatchSendDelivered, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1"}},
-		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Message: "stale"}},
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Frame: "stale"}},
 	}
 	if got := FoldWatchSends(events).Pending; len(got) != 0 {
 		t.Fatalf("pending after zero-seq delivered tombstone = %+v, want none", got)
@@ -118,15 +118,15 @@ func TestFoldWatchSendOlderPendingDoesNotOverwriteNewerPending(t *testing.T) {
 		WatchGeneration:         "wg_1",
 	}
 	events := []Event{
-		{Kind: EventWatchSendPending, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2", UpdateSeq: 2, Message: "newer"}},
-		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", UpdateSeq: 1, Message: "stale"}},
+		{Kind: EventWatchSendPending, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2", UpdateSeq: 2, Frame: "newer"}},
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", UpdateSeq: 1, Frame: "stale"}},
 	}
 	rec := FoldWatchSends(events)
 	got := rec.Pending[key]
 	if got == nil {
 		t.Fatal("newer pending was removed")
 	}
-	if got.DeliveryID != "d2" || got.Message != "newer" {
+	if got.DeliveryID != "d2" || got.Frame != "newer" {
 		t.Fatalf("pending = %+v, want newer delivery", got)
 	}
 }

@@ -19,7 +19,9 @@ You need:
 - Git for the first-task review loop. Python 3 is needed only for the optional
   disposable exercise.
 - A browser and network access to GitHub and your chosen model provider.
-- An API key from a supported provider, or another supported authentication method. Hosted model use may incur charges.
+- An API key from a supported provider, or another supported authentication
+  method such as an OpenAI Codex or GitHub Copilot subscription sign-in.
+  Hosted model use may incur charges.
 
 If you want to run the model locally, configure [Ollama](ollama.md) instead of the hosted-provider step below. Complete its setup and choose a model that supports tool calls before starting the session. A local server does not need a hosted-provider key, but it does need a downloaded model and enough machine resources to run it.
 
@@ -119,16 +121,21 @@ directory, task draft, provider, and model all belong to this launch form:
    closes.
 2. If the form says a provider is required, select **Connect provider**. Choose
    the provider you intend to use. An ordinary chat subscription is not
-   necessarily an API account.
+   necessarily an API account. **GitHub Copilot** is in the popular set shown
+   first; **Show all providers** reveals the rest.
 3. For an API connection, paste the actual key into the masked field and select
    **Save and test**. For a supported ChatGPT/Codex subscription, choose the
    separate **OpenAI Codex** sign-in route instead; it is not the `openai` API-key
-   connection.
+   connection. For a GitHub Copilot subscription, choose **GitHub Copilot**;
+   sign-in is device-only and takes no API key.
 4. A successful check means Evener saved the resolved access and fetched that
    provider connection's model list. It does **not** send your task, make a
    generation request, or prove quota, billing, model capability, or generation
    access. A temporary read failure is retried automatically; a failed list
-   check does not erase a key that was saved successfully.
+   check does not erase a key that was saved successfully. For a GitHub Copilot
+   subscription, the check uses the account's own model roster; an empty or
+   unsupported roster does not complete setup. Evener shows no dollar price or
+   cost estimate for a subscription connection.
 5. On success the dialog closes and returns to this draft automatically. An
    untouched draft adopts the connected instance's configured default model
    when its usable listing marks one; otherwise the ordinary model control

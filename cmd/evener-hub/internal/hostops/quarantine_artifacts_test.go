@@ -45,7 +45,7 @@ func TestQuarantineRefusesAnAbsurdAllocatorHighWaterMark(t *testing.T) {
 			}
 			done := make(chan result, 1)
 			go func() {
-				store, err := Open(path)
+				store, err := Open(path, RetentionPolicy{})
 				done <- result{store: store, err: err}
 			}()
 			select {
@@ -97,11 +97,11 @@ func TestNextControllerIDsRefuseAnOverflow(t *testing.T) {
 // finding: the replacement store's imported hosts carry no mirrored boundary,
 // and every operations query must still work — unfiltered, host-pinned and the
 // id detail filter — with the imported records listed under their own pinned
-// pair, and continuations staying pinned to it.
+// pair.
 func TestOperationsReadWorksOnAFreshlyQuarantinedStore(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -113,14 +113,6 @@ func TestOperationsReadWorksOnAFreshlyQuarantinedStore(t *testing.T) {
 	if len(unfiltered.Records) != 2 {
 		t.Fatalf("unfiltered read listed %d records, want the two custody imports: %+v", len(unfiltered.Records), unfiltered.Records)
 	}
-	bound, ok := unfiltered.HostBoundaries["h1"]
-	if !ok || bound.Absent || bound.Boundary.Generation != 3 || bound.Boundary.IncarnationID != "inc-h1" {
-		t.Fatalf("the unfiltered page's hostBoundaries[h1] = %+v, want the imported record's own pair", bound)
-	}
-	if bound.Boundary.PresenceEpoch != 0 {
-		t.Fatalf("the synthesized bounds entry carries presenceEpoch %d, want the documented 0 placeholder", bound.Boundary.PresenceEpoch)
-	}
-
 	pinned, err := store.ReadOperations(OperationsQuery{Host: "h1"})
 	if err != nil {
 		t.Fatalf("host-pinned read on a freshly quarantined store: %v", err)
@@ -136,23 +128,11 @@ func TestOperationsReadWorksOnAFreshlyQuarantinedStore(t *testing.T) {
 		t.Fatalf("id detail read = %+v, want the h2 ownership import", detail.Records)
 	}
 
-	// The continuation stays pinned to the synthesized entry, and a mirror
-	// landing later moves the host's entry and refuses it.
-	first, err := store.ReadOperations(OperationsQuery{Limit: 1})
-	if err != nil {
-		t.Fatalf("first page: %v", err)
-	}
-	if first.NextCursor == "" {
-		t.Fatal("no cursor to continue with")
-	}
-	if _, err := store.ReadOperations(OperationsQuery{Limit: 1, Cursor: first.NextCursor}); err != nil {
-		t.Fatalf("continuation under the synthesized entry: %v", err)
-	}
-	mirrorCursorBoundary(t, store, "h1", 3, "inc-h1", 4)
-	if _, err := store.ReadOperations(OperationsQuery{Limit: 1, Cursor: first.NextCursor}); err == nil {
-		t.Fatal("a continuation minted before the mirror landed was admitted after it")
-	} else if _, ok := errors.AsType[*CursorStaleError](err); !ok {
-		t.Fatalf("continuation after the mirror landed = %v, want a typed stale-entry refusal", err)
+	// A mirror landing later moves the host to its mirrored pair; the imported
+	// record stays addressable by id under the pre-mirror pair.
+	mirrorTestBoundary(t, store, "h1", 3, "inc-h1", 4)
+	if _, err := store.ReadOperations(OperationsQuery{ID: "00000000000000000001"}); err != nil {
+		t.Fatalf("id detail after the mirror landed: %v", err)
 	}
 }
 
@@ -190,7 +170,7 @@ func TestConcurrentFirstOpensQuarantineOnce(t *testing.T) {
 		if _, ok := stores[i].Record("00000000000000000001"); !ok {
 			t.Fatalf("racing open %d serves a store without the fence import: %+v", i, stores[i].Records())
 		}
-		if got := stores[i].CursorEpoch().QuarantineEpoch; got != 1 {
+		if got := stores[i].quarantineEpoch(); got != 1 {
 			t.Fatalf("racing open %d reads epoch %d, want 1", i, got)
 		}
 	}
@@ -231,7 +211,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		if err := os.Symlink(target, path); err != nil {
 			t.Fatalf("Symlink: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open through a symlinked store path returned %v, want a refusal", store)
 		}
 		entries, err := os.ReadDir(filepath.Dir(path))
@@ -256,7 +236,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		if err := os.Symlink(elsewhere, quarantineEpochPath(path)); err != nil {
 			t.Fatalf("Symlink: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a symlinked epoch sidecar returned %v, want a refusal", store)
 		}
 	})
@@ -275,7 +255,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a symlinked intent returned %v, want a refusal", store)
 		}
 	})
@@ -284,7 +264,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		dir := t.TempDir()
 		path := StorePath(dir)
 		writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		custodyPath, custodyBytes := quarantineArtifact(t, filepath.Dir(path), ".custody-")
@@ -301,7 +281,7 @@ func TestQuarantineRefusesNonRegularArtifacts(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open over a symlinked custody file returned %v, want a refusal", store)
 		}
 	})
@@ -338,7 +318,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		dir := t.TempDir()
 		path := StorePath(dir)
 		writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		asidePath, _ := quarantineArtifact(t, filepath.Dir(path), ".quarantined-")
@@ -357,7 +337,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a directory standing in for the aside returned %v, want a refusal", store)
 		}
 	})
@@ -378,7 +358,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a symlinked aside returned %v, want a refusal", store)
 		}
 	})
@@ -393,7 +373,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a mismatched intent binding returned %v, want a refusal", store)
 		}
 	})
@@ -409,7 +389,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		// The replacement store still serves: the custody is orphaned evidence
 		// (no aside, no pending intent) that no name the store carries can be
 		// held closed by, so it is cleared rather than refusing every boot.
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open with an orphan custody beside a cleanly serving store: %v", err)
 		}
@@ -425,7 +405,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("the second fresh open after the orphan was cleared: %v", err)
 		}
 	})
@@ -440,7 +420,7 @@ func TestQuarantineRefusesArtifactMismatches(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with an orphan custody and no store returned %v, want a refusal", store)
 		} else if !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
 			t.Fatalf("Open = %v, want an incomplete-custody refusal", err)
@@ -454,7 +434,7 @@ func TestQuarantineForcesTheAsideOwnerOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := StorePath(dir)
 	writeRawStore(t, path, 0o400, quarantinedStoreJSON)
-	if _, err := Open(path); err != nil {
+	if _, err := Open(path, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	asidePath, aside := quarantineArtifact(t, filepath.Dir(path), ".quarantined-")
@@ -478,7 +458,7 @@ func TestSecondQuarantineDoesNotReuseEarlierCustodyIDs(t *testing.T) {
 	dir := t.TempDir()
 	path := StorePath(dir)
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -509,7 +489,7 @@ func TestSecondQuarantineDoesNotReuseEarlierCustodyIDs(t *testing.T) {
 	if err := forgetStore(path); err != nil {
 		t.Fatalf("forgetStore: %v", err)
 	}
-	replacement, err := Open(path)
+	replacement, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}

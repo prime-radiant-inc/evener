@@ -91,6 +91,9 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 // selection) runs on an already-existing session, so sessionID is always that
 // session's own id.
 func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, sessionID string, timeout llm.AdapterTimeout, primedInstance string, primed *llm.ModelListing) (resolved *provider.Profile, listedInstance string, listing *llm.ModelListing, err error) {
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
+		return profile, "", nil, err
+	}
 	if primed != nil && primedInstance == profile.ID() {
 		// SetModel already listed this instance before it took the session
 		// lock. Reuse that listing: a second fetch could return empty and clear
@@ -98,6 +101,9 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 		// enumeration budget.
 		if res, err := client.Resolve(profile.ID() + "/" + profile.Model()); err == nil {
 			profile = profile.WithResolved(res)
+		}
+		if err := validateVertexInteractionsModel(client, profile); err != nil {
+			return profile, primedInstance, primed, err
 		}
 		if err := validateModelSwitchMembership(client, profile, *primed); err != nil {
 			return profile, primedInstance, primed, err
@@ -112,6 +118,9 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 	}
 	filled, enumeration := fillLiveModelMetadata(ctx, client, profile)
 	if enumeration.err != nil {
+		if err := validateVertexInteractionsModel(client, filled); err != nil {
+			return filled, "", nil, err
+		}
 		// Fail open unconditionally: an instance that cannot be listed at all
 		// and any listing failure (timeout, auth error, etc.) both accept the
 		// switch, with no live metadata to fill and no listing to carry.
@@ -127,18 +136,25 @@ func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile, ses
 // client settles servability first: a reference the registry refuses outright
 // (spec §7.3 — an id off the Codex allowlist is the only such case) reports
 // the resolver's own error. Everything else is checked against the listing the
-// caller already fetched (resolveModelSwitchTarget), and only when that listing
-// is usable: a static fallback is not evidence of absence. The listing's
-// rows are already filtered by the §5 visibility rule, so no second visibility
-// pass runs here; fail-open-on-listing-error is handled by the caller, before
-// this is called.
+// caller already fetched (resolveModelSwitchTarget): a usable listing must
+// carry the model, and an account-owned roster that answered with no usable
+// row is proof the target is unavailable. A failed fetch or a static fallback
+// is not evidence of absence. The listing's rows are already filtered by the §5
+// visibility rule, so no second visibility pass runs here;
+// fail-open-on-listing-error is handled by the caller, before this is called.
 func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile, listing llm.ModelListing) error {
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
+		return err
+	}
 	if client == nil || profile == nil {
 		return nil
 	}
 	if !client.CanServe(profile.ID(), profile.Model()) {
 		_, err := client.Resolve(profile.ID() + "/" + profile.Model())
 		return err
+	}
+	if client.ListingProvesUnavailable(profile.ID(), listing) {
+		return fmt.Errorf("model %s is not available from instance %s (available: %s)", profile.Model(), profile.ID(), formatModelAlternatives(listing.Models))
 	}
 	if !listing.Usable {
 		return nil // static fallback: every servable id is accepted (spec §7.3, §8.1)
@@ -147,6 +163,94 @@ func validateModelSwitchMembership(client *llm.Client, profile *provider.Profile
 		return nil
 	}
 	return fmt.Errorf("model %s is not available from instance %s (available: %s)", profile.Model(), profile.ID(), formatModelAlternatives(listing.Models))
+}
+
+func validateVertexInteractionsResolved(res registry.Resolved, model, instance string) error {
+	if res.Transport.Preset == registry.PresetVertexGemini && !registry.VertexSupportsGeminiModel(res.WireID) {
+		return fmt.Errorf("model %q on %s is not supported by Vertex AI Interactions API (use a Gemini 3.1+/4 model such as gemini-3.8-flash)", model, instance)
+	}
+	return nil
+}
+
+func validateVertexInteractionsModel(client *llm.Client, profile *provider.Profile) error {
+	if profile == nil || client.ServesOverride(profile.ID()) {
+		return nil
+	}
+	return validateVertexInteractionsResolved(profile.Resolved(), profile.Model(), profile.ID())
+}
+
+// googleMigrationTargetError returns an error only when a persisted target
+// names retired google-vertex-express (without a custom instance in reg) or a
+// Vertex AI Gemini model unsupported by /interactions. Temporarily disabled
+// models and missing credentials are NOT pruned here so user choices survive in
+// meta.json until re-enabled.
+func googleMigrationTargetError(client *llm.Client, reg *registry.Registry, targetProvider, targetModel string) error {
+	if client.ServesOverride(targetProvider) {
+		return nil
+	}
+	if strings.EqualFold(targetProvider, "google-vertex-express") && (reg == nil || !reg.HasInstance("google-vertex-express")) {
+		return fmt.Errorf("provider %q is retired", targetProvider)
+	}
+	if reg != nil {
+		if res, err := reg.ResolveInstanceModelFacts(targetProvider, targetModel); err == nil {
+			return validateVertexInteractionsResolved(res, targetModel, targetProvider)
+		}
+	}
+	return nil
+}
+
+// googleMigrationCheapModelError checks a persisted SessionMeta.CheapModel
+// candidate only for retired google-vertex-express or unsupported Vertex
+// Gemini models, keeping temporarily disabled or uncredentialed choices intact.
+func (s *Session) googleMigrationCheapModelError(candidate *provider.Profile) error {
+	if candidate == nil {
+		return nil
+	}
+	cheapProv, cheapModel := candidate.CheapModelRef()
+	reg := candidate.Registry()
+	if reg == nil && s.client != nil {
+		reg = s.client.Registry()
+	}
+	if err := googleMigrationTargetError(s.client, reg, cheapProv, cheapModel); err != nil {
+		return err
+	}
+	if reg == nil && cheapProv == candidate.ID() {
+		return validateVertexInteractionsModel(s.client, candidate.WithModel(cheapModel))
+	}
+	return nil
+}
+
+// googleMigrationFallbackError checks a persisted ModelFallbacks entry only for
+// retired google-vertex-express or unsupported Vertex Gemini models.
+func (s *Session) googleMigrationFallbackError(fbModel string) error {
+	var reg *registry.Registry
+	if s.profile != nil {
+		reg = s.profile.Registry()
+	}
+	if reg == nil && s.client != nil {
+		reg = s.client.Registry()
+	}
+	fbProv, fbMod := "", fbModel
+	parts := strings.SplitN(fbModel, "/", 2)
+	if s.profile != nil {
+		if len(parts) == 2 && s.profile.CrossProviderRef(fbModel) {
+			fbProv, fbMod = parts[0], parts[1]
+		} else {
+			fbProv = s.profile.ID()
+			if len(parts) == 2 && strings.EqualFold(parts[0], fbProv) {
+				fbMod = parts[1]
+			}
+		}
+	} else if len(parts) == 2 {
+		fbProv, fbMod = parts[0], parts[1]
+	}
+	if err := googleMigrationTargetError(s.client, reg, fbProv, fbMod); err != nil {
+		return err
+	}
+	if reg == nil && s.profile != nil && fbProv == s.profile.ID() {
+		return validateVertexInteractionsModel(s.client, s.profile.WithModel(fbModel))
+	}
+	return nil
 }
 
 // maxModelAlternatives caps how many live-list alternatives

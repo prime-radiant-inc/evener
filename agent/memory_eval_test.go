@@ -936,7 +936,10 @@ func memoryEvalCancellation(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Minute))
 	defer cancel()
 	root, workspace := t.TempDir(), t.TempDir()
-	s, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), memoryEvalConfig(ctx, root, false, 20))
+	// Persistent session so the real auxiliary session-name Complete runs alongside root and child.
+	cfg := memoryEvalConfig(ctx, root, false, 20)
+	cfg.TurnEndsProcess = false
+	s, err := NewSession(c, p, memoryEvalLocal(t, home, workspace, t.TempDir()), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1029,7 +1032,7 @@ func main() {}
 			steps = append(steps, memoryEvalCall("memory_write", map[string]any{"scope": "project", "file_path": "check.md", "when": "When running the repository checker", "body": "From the repository root run sh scripts/check.sh\n"}))
 		}
 		if !disabled && pair == "correction" && stage.name == "B" {
-			steps = append(steps, memoryEvalCall("memory_edit", map[string]any{"scope": "project", "file_path": "check.md", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current", "replace_all": true}))
+			steps = append(steps, memoryEvalCall("memory_edit", map[string]any{"scope": "project", "file_path": "check.md", "edits": []any{map[string]any{"old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current", "replace_all": true}}}))
 		}
 		steps = append(steps, agenttest.FinalResponse("opaque-episode-completion-631"))
 		n := 0
@@ -1167,7 +1170,7 @@ func TestMemoryEvalChildBoundaries(t *testing.T) {
 			t.Fatal("real child delivered tool data over shared round cap")
 		}
 	}
-	if b.logical != 2 || b.toolRounds != 12 { // Child call plus its real auxiliary name call.
+	if b.logical != 1 || b.toolRounds != 12 { // Child call only; TurnEndsProcess skips the auxiliary session-name call.
 		t.Fatalf("child escaped shared admission: %s", memoryEvalSnapshot(b))
 	}
 }
@@ -1545,7 +1548,7 @@ func TestMemoryEvalGradeCompletion(t *testing.T) {
 		}
 		add("memory_read", map[string]any{"file_path": "MEMORY.md", "scope": "project"}, old, 0, memoryEvalToolObservation{})
 		add("shell", map[string]any{"command": "sh scripts/check.sh"}, "Checker now requires --current", 2, memoryEvalToolObservation{Checker: memoryEvalCheckerSource(true)})
-		add("memory_edit", map[string]any{"file_path": "check.md", "scope": "project", "old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current"}, "", 0, memoryEvalToolObservation{Before: old, After: newRule})
+		add("memory_edit", map[string]any{"file_path": "check.md", "scope": "project", "edits": []any{map[string]any{"old_string": "sh scripts/check.sh", "new_string": "sh scripts/check.sh --current"}}}, "", 0, memoryEvalToolObservation{Before: old, After: newRule})
 		add("shell", map[string]any{"command": "sh scripts/check.sh --current"}, "ok\tmemoryfixture\t0.1s", 0, memoryEvalToolObservation{Checker: memoryEvalCheckerSource(true)})
 		e.Trace = append(e.Trace, completion)
 		memoryEvalGrade(&e, true)

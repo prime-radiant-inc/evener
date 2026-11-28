@@ -10,8 +10,8 @@ import (
 // empty object when the tool declares no parameters, else the sanitized schema
 // its Schema proto can carry.
 //
-// This is the per-tool decision toGeminiFunctionDecls makes, written once so the
-// local estimate reaches the same answer. Gemini's Schema is a restricted subset
+// This is the per-tool decision toInteractionFunctionDecls makes, written once so
+// the local estimate reaches the same answer. Gemini's Schema is a restricted subset
 // of JSON Schema: it has no field for additionalProperties or the $-prefixed
 // document metadata, so a schema carrying either is emitted smaller than it
 // arrived, and a request priced by the advertised bytes is overcharged.

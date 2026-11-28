@@ -1,26 +1,15 @@
 .input {
+  composes: controlField from "../internal/control.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: tapFloor from "../../styles/tapfloor.module.css";
   height: 32px;
   padding: 0 var(--space-3);
-  border-radius: var(--radius-control);
-  border: 1px solid var(--edge);
-  background: var(--field);
-  box-shadow: var(--shadow-inset-field);
-  color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-control);
-  transition:
-    background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    border-color var(--motion-duration-hover) var(--motion-easing-standard),
-    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .input::placeholder {
   color: var(--ink-low);
-}
-
-.input:hover:not(:disabled),
-.input:focus-within {
-  border-color: var(--edge-strong);
 }
 
 .input:disabled {
@@ -28,7 +17,21 @@
   opacity: 0.5;
 }
 
-.input:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
+/* Opt-in: fill the containing grid/flex cell instead of resting at the
+ * field's intrinsic width. A caller asks through the `fill` prop; nothing
+ * styles the widget's element by tag from outside. */
+.fillWidth {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Opt-in: the roomier field the command palette uses. It reproduces that
+ * field's pre-widget metrics: symmetric --space-3 padding, an intrinsic height
+ * (the 32px single-line control is too short for it), border-box sizing under
+ * fill, and the body size floored at the phone's 16px control size. */
+.input.roomy {
+  height: auto;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  font-size: max(var(--font-size-control), var(--font-size-body));
 }

@@ -341,3 +341,38 @@ func TestTurnStartedDataBindsItsKind(t *testing.T) {
 		t.Fatalf("TurnStartedData.eventKind() = %q, want %q", got, EventTurnStarted)
 	}
 }
+
+func TestCommunicatePreviewResetDataQuietJSON(t *testing.T) {
+	t.Parallel()
+	quietIn := CommunicatePreviewResetData{CallID: "c_quiet", Quiet: true}
+	quietRaw, err := json.Marshal(quietIn)
+	if err != nil {
+		t.Fatalf("marshal quiet CommunicatePreviewResetData: %v", err)
+	}
+	if got := string(quietRaw); !strings.Contains(got, `"quiet":true`) || !strings.Contains(got, `"call_id":"c_quiet"`) {
+		t.Fatalf("quiet JSON = %s, want call_id and quiet:true", got)
+	}
+	var quietOut CommunicatePreviewResetData
+	if err := json.Unmarshal(quietRaw, &quietOut); err != nil {
+		t.Fatalf("unmarshal quiet CommunicatePreviewResetData: %v", err)
+	}
+	if quietOut != quietIn {
+		t.Fatalf("quiet round trip = %+v, want %+v", quietOut, quietIn)
+	}
+
+	nonQuietIn := CommunicatePreviewResetData{CallID: "c_fail"}
+	nonQuietRaw, err := json.Marshal(nonQuietIn)
+	if err != nil {
+		t.Fatalf("marshal non-quiet CommunicatePreviewResetData: %v", err)
+	}
+	if got := string(nonQuietRaw); strings.Contains(got, `"quiet"`) {
+		t.Fatalf("non-quiet JSON = %s, want quiet omitted", got)
+	}
+	var nonQuietOut CommunicatePreviewResetData
+	if err := json.Unmarshal(nonQuietRaw, &nonQuietOut); err != nil {
+		t.Fatalf("unmarshal non-quiet CommunicatePreviewResetData: %v", err)
+	}
+	if nonQuietOut != nonQuietIn {
+		t.Fatalf("non-quiet round trip = %+v, want %+v", nonQuietOut, nonQuietIn)
+	}
+}

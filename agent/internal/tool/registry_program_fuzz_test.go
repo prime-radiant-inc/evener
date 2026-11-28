@@ -25,8 +25,8 @@ import (
 // rooted in t.TempDir, so its mutation is confined to the test's own root.
 //
 // Its semantic checks cover registration/clone/restrict isolation, intent
-// handling, schema and JSON rejection, middleware, typed execution results,
-// error propagation, output limits, and FileMutator capability handling.
+// handling, schema and JSON rejection, typed execution results, error
+// propagation, output limits, and FileMutator capability handling.
 func FuzzToolRegistryProgram(f *testing.F) {
 	for _, seed := range []struct {
 		payload string
@@ -64,17 +64,12 @@ func FuzzToolRegistryProgram(f *testing.F) {
 			t.Fatalf("invalid schema call = %+v calls=%d want no execution", badSchema, *calls)
 		}
 
-		blocked := toolProgramCall(t, reg, deny, "echo_program", "blocked", 0, true, "blocked-id")
-		if !blocked.IsError || blocked.Err != nil || !strings.Contains(blocked.Output, "program middleware blocked") || *calls != beforeCalls {
-			t.Fatalf("middleware result = %+v calls=%d want no execution", blocked, *calls)
-		}
-
 		for mode := range 6 {
 			callID := "mode-id"
 			if mode == 0 {
 				callID = "" // synthesized shortHash branch
 			}
-			result := toolProgramCall(t, reg, deny, "echo_program", payload, mode, false, callID)
+			result := toolProgramCall(t, reg, deny, "echo_program", payload, mode, callID)
 			if result.ToolName != "echo_program" || result.CallID == "" {
 				t.Fatalf("mode %d malformed result: %+v", mode, result)
 			}
@@ -105,7 +100,7 @@ func FuzzToolRegistryProgram(f *testing.F) {
 			t.Fatalf("executor calls = %d, want %d", *calls, beforeCalls+6)
 		}
 
-		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, false, "read-file"); got.IsError || *readFileSawIntent {
+		if got := toolProgramCall(t, reg, deny, "read_file", payload, 0, "read-file"); got.IsError || *readFileSawIntent {
 			t.Fatalf("read_file must not see intent (stripped like every other tool) = result=%+v saw=%v", got, *readFileSawIntent)
 		}
 
@@ -133,7 +128,6 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 				"properties": map[string]any{
 					"value": map[string]any{"type": "string"},
 					"mode":  map[string]any{"type": "integer"},
-					"block": map[string]any{"type": "boolean"},
 				},
 				"required": []string{"value", "mode"},
 			},
@@ -170,7 +164,7 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 			Description: "program read_file intent witness",
 			Parameters: map[string]any{
 				"type":       "object",
-				"properties": map[string]any{"value": map[string]any{"type": "string"}, "mode": map[string]any{"type": "integer"}, "block": map[string]any{"type": "boolean"}},
+				"properties": map[string]any{"value": map[string]any{"type": "string"}, "mode": map[string]any{"type": "integer"}},
 				"required":   []string{"value", "mode"},
 			},
 		},
@@ -197,30 +191,23 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 			Description: "program FileMutator boundary",
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{"patch": map[string]any{"type": "string"}}, "required": []string{"patch"}},
 		},
-		Exec: func(_ context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			fm, ok := env.(execenv.FileMutator)
 			if !ok {
 				return nil, errors.New("apply_patch requires FileMutator")
 			}
 			patch, _ := args["patch"].(string)
-			return ApplyPatch(fm, patch)
+			return ApplyPatch(ctx, fm, patch)
 		},
 	}); err != nil {
 		t.Fatalf("register apply_patch: %v", err)
 	}
-
-	reg.Use(func(_ context.Context, name string, args map[string]any) error {
-		if name == "echo_program" && args["block"] == true {
-			return errors.New("program middleware blocked")
-		}
-		return nil
-	})
 	return reg, calls, readFileSawIntent
 }
 
-func toolProgramCall(t *testing.T, reg *Registry, env execenv.ExecutionEnvironment, name, value string, mode int, block bool, callID string) ExecResult {
+func toolProgramCall(t *testing.T, reg *Registry, env execenv.ExecutionEnvironment, name, value string, mode int, callID string) ExecResult {
 	t.Helper()
-	raw, err := json.Marshal(map[string]any{"value": value, "mode": mode, "block": block, "intent": "fuzz registry program"})
+	raw, err := json.Marshal(map[string]any{"value": value, "mode": mode, "intent": "fuzz registry program"})
 	if err != nil {
 		t.Fatalf("marshal %s args: %v", name, err)
 	}
@@ -257,7 +244,7 @@ func toolProgramIsolation(t *testing.T, reg *Registry) {
 	clone := reg.Clone()
 	clone.Remove("apply_patch")
 	allowed := map[string]bool{"echo_program": true}
-	clone.Restrict(allowed)
+	clone.Restrict(allowed, "")
 	if !allowed["communicate"] || clone.Get("echo_program") == nil || clone.Get("communicate") == nil || len(clone.Names()) != 2 {
 		t.Fatalf("Restrict clone = names=%v allowed=%v", clone.Names(), allowed)
 	}
@@ -266,7 +253,7 @@ func toolProgramIsolation(t *testing.T, reg *Registry) {
 	}
 
 	custom := reg.Clone()
-	custom.RestrictKeepingResultTool(map[string]bool{"echo_program": true}, "read_file")
+	custom.Restrict(map[string]bool{"echo_program": true}, "read_file")
 	if custom.Get("echo_program") == nil || custom.Get("read_file") == nil || len(custom.Names()) != 2 {
 		t.Fatalf("custom result restrict = %v", custom.Names())
 	}
@@ -279,9 +266,9 @@ func toolProgramIsolation(t *testing.T, reg *Registry) {
 	if got == nil || got.Limit.MaxChars != 4 || got.Limit.MaxLines != 1 || got.Limit.Strategy != schema.TruncTail {
 		t.Fatalf("OverrideLimits = %+v", got)
 	}
-	reg.Unregister("communicate")
+	reg.Remove("communicate")
 	if reg.Get("communicate") != nil {
-		t.Fatal("Unregister left communicate registered")
+		t.Fatal("Remove left communicate registered")
 	}
 	reg.Remove("communicate") // idempotent missing removal
 }
@@ -316,10 +303,10 @@ func toolProgramHelpers(t *testing.T, payload string) {
 	if lim := defaultToolLimit("use_skill"); lim.MaxChars != 0 || lim.MaxLines != 0 {
 		t.Fatalf("defaultToolLimit(%q) = %+v, want no default limit", "use_skill", lim)
 	}
-	if got := truncateChars("abcdef", 4, schema.TruncTail); !strings.HasSuffix(got, "cdef") {
+	if got, _ := truncateChars("abcdef", 4, schema.TruncTail); !strings.HasSuffix(got, "cdef") {
 		t.Fatalf("tail truncation = %q", got)
 	}
-	if got := truncateLines("a\nb\nc\nd", 2); !strings.Contains(got, "lines omitted") {
+	if got, _ := truncateLines("a\nb\nc\nd", 2); !strings.Contains(got, "lines omitted") {
 		t.Fatalf("line truncation = %q", got)
 	}
 	if got := shortHash([]byte(payload)); len(got) != 16 {
@@ -430,16 +417,16 @@ func toolProgramRegistryEdges(t *testing.T) {
 	if got := toolValueToString(unserializable); got == "" || got != toolValueToString(unserializable) {
 		t.Fatalf("unserializable tool value = %q", got)
 	}
-	if got := truncateChars("short", 0, schema.TruncHeadTail); got != "short" {
+	if got, _ := truncateChars("short", 0, schema.TruncHeadTail); got != "short" {
 		t.Fatalf("nonpositive char limit = %q", got)
 	}
-	if got := truncateChars("abcdef", 4, schema.TruncHeadTail); !strings.Contains(got, "removed from the middle") {
+	if got, _ := truncateChars("abcdef", 4, schema.TruncHeadTail); !strings.Contains(got, "removed from the middle") {
 		t.Fatalf("head-tail truncation = %q", got)
 	}
-	if got := truncateLines("a\nb", 0); got != "a\nb" {
+	if got, _ := truncateLines("a\nb", 0); got != "a\nb" {
 		t.Fatalf("nonpositive line limit = %q", got)
 	}
-	if got := truncateLines("a\nb", 3); got != "a\nb" {
+	if got, _ := truncateLines("a\nb", 3); got != "a\nb" {
 		t.Fatalf("untruncated lines = %q", got)
 	}
 }
@@ -511,16 +498,16 @@ func toolProgramPatchCases(t *testing.T, payload string) {
 
 	m := &toolProgramMemMutator{files: map[string][]byte{"file.txt": []byte("target\nhint\nkeep\n")}}
 	update := "*** Begin Patch\n*** Update File: file.txt\n@@ hint\n-target\n+" + payload + "\n*** End Patch\n"
-	if _, err := ApplyPatch(m, update); err != nil || string(m.files["file.txt"]) != payload+"\nhint\nkeep\n" {
+	if _, err := ApplyPatch(context.Background(), m, update); err != nil || string(m.files["file.txt"]) != payload+"\nhint\nkeep\n" {
 		t.Fatalf("hint fallback update = %q err=%v", m.files["file.txt"], err)
 	}
-	if _, err := ApplyPatch(m, "*** Begin Patch\n*** Update File: file.txt\n@@\n+prefix\n*** End Patch\n"); err != nil || !strings.HasPrefix(string(m.files["file.txt"]), "prefix\n") {
+	if _, err := ApplyPatch(context.Background(), m, "*** Begin Patch\n*** Update File: file.txt\n@@\n+prefix\n*** End Patch\n"); err != nil || !strings.HasPrefix(string(m.files["file.txt"]), "prefix\n") {
 		t.Fatalf("pure-add update = %q err=%v", m.files["file.txt"], err)
 	}
-	if _, err := ApplyPatch(m, "*** Begin Patch\n*** Update File: file.txt\n*** Move to: moved.txt\n@@\n hint\n+after\n*** End Patch\n"); err != nil || m.files["moved.txt"] == nil || m.files["file.txt"] != nil {
+	if _, err := ApplyPatch(context.Background(), m, "*** Begin Patch\n*** Update File: file.txt\n*** Move to: moved.txt\n@@\n hint\n+after\n*** End Patch\n"); err != nil || m.files["moved.txt"] == nil || m.files["file.txt"] != nil {
 		t.Fatalf("move update files=%#v err=%v", m.files, err)
 	}
-	if _, err := ApplyPatch(m, "*** Begin Patch\n*** Delete File: moved.txt\n*** End Patch\n"); err != nil || m.files["moved.txt"] != nil {
+	if _, err := ApplyPatch(context.Background(), m, "*** Begin Patch\n*** Delete File: moved.txt\n*** End Patch\n"); err != nil || m.files["moved.txt"] != nil {
 		t.Fatalf("delete update files=%#v err=%v", m.files, err)
 	}
 
@@ -536,11 +523,11 @@ func toolProgramPatchCases(t *testing.T, payload string) {
 		{name: "update rename", fail: "rename", patch: "*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-old\n+new\n*** End Patch\n"},
 	} {
 		m := &toolProgramMemMutator{files: map[string][]byte{"a.txt": []byte("old\n")}, fail: tc.fail}
-		if _, err := ApplyPatch(m, tc.patch); err == nil || !strings.Contains(err.Error(), "program ") {
+		if _, err := ApplyPatch(context.Background(), m, tc.patch); err == nil || !strings.Contains(err.Error(), "program ") {
 			t.Fatalf("%s error = %v", tc.name, err)
 		}
 	}
-	if _, err := ApplyPatch(&toolProgramMemMutator{files: map[string][]byte{"a.txt": []byte("one\n")}}, "*** Begin Patch\n*** Update File: a.txt\n@@\n-missing\n+new\n*** End Patch\n"); err == nil || !strings.Contains(err.Error(), "expected lines not found") {
+	if _, err := ApplyPatch(context.Background(), &toolProgramMemMutator{files: map[string][]byte{"a.txt": []byte("one\n")}}, "*** Begin Patch\n*** Update File: a.txt\n@@\n-missing\n+new\n*** End Patch\n"); err == nil || !strings.Contains(err.Error(), "expected lines not found") {
 		t.Fatalf("mismatch diagnostic error = %v", err)
 	}
 

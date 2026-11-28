@@ -14,7 +14,6 @@
 // far its content escapes its own content box, plus the deepest elements
 // responsible - which is the answer the fix has to be aimed at.
 import { flushSync } from "react-dom";
-import { createRoot } from "react-dom/client";
 import { MotionProvider } from "../motion";
 import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
 import { activityContext, activitySummary } from "../stores/sessionActivityTestUtils";
@@ -46,8 +45,7 @@ import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { navigationStore } from "../stores/navigation/store";
 import { putThreadModel, threadsStore } from "../stores/threads";
 import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
-import "../styles/tokens.css";
-import "../styles/global.css";
+import { mountHarness } from "./mountHarness";
 
 const params = new URLSearchParams(window.location.search);
 window.addEventListener("error", (event) => {
@@ -73,6 +71,11 @@ const aboutOverviewMode = panelsMode && params.get("activity") === "about";
 // ?heldtail=1: the trailing pending-stack fixture for its column
 // alignment (see inspectHeldSteerColumn below).
 const heldTailMode = params.get("heldtail") === "1";
+// ?coldstart=1: the first-reply fixture. The thread is active with no real
+// turn yet and holds a pending send - the state useColdStartSkeleton answers -
+// so ConversationBody mounts ColdStartSkeleton. The guard measures it at the
+// Wide transcript measure.
+const coldStartMode = params.get("coldstart") === "1";
 // The guard sweeps busy sessions with and without advertised Steer.
 const steerMode = params.get("steer") === "1";
 // ?ask=1: reconcile one live question into the ask dock after the fixture
@@ -167,7 +170,7 @@ const snapshot: ThreadReadResponse = {
       goal: {
         objective:
           "Keep the session focused on proving the current task and goal remain independently ellipsized across every supported composer width",
-        status: "awaiting stakeholder approval for compact session footer geometry",
+        status: "blocked",
         iterations: 12,
       },
       reasoningEffort: "high",
@@ -341,6 +344,22 @@ const heldTailSnapshot: ThreadReadResponse = {
   },
 };
 
+// ?coldstart=1: the first-reply skeleton fixture. Session renders
+// ColdStartSkeleton while the thread is active, holds no authoritative turn,
+// and has a pending send; the send is seeded below through the same durable
+// outbox path every submission takes, never a direct store write.
+const COLDSTART_REF = "overflowcoldstart";
+const coldStartSnapshot: ThreadReadResponse = {
+  thread: {
+    ...snapshot.thread,
+    id: "thr_overflow_coldstart",
+    sessionId: "sess_overflow_coldstart",
+    name: "Cold start",
+    turns: [],
+    evener: { ...snapshot.thread.evener, ref: COLDSTART_REF },
+  },
+};
+
 const ABOUT_REF = "local:overflowabout";
 const ABOUT_BRANCH = "feature/overflow-about-branch-that-must-not-widen-the-panel";
 const aboutSnapshot: ThreadReadResponse = {
@@ -431,6 +450,7 @@ const FIXTURES = [
   { on: pagingMode, ref: PAGING_REF, snapshot: pagingSnapshot },
   { on: intentTailMode, ref: INTENTTAIL_REF, snapshot: intentTailSnapshot },
   { on: heldTailMode, ref: HELDTAIL_REF, snapshot: heldTailSnapshot },
+  { on: coldStartMode, ref: COLDSTART_REF, snapshot: coldStartSnapshot },
   { on: aboutOverviewMode, ref: ABOUT_REF, snapshot: aboutSnapshot },
 ];
 const activeFixture = FIXTURES.find((fixture) => fixture.on) ?? { ref: REF, snapshot };
@@ -535,6 +555,25 @@ if (heldTailMode) {
     await refreshPendingTurnsProjection(HELDTAIL_REF);
   })();
 }
+// The pending send that mounts the first-reply skeleton: the same
+// enqueueIntent + shared projection refresh every real submission takes
+// (seedPendingSend's path in sessionTestUtils.tsx, minus the test-only act
+// flush - the browser has real IndexedDB, and the inspect call frame-waits).
+if (coldStartMode) {
+  void (async () => {
+    const storage = new MutationOutboxIndexedDB();
+    await storage.enqueueIntent({
+      targetRef: COLDSTART_REF,
+      threadId: coldStartSnapshot.thread.id,
+      method: "turn/start",
+      payload: { ref: COLDSTART_REF, input: [{ type: "text", text: "cold start skeleton probe" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "cold start skeleton probe" }] },
+    });
+    storage.close();
+    await refreshPendingTurnsProjection(COLDSTART_REF);
+  })();
+}
 const locationKey = { kind: "location", ref: activeRef } as const;
 const location: NavigationSessionLocation = {
   generation_id: "overflow_generation",
@@ -578,6 +617,10 @@ navigationStore.setState({
   ]),
 });
 initTranscriptDisplay();
+// This fixture is measured at Wide, but the preference persists per origin
+// and the standard sweeps reuse it; override the attribute the layout reads
+// instead of writing the stored preference.
+if (coldStartMode) document.body.dataset.transcriptMeasure = "wide";
 // The browser guard must not inherit a developer's local transcript settings.
 // Tools plus both diagnostic families keeps the real system-prompt and raw
 // notification disclosure fixtures mounted in both layout classes. Tools
@@ -595,14 +638,12 @@ transcriptDisplayStore.setState({
   local: { desktop: guardTranscriptConfig, mobile: guardTranscriptConfig },
 });
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("overflowharness.html is missing #root");
-
 document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 
 if (settingsMode) {
-  createRoot(rootEl).render(
+  mountHarness(
+    "overflowharness",
     <ClientProvider client={fake}>
       <div id="oh-pane" style={{ width, height }}>
         <Settings params={{ section: "transcript" }} paneId="oh-settings" focused />
@@ -614,7 +655,8 @@ if (settingsMode) {
   if (params.get("activity") === "tasks" || aboutOverviewMode) {
     activitySidebarStore.getState().openWith(aboutOverviewMode ? "about" : "tasks");
   }
-  createRoot(rootEl).render(
+  mountHarness(
+    "overflowharness",
     <ClientProvider client={fake}>
       <MotionProvider>
         <div id="oh-pane" style={{ width, height: 900, display: "flex", position: "relative" }}>
@@ -640,7 +682,8 @@ if (settingsMode) {
     panes: [{ id: "oh", type: "session", params: { ref: activeRef }, slot: "main" }],
     focusedPaneId: "oh",
   });
-  createRoot(rootEl).render(
+  mountHarness(
+    "overflowharness",
     <ClientProvider client={fake}>
       <div id="oh-pane" style={{ width, height }}>
         <Session params={{ ref: activeRef }} paneId="oh" focused />
@@ -1620,6 +1663,48 @@ async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
   };
 }
 
+interface ColdStartSkeletonMeasurement {
+  measure: string | null;
+  skeletonWidth: number;
+  contentWidth: number;
+  barWidth: number;
+  parentContentWidth: number | null;
+}
+
+// The first-reply skeleton takes the shared reading measure as a column. Run
+// at the ?coldstart=1 fixture with the transcript measure set to Wide: the
+// longest bar must fill the column's content box (after .coldStart's own
+// padding), and the column itself must fill its parent's content box rather
+// than sit at a hard-coded cap. The pending send behind the skeleton is an
+// async outbox refresh that can mount it after `settled`, so it is waited for.
+async function inspectColdStartSkeleton(): Promise<ColdStartSkeletonMeasurement> {
+  const pane = document.getElementById("oh-pane");
+  if (!pane) throw new Error("Cold start harness pane never mounted");
+  const skeleton = await waitFor(
+    () => pane.querySelector<HTMLElement>('[data-testid="cold-start-skeleton"]'),
+    "Cold start skeleton",
+    "first-reply skeleton",
+  );
+  await waitFor(
+    () => skeleton.querySelector<HTMLElement>('[data-testid="skeleton-line"]'),
+    "Cold start skeleton",
+    "skeleton bar",
+  );
+  await twoPaintedFrames();
+  const bars = Array.from(skeleton.querySelectorAll<HTMLElement>('[data-testid="skeleton-line"]'));
+  const longest = bars.reduce((widest, candidate) =>
+    candidate.getBoundingClientRect().width > widest.getBoundingClientRect().width ? candidate : widest,
+  );
+  const parent = skeleton.parentElement;
+  return {
+    measure: document.body.dataset.transcriptMeasure ?? null,
+    skeletonWidth: skeleton.getBoundingClientRect().width,
+    contentWidth: contentBoxWidth(skeleton),
+    barWidth: longest.getBoundingClientRect().width,
+    parentContentWidth: parent ? contentBoxWidth(parent) : null,
+  };
+}
+
 // Report observed geometry only. The runner owns the placement oracle.
 function measureComposerContentWidth(): number | null {
   const pane = document.getElementById("oh-pane");
@@ -1755,6 +1840,7 @@ async function measure() {
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
+  const composerFieldBox = composerCard?.querySelector<HTMLElement>('[role="textbox"]')?.getBoundingClientRect();
   const composerContainerWidth = measureComposerContentWidth();
   const controlTestIds = ["composer-attach", "composer-stop", "composer-submit", "composer-steer"];
   const composeControls = controlTestIds.map((testId) => ({
@@ -1792,6 +1878,7 @@ async function measure() {
     const box = element?.getBoundingClientRect();
     return {
       testId,
+      element,
       present: visible(element),
       containedInCard: containedInCard(box),
       containedInPane: containedInPane(box),
@@ -1826,6 +1913,7 @@ async function measure() {
   const statusBox = statusGeometry(status);
   return {
     width,
+    measure: document.body.dataset.transcriptMeasure ?? null,
     scrollers,
     ignored,
     disclosures,
@@ -1876,7 +1964,13 @@ async function measure() {
         (control) => !control.present || (control.containedInCard && control.containedInPane),
       ),
       controlsDoNotOverlap,
-      controls: controls.map(({ box: _box, ...control }) => control),
+      controls: controls.map(({ box: _box, element: _element, ...control }) => control),
+      controlGeometry: Object.fromEntries(
+        controls.flatMap((control) => {
+          if (!control.present || !control.element) return [];
+          return [[control.testId, geometryOf(control.element)]];
+        }),
+      ),
       // Observed primary and secondary controls beside the status row.
       verbCluster: (() => {
         const verbs = controls.filter(
@@ -1885,17 +1979,16 @@ async function measure() {
         return {
           controls: verbs.length,
           top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
+          fieldRight: composerFieldBox?.right ?? null,
+          fieldBottom: composerFieldBox?.bottom ?? null,
           statusRowBottom: statusBox?.bottom ?? null,
           containerWidth: composerContainerWidth,
         };
       })(),
-      sharedPaneWithoutOverflow:
-        !!currentWork &&
-        !!composerCard &&
-        currentWork.scrollWidth <= currentWork.clientWidth + 1 &&
-        composerCard.scrollWidth <= composerCard.clientWidth + 1 &&
-        containedInPane(currentWorkBox) &&
-        containedInPane(composerCardBox),
+      composerFitsPane:
+        !!composerCard && composerCard.scrollWidth <= composerCard.clientWidth + 1 && containedInPane(composerCardBox),
+      currentWorkFitsPane:
+        !!currentWork && currentWork.scrollWidth <= currentWork.clientWidth + 1 && containedInPane(currentWorkBox),
       orderedAboveComposer: !!currentWorkBox && !!composerCardBox && currentWorkBox.bottom <= composerCardBox.top + 1,
     },
   };
@@ -2079,8 +2172,15 @@ async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer
 
 function duoBox(element: Element | null | undefined) {
   if (!element) return null;
-  const { width, height } = geometryOf(element);
-  return { width, height };
+  return geometryOf(element);
+}
+
+function duoControlPositions(pane: HTMLElement) {
+  return {
+    attach: duoBox(pane.querySelector('[data-testid="composer-attach"]')),
+    menu: duoBox(findSessionMenuTrigger()),
+    primary: duoBox(pane.querySelector('[data-testid="composer-stop"], [data-testid="composer-submit"]')),
+  };
 }
 
 function measureDuoDraftState() {
@@ -2094,6 +2194,7 @@ function measureDuoDraftState() {
     totalFooterHeight: (footerBox?.height ?? 0) + (edgeBox?.height ?? 0),
     editorMinLines: pane?.querySelector<HTMLElement>('[data-composer] [role="textbox"]')?.style.minHeight ?? null,
     editing: pane?.querySelector("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
+    controlPositions: pane ? duoControlPositions(pane) : null,
     attachment: null,
     counters: Array.from(pane?.querySelectorAll<HTMLElement>("[data-activity-tab]") ?? []).map((counter) => ({
       ...duoBox(counter),
@@ -2126,6 +2227,7 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
       footerPaddingBottom: footer ? getComputedStyle(footer).paddingBottom : null,
       editorMinLines: editor.style.minHeight,
       editing: editor.closest("[data-composer]")?.hasAttribute("data-composer-editing") ?? false,
+      controlPositions: duoControlPositions(pane),
       cardHidden: card instanceof HTMLElement && card.hidden,
       question: duoBox(question),
       questionInTranscript: question?.closest('[data-testid="transcript-virtual-list"]') !== null,
@@ -2153,6 +2255,7 @@ async function measureDuoCompactStates(phase: "focus" | "rest") {
           control instanceof HTMLInputElement &&
           (control.type === "text" || control.getAttribute("aria-label") === "Something else…")
         ),
+        testId: control.getAttribute("data-testid"),
         name: control.getAttribute("aria-label") ?? control.getAttribute("data-testid") ?? control.getAttribute("type"),
       })),
       horizontalOverflow: pane.scrollWidth - pane.clientWidth,
@@ -2256,6 +2359,7 @@ declare global {
     inspectChatFocus: typeof inspectChatFocus;
     inspectIntentColumn: typeof inspectIntentColumn;
     inspectHeldSteerColumn: typeof inspectHeldSteerColumn;
+    inspectColdStartSkeleton: typeof inspectColdStartSkeleton;
     measureMenuVerbs: typeof measureMenuVerbs;
     measureDuoCompactStates: typeof measureDuoCompactStates;
     measureDuoDraftState: typeof measureDuoDraftState;
@@ -2270,6 +2374,7 @@ window.inspectDetail = inspectDetail;
 window.inspectChatFocus = inspectChatFocus;
 window.inspectIntentColumn = inspectIntentColumn;
 window.inspectHeldSteerColumn = inspectHeldSteerColumn;
+window.inspectColdStartSkeleton = inspectColdStartSkeleton;
 window.measureMenuVerbs = measureMenuVerbs;
 window.measureDuoCompactStates = measureDuoCompactStates;
 window.measureDuoDraftState = measureDuoDraftState;

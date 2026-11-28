@@ -6,6 +6,7 @@ package hostops
 // discipline.
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -30,6 +31,37 @@ func seedStoreForTest(t *testing.T, store *Store, mutate func(*snapshot)) {
 	}
 }
 
+// openStoreWithRawMirror writes a pre-migration store file carrying boundaries
+// and/or removal markers on disk before opening, avoiding cached storeCells
+// and keeping HostRecords unimported.
+func openStoreWithRawMirror(t *testing.T, boundaries map[string]Boundary, removed map[string]RemovedHost) (*Store, string) {
+	t.Helper()
+	path := StorePath(t.TempDir())
+	payload := struct {
+		Version                uint64                 `json:"version"`
+		Sequence               uint64                 `json:"sequence"`
+		AllocatorHighWaterMark uint64                 `json:"allocatorHighWaterMark"`
+		Records                []Record               `json:"records"`
+		Boundaries             map[string]Boundary    `json:"boundaries,omitempty"`
+		RemovedHosts           map[string]RemovedHost `json:"removedHosts,omitempty"`
+	}{
+		Version:      storeVersion,
+		Records:      []Record{},
+		Boundaries:   boundaries,
+		RemovedHosts: removed,
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal raw store fixture: %v", err)
+	}
+	writeRawStore(t, path, 0o600, string(raw))
+	store, err := Open(path, RetentionPolicy{})
+	if err != nil {
+		t.Fatalf("Open(%s): %v", path, err)
+	}
+	return store, path
+}
+
 // TestReconcileMirrorRollsBackATornStoreMirror pins §4's rollback: a store
 // mirror newer than the file's mark with no matching commit marker rolls back
 // to the file's identity, the discarded number survives as the name's
@@ -38,27 +70,27 @@ func seedStoreForTest(t *testing.T, store *Store, mutate func(*snapshot)) {
 // write, its dedup tombstone drops, and the terminal record and the current
 // generation's tombstone stay.
 func TestReconcileMirrorRollsBackATornStoreMirror(t *testing.T) {
-	store, path := openTestStore(t)
-	if err := store.MirrorBoundaries(map[string]Boundary{
+	store, path := openStoreWithRawMirror(t, map[string]Boundary{
 		"m4": {Generation: 9, IncarnationID: "inc-9", PresenceEpoch: 5},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
-	}
-	inflight, err := store.Create(NewRecord{ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
+	}, nil)
+	inflightOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-1", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot", SequenceBefore: store.Sequence()})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	terminal, err := store.Create(NewRecord{ClientOperationID: "op-2", Host: "m4", Kind: KindRestart, Generation: 9, IncarnationID: "inc-9"})
+	inflight := inflightOutcome.Record
+	terminalOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-2", Host: "m4", Kind: KindRestart, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot", SequenceBefore: store.Sequence()})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	terminal := terminalOutcome.Record
 	if _, err := store.Transition(terminal.ID, StateComplete, func(record *Record) { record.Result = &Result{OK: true, Message: "done"} }); err != nil {
 		t.Fatalf("Transition: %v", err)
 	}
-	current, err := store.Create(NewRecord{ClientOperationID: "op-3", Host: "m4", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-7"})
+	currentOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-3", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-7"}, BootID: "test-boot", SequenceBefore: store.Sequence()})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	current := currentOutcome.Record
 	discardedTombstone := tombstoneOf(Record{
 		ID: formatAllocatorID(42), ClientOperationID: "op-42", Host: "m4", Kind: KindDeploy,
 		State: StateComplete, Generation: 9, IncarnationID: "inc-9",
@@ -133,20 +165,19 @@ func TestReconcileMirrorRollsBackATornStoreMirror(t *testing.T) {
 // record transition: the mirrored generation is discarded and every in-flight
 // record for the name moves to interrupted with the torn-write note.
 func TestReconcileMirrorRollbackMovesEveryInFlightRecord(t *testing.T) {
-	store, _ := openTestStore(t)
-	if err := store.MirrorBoundaries(map[string]Boundary{
+	store, _ := openStoreWithRawMirror(t, map[string]Boundary{
 		"m4": {Generation: 9, IncarnationID: "inc-9", PresenceEpoch: 5},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
-	}
-	first, err := store.Create(NewRecord{ClientOperationID: "op-fenced", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
+	}, nil)
+	firstOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-fenced", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	second, err := store.Create(NewRecord{ClientOperationID: "op-plain", Host: "m4", Kind: KindDeploy, Generation: 9, IncarnationID: "inc-9"})
+	first := firstOutcome.Record
+	secondOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-plain", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	second := secondOutcome.Record
 
 	result, err := store.ReconcileMirror(MirrorView{
 		Marks: map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-7", PresenceEpoch: 4}},
@@ -171,12 +202,9 @@ func TestReconcileMirrorRollbackMovesEveryInFlightRecord(t *testing.T) {
 // mark newer than the store mirror advances the mirror (or creates it), and a
 // converged pair changes nothing.
 func TestReconcileMirrorPushesAFileMarkForward(t *testing.T) {
-	store, path := openTestStore(t)
-	if err := store.MirrorBoundaries(map[string]Boundary{
+	store, path := openStoreWithRawMirror(t, map[string]Boundary{
 		"m4": {Generation: 5, IncarnationID: "inc-5", PresenceEpoch: 1},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
-	}
+	}, nil)
 	mark := Boundary{Generation: 7, IncarnationID: "inc-7", PresenceEpoch: 2}
 	result, err := store.ReconcileMirror(MirrorView{
 		Marks: map[string]Boundary{"m4": mark, "m7": {Generation: 3, IncarnationID: "inc-3", PresenceEpoch: 1}},
@@ -212,11 +240,8 @@ func TestReconcileMirrorPushesAFileMarkForward(t *testing.T) {
 // a name hub.toml carries no entry for keeps its mirror, and the surviving
 // mirror is read as the high-water mark.
 func TestReconcileMirrorPreservesAMirrorWithoutAFileEntry(t *testing.T) {
-	store, _ := openTestStore(t)
 	mirror := Boundary{Generation: 11, IncarnationID: "inc-11", PresenceEpoch: 3}
-	if err := store.MirrorBoundaries(map[string]Boundary{"m4": mirror}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
-	}
+	store, _ := openStoreWithRawMirror(t, map[string]Boundary{"m4": mirror}, nil)
 	result, err := store.ReconcileMirror(MirrorView{})
 	if err != nil {
 		t.Fatalf("ReconcileMirror: %v", err)
@@ -245,11 +270,8 @@ func TestReconcileMirrorPreservesAMirrorWithoutAFileEntry(t *testing.T) {
 // a mirror the file's own commit marker names stands, even where it is newer
 // than the file's mark.
 func TestReconcileMirrorKeepsAMarkerAuthorizedMirror(t *testing.T) {
-	store, path := openTestStore(t)
 	mirror := Boundary{Generation: 9, IncarnationID: "inc-9", PresenceEpoch: 5}
-	if err := store.MirrorBoundaries(map[string]Boundary{"m4": mirror}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
-	}
+	store, path := openStoreWithRawMirror(t, map[string]Boundary{"m4": mirror}, nil)
 	result, err := store.ReconcileMirror(MirrorView{
 		Marks:   map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-7", PresenceEpoch: 4}},
 		Live:    map[string]struct{}{"m4": {}},
@@ -281,12 +303,9 @@ func TestReconcileMirrorKeepsAMarkerAuthorizedMirror(t *testing.T) {
 // TestReconcileMirrorIsOneAtomicWrite pins the fault seam: a failure before the
 // rename leaves the file (and memory) exactly as they were.
 func TestReconcileMirrorIsOneAtomicWrite(t *testing.T) {
-	store, path := openTestStore(t)
-	if err := store.MirrorBoundaries(map[string]Boundary{
+	store, path := openStoreWithRawMirror(t, map[string]Boundary{
 		"m4": {Generation: 9, IncarnationID: "inc-9", PresenceEpoch: 5},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
-	}
+	}, nil)
 	before := storeFileBytesForTest(t, path)
 	store.faults.beforeRename = func() error { return errors.New("injected crash before the rename") }
 	if _, err := store.ReconcileMirror(MirrorView{
@@ -333,16 +352,13 @@ func TestReconcileMirrorRefusesAMalformedView(t *testing.T) {
 // rule: a removed name past its horizon with no records keeps no mirror, so a
 // boot cannot recreate a boundary the next mutation's write would prune again.
 func TestReconcileMirrorPushForwardSkipsAnExpiredRemovedName(t *testing.T) {
-	store, _ := openTestStore(t)
-	if err := store.MirrorHostState(HostMirror{
-		Removed: map[string]RemovedHost{"gone": {
+	store, _ := openStoreWithRawMirror(t, nil, map[string]RemovedHost{
+		"gone": {
 			RemovedAt:     time.Now().UTC().Add(-8 * 24 * time.Hour),
 			Generation:    7,
 			IncarnationID: "inc-7",
-		}},
-	}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
-	}
+		},
+	})
 	result, err := store.ReconcileMirror(MirrorView{
 		Marks: map[string]Boundary{"gone": {Generation: 7, IncarnationID: "inc-7", PresenceEpoch: 2}},
 	})
@@ -362,12 +378,9 @@ func TestReconcileMirrorPushForwardSkipsAnExpiredRemovedName(t *testing.T) {
 // match the file's current mark and the store mirror — a stale hub.toml
 // generation naming the same store value authorizes nothing.
 func TestReconcileMirrorRequiresBothMarkerGenerationsToMatch(t *testing.T) {
-	store, _ := openTestStore(t)
-	if err := store.MirrorBoundaries(map[string]Boundary{
+	store, _ := openStoreWithRawMirror(t, map[string]Boundary{
 		"m4": {Generation: 9, IncarnationID: "inc-9", PresenceEpoch: 5},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
-	}
+	}, nil)
 	result, err := store.ReconcileMirror(MirrorView{
 		Marks:   map[string]Boundary{"m4": {Generation: 7, IncarnationID: "inc-7", PresenceEpoch: 4}},
 		Live:    map[string]struct{}{"m4": {}},
@@ -389,14 +402,16 @@ func TestReconcileMirrorRequiresBothMarkerGenerationsToMatch(t *testing.T) {
 // incarnation's mark stands, and a pass with nothing to clear writes nothing.
 func TestClearHostRemovedMarksReversesOnlyTheRestoredPair(t *testing.T) {
 	store, path := openTestStore(t)
-	restored, err := store.Create(NewRecord{ClientOperationID: "op-restored", Host: "m4", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-7"})
+	restoredOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-restored", Host: "m4", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-7"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	other, err := store.Create(NewRecord{ClientOperationID: "op-other", Host: "m4", Kind: KindRestart, Generation: 9, IncarnationID: "inc-9"})
+	restored := restoredOutcome.Record
+	otherOutcome, err := store.Create(OperationCreateRequest{ClientOperationID: "op-other", Host: "m4", Kind: KindRestart, Pair: OperationPair{Generation: 9, IncarnationID: "inc-9"}, BootID: "test-boot"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	other := otherOutcome.Record
 	if _, _, err := store.ApplyHostRemovedPass(map[string]HostRemovedMark{
 		"m4": {Generation: 7, IncarnationID: "inc-7"},
 	}); err != nil {

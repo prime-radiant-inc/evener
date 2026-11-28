@@ -17,13 +17,14 @@ import (
 func projectTranscriptFile(t *testing.T, path string) []appwire.Turn {
 	t.Helper()
 	reg := apptranscript.NewToolCallRegistry()
-	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, nil)
+	proj, err := apptranscript.ItemTurnProjectionFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectTurnParts(turnID, entryIndex, turn, reg, nil, nil)
+		return items
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return turns
+	return proj.Turns
 }
 
 // A transcript written before persisted identity, resumed by this build: its

@@ -413,6 +413,10 @@ test("an issue-number reference that looks like a hex literal is not a false pos
 // selection and links), so gating it would grow this list with every
 // interactive widget forever while protecting nothing - the design thesis
 // guards the three ATTENTION-class hues' meanings, not focus chrome.
+// The tone families themselves live in styles/tone.module.css (see the path
+// exception below): Toast, Banner, and InlineNotice compose a family and
+// paint from its --tone-* properties rather than naming the companions
+// themselves, so they no longer hold a grant of their own.
 const SEMANTIC_USE_ALLOWLIST = [
   "cadence", // signature: state dot + trailing-edge tick tint
   "button", // danger variant
@@ -420,12 +424,8 @@ const SEMANTIC_USE_ALLOWLIST = [
   "badge", // tone prop
   "statusdot", // state color
   "meter", // danger/attention fill tone
-  "toast", // tone prop
-  "formrow", // error-state left border + message text (wave 7)
-  "collectioneditor", // inline add-validation error text (wave 7)
+  "formrow", // error-state left border + message text, the text in --danger-ink
   "failureglyph", // the ✗ that marks a failure - the hue IS the content
-  "banner", // overlay status strip: tone prop (attention/danger) — a connection banner's whole purpose is to carry a warning hue
-  "inlinenotice", // danger tone: an inline error message's ink is the "something failed" hue
   "card", // attention tone: the "a human is needed right now" envelope (ask batch, sandbox approval)
   "toolicon", // tone prop: a state glyph whose hue IS the state (the activity sidebar's agent and job rows)
 ];
@@ -486,19 +486,18 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // the same meaning-per-hue split RailRow.module.css's signal-row family and
 // the subagent row's attribute-keyed state colors already established; every
 // terminal or neutral state stays on the ink ramp.
-//
-// attention-control: panes/session/nextNeedsYou.module.css earns the same
-// exact-path exception for the 6px dot that marks the floating needs-you
-// control. The dot IS the attention signal on a control whose text already
-// says "Needs you"; every word on the control stays on the ink scale.
 const SEMANTIC_PATH_EXCEPTIONS = new Set([
+  // The four tone families: the single place each family's -edge/-bg/-ink
+  // companions are named. Toast, Banner, and InlineNotice compose a family
+  // and paint from its --tone-* properties, so the hue decision stays in one
+  // module instead of being restated per consumer.
+  "styles/tone.module.css",
   "shell/rail/RailRow.module.css",
   "panes/session/transcript/tools/subagentmodule.module.css",
   "panes/session/composer/currentwork.module.css",
   "panes/session/transcript/tools/taskcheck.module.css",
   "panes/session/chrome/taskspanel.module.css",
   "panes/session/transcript/entityref.module.css",
-  "panes/session/nextNeedsYou.module.css",
 ]);
 
 function reachesSemanticHue(cssText: string): boolean {
@@ -764,6 +763,17 @@ test("dedicated diff backgrounds preserve quiet contrast and grayscale separatio
 
 const METER_STYLESHEET = STYLESHEETS["widgets/meter/meter.module.css"];
 
+const THEME_BLOCKS = [
+  {
+    name: "dark",
+    block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
+  },
+  {
+    name: "light",
+    block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
+  },
+] as const;
+
 // The empty meter track must read as a bounded bar, not vanish into its
 // ground: --surface-2 is pixel-identical to --surface-1 in both themes, so a
 // meter on a surface-1 card/pane showed no extent until the fill painted.
@@ -775,18 +785,7 @@ test("Meter track sinks into --field, distinct from both surfaces in both themes
   if (!METER_STYLESHEET) return;
   expect(declarationInRule(METER_STYLESHEET, "track", "background")).toBe("var(--field)");
 
-  const themes = [
-    {
-      name: "dark",
-      block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
-    },
-    {
-      name: "light",
-      block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
-    },
-  ];
-
-  for (const theme of themes) {
+  for (const theme of THEME_BLOCKS) {
     const field = declaredToken(theme.block, "--field");
     const surface1 = declaredToken(theme.block, "--surface-1");
     const surface2 = declaredToken(theme.block, "--surface-2");
@@ -800,6 +799,27 @@ test("Meter track sinks into --field, distinct from both surfaces in both themes
     const surface2Rgb = parseHexColor(surface2);
     expect(contrastRatio(fieldRgb, surface1Rgb), `${theme.name} track vs surface-1`).toBeGreaterThanOrEqual(1.05);
     expect(contrastRatio(fieldRgb, surface2Rgb), `${theme.name} track vs surface-2`).toBeGreaterThanOrEqual(1.05);
+  }
+});
+
+test("Meter ringTrack uses --edge, distinct from --field and --surface-1 in both themes", () => {
+  expect(METER_STYLESHEET).toBeDefined();
+  if (!METER_STYLESHEET) return;
+  expect(declarationInRule(METER_STYLESHEET, "ringTrack", "stroke")).toBe("var(--edge)");
+  for (const theme of THEME_BLOCKS) {
+    const edge = declaredToken(theme.block, "--edge");
+    const field = declaredToken(theme.block, "--field");
+    const surface1 = declaredToken(theme.block, "--surface-1");
+    expect([edge, field, surface1], `${theme.name} theme declares ring track contrast tokens`).not.toContain(undefined);
+    if (!edge || !field || !surface1) continue;
+    const edgeRgb = parseHexColor(edge);
+    expect(contrastRatio(edgeRgb, parseHexColor(field)), `${theme.name} ringTrack vs field`).toBeGreaterThanOrEqual(
+      1.15,
+    );
+    expect(
+      contrastRatio(edgeRgb, parseHexColor(surface1)),
+      `${theme.name} ringTrack vs surface-1`,
+    ).toBeGreaterThanOrEqual(1.15);
   }
 });
 
@@ -824,17 +844,6 @@ test("tokens.css dark and light blocks declare the same color token names", () =
 // same source in the native gate.
 
 const SHARED_WEB_ROLES = (Object.keys(webPalettes.dark) as (keyof WebPalette)[]).sort();
-
-const THEME_BLOCKS = [
-  {
-    name: "dark",
-    block: extractBlock(TOKENS_CSS, /(?:^|\n):root(?:\s*,\s*\[data-theme="dark"\])?\s*\{/),
-  },
-  {
-    name: "light",
-    block: extractBlock(TOKENS_CSS, /\[data-theme="light"\][^{]*\{/),
-  },
-] as const;
 
 /** The color a declared token resolves to, with any color-mix evaluated by
  * the shared OKLab mix. */
@@ -996,6 +1005,12 @@ test("the four -ink companions clear 4.5:1 on their theme's lightest text ground
       }
     }
   }
+});
+
+test("FormRow error text uses the -ink companion, not the bare hue", () => {
+  const css = STYLESHEETS["widgets/formrow/formrow.module.css"];
+  if (!css) throw new Error("Missing formrow stylesheet");
+  expect(declarationInRule(css, "errorText", "color")).toBe("var(--danger-ink)");
 });
 
 // --ink-low is documented as placeholder/disabled/timestamp ink, but 96
@@ -1341,7 +1356,8 @@ const BARE_VAR_RE = /var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g;
 //   - JS writes it, as an inline style or a setProperty call, so no
 //     stylesheet ever declares it: --keyboard-inset (shell/
 //     useKeyboardInset.ts), --rail-width (shell/rail/RailResizeHandle.tsx),
-//     --fill (Meter paints its fill width).
+//     --fill (Meter paints its fill width), --menu-inline-pad and
+//     --menu-row-inline-pad (Menu sets them on the popup from its variant).
 //   - A theming hook a container sets to retint the content it owns:
 //     --markdown-ink, --prose-ink. (--prose-font-size left this set when the
 //     reading-surface hosts began declaring it; the declarer guardrail test
@@ -1353,7 +1369,10 @@ const BARE_VAR_RE = /var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g;
 const UNDECLARED_BY_DESIGN = new Set([
   "--keyboard-inset",
   "--rail-width",
+  "--docked-composer-action-center", // alignCreateWithComposer publishes it with the rail's layout attribute.
   "--fill",
+  "--menu-inline-pad",
+  "--menu-row-inline-pad",
   "--markdown-ink",
   "--prose-ink",
   "--tap-min",
@@ -1410,15 +1429,16 @@ for (const [path, text] of Object.entries(STYLESHEETS)) {
 // --prose-font-size is the Markdown widget's reading-step pin (see
 // widgets/markdown/markdown.module.css): a surface declares it ONLY to keep
 // the shared prose step where the widget's 1em fallback would otherwise
-// inherit the host's own size. Two reading surfaces own it today - the agent
-// message (.bubble) and the doc pane (.markdown). Every other Markdown host
-// composes with its host by design; a new declaration means a new reading
-// surface, and that decision belongs in this list, not in a module quietly.
-// The value assertion keeps "who" and "what" in one guard.
+// inherit the host's own size. Three reading surfaces own it today - the agent
+// message (.bubble), the user message (.body), and the doc pane (.markdown).
+// Every other Markdown host composes with its host by design; a new declaration
+// means a new reading surface, and that decision belongs in this list, not in a
+// module quietly. The value assertion keeps "who" and "what" in one guard.
 test("--prose-font-size is declared only by reading-surface hosts, at the prose step", () => {
   expect([...PROSE_PIN_DECLARERS.keys()].sort()).toEqual([
     "panes/doc/docpane.module.css",
     "panes/session/transcript/messages/agentmessageitem.module.css",
+    "panes/session/transcript/messages/usermessageitem.module.css",
   ]);
   for (const values of PROSE_PIN_DECLARERS.values()) {
     expect(values).toEqual(["var(--font-size-prose)"]);

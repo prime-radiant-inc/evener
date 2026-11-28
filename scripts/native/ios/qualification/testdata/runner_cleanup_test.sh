@@ -48,7 +48,7 @@ wait_dead() {
 	done
 }
 
-mkdir -p "$work/tmp" "$work/home" "$work/output"
+mkdir -p "$work/tmp" "$work/output"
 
 # --- cleanup: owned daemons stopped, recycled pids left alone, budget kept ---
 
@@ -60,7 +60,6 @@ export TMPDIR="$WORK/tmp"
 source "$RUNNER"
 output="$WORK/output"
 mkdir -p "$output"
-workspace_link="$WORK/home/evener-qualification-workspace"
 state_home=""
 hub_pid=""
 provider_pid=""
@@ -72,7 +71,6 @@ printf '%s\n' "$run_dir" >"$WORK/run-dir"
 state_home="$run_dir/state"
 workspace="$run_dir/workspace"
 mkdir -p "$state_home/evener/run/logs" "$workspace"
-ln -s "$workspace" "$workspace_link"
 echo fixture >"$state_home/evener/run/logs/daemon-fixture.log"
 
 # The owned daemon carries the run directory's basename in argv, as the hub's
@@ -103,7 +101,6 @@ elapsed=$(( $(now_ms) - started ))
 read -r owned_pid foreign_pid hub_pid provider_pid <"$work/cleanup-pids"
 fixture_pids+=("$foreign_pid")
 run_dir="$(cat "$work/run-dir")"
-[ ! -e "$work/home/evener-qualification-workspace" ] || fail "cleanup left the workspace link"
 [ ! -e "$run_dir" ] || fail "cleanup left the scratch run directory"
 wait_dead "$owned_pid" || fail "cleanup left the owned daemon running"
 kill -0 "$foreign_pid" 2>/dev/null || fail "cleanup signalled an unrelated recycled pid"
@@ -131,7 +128,6 @@ export TMPDIR="$WORK/tmp"
 source "$RUNNER"
 output="$WORK/output-cancel"
 mkdir -p "$output"
-workspace_link="$WORK/home-cancel/evener-qualification-workspace"
 state_home=""
 hub_pid=""
 provider_pid=""

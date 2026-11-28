@@ -4,14 +4,15 @@ import { expect, test } from "vitest";
 import { mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 
 // The hover card is a floating layer of the design system, not an oversized
-// tooltip. Every other overlay (popover, menu, dialog, sheet) sits on
-// --surface-1 with --shadow-overlay supplying both the 1px edge ring
-// and the soft shadow, and the design system forbids doubling that ring with
-// a second border (docs/web-ui/design-system.md §2). The tooltip keeps its
-// inverted mini-palette precisely because a one-line label is not a card, so
-// the card must not borrow it either. This pins the bubble to the overlay
-// family so the card can never quietly slide back into the tooltip's clothes;
-// the tooltip-palette non-leak law itself lives centrally in
+// tooltip. Every other overlay (popover, menu, dialog, sheet) composes the
+// shared floating surface (styles/floatingSurface.module.css), whose
+// --shadow-overlay supplies both the 1px edge ring and the soft shadow, and
+// the design system forbids doubling that ring with a second border
+// (docs/web-ui/design-system.md §2). The tooltip keeps its inverted
+// mini-palette precisely because a one-line label is not a card, so the card
+// must not borrow it either. This pins the bubble to the overlay family so the
+// card can never quietly slide back into the tooltip's clothes; the
+// tooltip-palette non-leak law itself lives centrally in
 // token-contract.test.ts (§b2). The CSS declarations are read straight off
 // disk because vitest leaves .module.css imports unprocessed (test.css
 // defaults to false), so no rendered-DOM assert could ever see them.
@@ -22,8 +23,7 @@ const CSS = readModuleCss(import.meta.url, "hovercard.module.css");
 test("the bubble rides the overlay surface family, not the tooltip mini-palette", () => {
   const bubble = topRuleBlock(CSS, ".bubble");
   expect(bubble).toMatch(/background:\s*var\(--surface-1\)/);
-  expect(bubble).toMatch(/box-shadow:\s*var\(--shadow-overlay\)/);
-  expect(bubble).toMatch(/border-radius:\s*var\(--radius-pane\)/);
+  expect(bubble).toMatch(/composes:\s*panel from "\.\.\/\.\.\/styles\/floatingSurface\.module\.css"/);
   expect(bubble).toMatch(/color:\s*var\(--ink-hi\)/);
   // The overlay shadow's 1px ring is the boundary; a second border would
   // double it, which §2 forbids.
@@ -42,6 +42,16 @@ test("the bubble floats in and out by the shared overlay recipe", () => {
   // no motion of its own.
   expect(bubble).toMatch(/composes:\s*float from "\.\.\/\.\.\/styles\/motion\.module\.css"/);
   expect(CSS).not.toMatch(/animation|@keyframes/);
+});
+
+test("the block presentation clips without claiming the caller's width", () => {
+  const block = topRuleBlock(CSS, ".block");
+  expect(block).toMatch(/display:\s*block/);
+  // No width claim: in a flex line (the rail's session title) the wrapper must
+  // size to its trigger, or the hover target and the trailing chevron shift.
+  expect(block).not.toMatch(/(?:^|\s)(?:width|inline-size):/);
+  expect(block).toMatch(/min-width:\s*0/);
+  expect(block).toMatch(/overflow:\s*hidden/);
 });
 
 test("hoverless devices hide ordinary cards but retain explicitly long-press-enabled cards", () => {

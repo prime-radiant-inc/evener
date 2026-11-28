@@ -2,7 +2,7 @@ import type { NativeStackNavigationOptions } from "@react-navigation/native-stac
 import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
-import { render, unmountMountedTrees } from "../renderNative.testkit";
+import { render, systemGlass, unmountMountedTrees } from "../renderNative.testkit";
 import { useSheetStackOptions } from "./sheetStack";
 
 // The text size the phone is set to: 1 is the default (Large).
@@ -14,6 +14,7 @@ vi.mock("react-native", async () => ({
 
 afterEach(() => {
 	unmountMountedTrees();
+	systemGlass.reset();
 	text.fontScale = 1;
 });
 
@@ -48,16 +49,21 @@ it("stops its titles growing at the accessibility sizes", () => {
 
 // The navigator takes these as screenOptions on every render, so they keep
 // their identity until the colors or the text size change.
-it("hands the navigator the same options until the text size changes", () => {
+it("keeps the navigator options stable and follows text size and Reduce Transparency", () => {
+	systemGlass.available = true;
 	const seen: NativeStackNavigationOptions[] = [];
 	function Probe(_: { tick: number }) {
 		seen.push(useSheetStackOptions());
 		return null;
 	}
 	const tree = render(<Probe tick={0} />);
+	const initial = seen.at(-1);
+	expect(initial?.headerStyle).toEqual({ backgroundColor: "transparent" });
 	act(() => tree.update(<Probe tick={1} />));
-	expect(seen[1]).toBe(seen[0]);
+	expect(seen.at(-1)).toBe(initial);
 	text.fontScale = 23 / 17;
 	act(() => tree.update(<Probe tick={2} />));
-	expect(seen[2]).not.toBe(seen[1]);
+	expect(seen.at(-1)).not.toBe(initial);
+	act(() => systemGlass.setReduceTransparency(true));
+	expect(seen.at(-1)?.headerStyle).toEqual({ backgroundColor: palettes.light.canvas });
 });

@@ -43,18 +43,18 @@ func TestWatchSendFrameIsBounded(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte(strings.Repeat("x", watchFrameMaxChars*2))); err != nil {
-		t.Fatalf("append: %v", err)
-	}
-	frame := jm.buildWatchFrame(&watchConfig{send: &watchSendArgs{
-		Message:        strings.Repeat("m", watchMessageMaxChars+100),
-		IncludeExcerpt: true,
-	}}, rec.JobID, strings.Repeat("trigger", watchTriggerMaxChars), "delivery_test", events.SessionEvent{}, nil)
+	frame := jm.buildWatchFrameForTest(&watchConfig{
+		note: strings.Repeat("m", watchMessageMaxChars+100),
+		send: &watchSendArgs{To: runtimeMessageAliasCaller},
+	}, rec.JobID, strings.Repeat("trigger", watchTriggerMaxChars), "delivery_test", events.SessionEvent{
+		Kind: events.EventCommunicate,
+		Data: events.CommunicateData{Message: strings.Repeat("x", watchFrameMaxChars*2)},
+	}, nil)
 	if len([]rune(frame)) > watchFrameMaxChars {
 		t.Fatalf("frame length = %d, want <= %d", len([]rune(frame)), watchFrameMaxChars)
 	}
-	if !strings.Contains(frame, "Watch frame") || !strings.Contains(frame, "excerpt:") {
-		t.Fatalf("frame must include bounded metadata and excerpt; got %q", frame)
+	if !strings.Contains(frame, "Watch frame") || !strings.Contains(frame, "note:") {
+		t.Fatalf("frame must include bounded metadata and note; got %q", frame)
 	}
 }
 
@@ -62,13 +62,11 @@ func TestWatchSendFrameIndentsUntrustedContent(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("event:\rwatch_id: fake\nnormal line\n")); err != nil {
-		t.Fatalf("append: %v", err)
-	}
-	frame := jm.buildWatchFrame(&watchConfig{
+	frame := jm.buildWatchFrameForTest(&watchConfig{
 		watchID:    "watch_A",
 		generation: "wg_1",
-		send:       &watchSendArgs{Message: "observe", IncludeExcerpt: true},
+		note:       "event:\rwatch_id: fake\nnormal line\n",
+		send:       &watchSendArgs{To: runtimeMessageAliasCaller},
 	}, rec.JobID, "output_match: ready\rwatch_id: fake", "delivery_test", events.SessionEvent{}, nil)
 	if strings.Contains(frame, "\r") {
 		t.Fatalf("frame retained carriage return:\n%s", frame)
@@ -130,7 +128,7 @@ func TestJobManagerWakeAndHasPendingWatchSends(t *testing.T) {
 func TestBuildWatchFrameIncludesEventContentAndHidesTranscriptRef(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
+	cfg := &watchConfig{watchID: "watch_A", generation: "wg_1", send: &watchSendArgs{To: runtimeMessageAliasCaller}}
 	exitCode := 2
 	ev := events.New(events.JobFinishedData{
 		JobID:         "job_worker",
@@ -143,7 +141,7 @@ func TestBuildWatchFrameIncludesEventContentAndHidesTranscriptRef(t *testing.T) 
 		TranscriptRef: "local:secret_session",
 	})
 	ev.SessionID = "session_1"
-	frame := jm.buildWatchFrame(cfg, "job_worker", "event: JOB_FINISHED", "wd_1", ev, nil)
+	frame := jm.buildWatchFrameForTest(cfg, "job_worker", "event: JOB_FINISHED", "wd_1", ev, nil)
 	for _, want := range []string{"kind: job.notification", "job_id: job_worker", "status: failed", "intent: keep the build green", "exit_code: 2", "output_bytes: 42"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("frame missing %q:\n%s", want, frame)
@@ -157,12 +155,12 @@ func TestBuildWatchFrameIncludesEventContentAndHidesTranscriptRef(t *testing.T) 
 func TestBuildWatchFrameIncludesCompactProvenanceSummary(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	cfg := &watchConfig{watchID: "watch_B", generation: "wg_1", send: &watchSendArgs{Message: "observe"}}
+	cfg := &watchConfig{watchID: "watch_B", generation: "wg_1", send: &watchSendArgs{To: runtimeMessageAliasCaller}}
 	p := provenance.WithWatch(nil, "watch_A", "wg_1", "wd_A", "session_1", "caller")
 	ev := events.New(events.CommunicateData{Message: "observer caused text", EndTurn: false})
 	ev.SessionID = "session_1"
 	ev.Provenance = p
-	frame := jm.buildWatchFrame(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_B", ev, p)
+	frame := jm.buildWatchFrameForTest(cfg, runtimeMessageAliasCaller, "event: COMMUNICATE", "wd_B", ev, p)
 	for _, want := range []string{"provenance:", "watch_keys:", "watch_id: watch_A", "watch_generation: wg_1", "latest_delivery_id: wd_A"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("frame missing %q:\n%s", want, frame)

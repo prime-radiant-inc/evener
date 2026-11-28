@@ -154,7 +154,11 @@ test.each(["input", "close", "reset", "replacement"] as const)(
         expect(bv.positioningRevision).toBe(neighborRevision);
         expect(ap.scrollTop).toBe(100);
       } else {
-        av.setReadable(false);
+        // Readability publishes the reader's activation to React state, so this
+        // transition updates outside the renderer and needs act.
+        await act(async () => {
+          av.setReadable(false);
+        });
         expect(av.getCapture()).toMatchObject({ anchorOffset: -900 });
         const replacement: OpenPaneRecord = { ...a, params: { ref: "shared" } };
         await act(async () => {
@@ -417,6 +421,82 @@ test.each(["selection", "Tab", "editor", "modifier", "horizontal wheel", "ctrl w
   },
 );
 
+test("upward wheel reaching top before passive handler wins over held width reflow", async () => {
+  const scene = mountReaderScene("wheel-top-before-handler");
+  try {
+    await scene.start();
+    expect(scene.port().scrollTop).toBe(900);
+    await scene.holdReflow();
+    const port = scene.port();
+    const revision = scene.view.positioningRevision;
+    await act(async () => {
+      port.scrollTop = 0;
+      fireEvent.wheel(port, { deltaY: -900 });
+      expect(scene.view.positioningRevision).toBeGreaterThan(revision);
+      fireEvent.scroll(port);
+    });
+    await act(async () => scene.external.notify());
+    expect(port.scrollTop).toBe(0);
+    expect(scene.capture()).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 });
+    await act(async () => scene.remount());
+    await act(async () => scene.external.notify());
+    expect(scene.port().scrollTop).toBe(0);
+    expect(scene.capture()).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 });
+  } finally {
+    scene.dispose();
+    resetTranscriptViewRegistryForTests();
+  }
+});
+
+test.each([
+  { name: "stationary outward wheel at top", start: 0, wantScrollTop: 0 },
+  { name: "nested scroller wheel after top drop", start: 900, wantScrollTop: 225 },
+  { name: "ctrl wheel after top drop", start: 900, wantScrollTop: 225 },
+  { name: "shift wheel after top drop", start: 900, wantScrollTop: 225 },
+  { name: "horizontal wheel after top drop", start: 900, wantScrollTop: 225 },
+] as const)("$name preserves pending width reflow", async ({ name, start, wantScrollTop }) => {
+  const scene = mountReaderScene(`wheel-top-control-${name}`);
+  try {
+    await scene.start(start);
+    const port = scene.port();
+    expect(port.scrollTop).toBe(start);
+    await scene.holdReflow();
+    const revision = scene.view.positioningRevision;
+    await act(async () => {
+      if (name === "stationary outward wheel at top") {
+        fireEvent.wheel(port, { deltaY: -900 });
+      } else if (name === "nested scroller wheel after top drop") {
+        const inner = document.createElement("div");
+        inner.style.overflowY = "auto";
+        Object.defineProperties(inner, {
+          scrollHeight: { value: 1000 },
+          clientHeight: { value: 100 },
+          scrollTop: { writable: true, value: 500 },
+        });
+        port.appendChild(inner);
+        port.scrollTop = 0;
+        fireEvent.wheel(inner, { deltaY: -900 });
+        inner.remove();
+      } else if (name === "ctrl wheel after top drop") {
+        port.scrollTop = 0;
+        fireEvent.wheel(port, { deltaY: -900, ctrlKey: true });
+      } else if (name === "shift wheel after top drop") {
+        port.scrollTop = 0;
+        fireEvent.wheel(port, { deltaY: -900, shiftKey: true });
+      } else if (name === "horizontal wheel after top drop") {
+        port.scrollTop = 0;
+        fireEvent.wheel(port, { deltaX: -900, deltaY: 0 });
+      }
+      scene.external.notify();
+    });
+    expect(scene.view.positioningRevision).toBe(revision);
+    expect(port.scrollTop).toBe(wantScrollTop);
+  } finally {
+    scene.dispose();
+    resetTranscriptViewRegistryForTests();
+  }
+});
+
 // description: a call with a stated intent projects as an ordinary item
 // entry at the tool-call levels; an intent-less call projects as a
 // "critical" entry (projector.ts's decisionFor), which never folds.
@@ -632,9 +712,9 @@ test.each([
       await waitFor(() =>
         expect(captureTranscriptView("width-only")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want }),
       );
-      expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-        "current",
-      );
+      expect(
+        port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+      ).toBe("current");
     } finally {
       mounted?.unmount();
       external.restore();
@@ -701,9 +781,9 @@ test.each([
         anchorOffset: -want,
         followingBottom: false,
       });
-      expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-        "current",
-      );
+      expect(
+        port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+      ).toBe("current");
     } finally {
       mounted?.unmount();
       external.restore();
@@ -777,7 +857,7 @@ test.each([
     geometry.viewportHeight = 516;
     await act(async () => external.notify((target) => target === port));
     expect(Math.abs(port.scrollTop - reflowed)).toBeLessThanOrEqual(2);
-    expect(port.querySelector(`${selector} [data-testid="user-bubble"]`)?.textContent).toBe("current");
+    expect(port.querySelector(`${selector} [data-testid="user-bubble"]`)?.textContent?.trim()).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -839,9 +919,9 @@ test("width-only reflow preserves useful content beside a Chat-filtered daemon s
         anchorOffset: -225,
       }),
     );
-    expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-      "current",
-    );
+    expect(
+      port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+    ).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -896,7 +976,7 @@ test("width-only reflow preserves the first visible row beside a fractional pred
       anchorId: "current-entry",
       anchorOffset: before?.anchorOffset,
     });
-    expect(entry.querySelector('[data-testid="user-bubble"]')?.textContent).toBe("current");
+    expect(entry.querySelector('[data-testid="user-bubble"]')?.textContent?.trim()).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -1004,9 +1084,9 @@ test.each(["zero width", "zero viewport", "zero row", "repeated widths"])(
       await waitFor(() =>
         expect(captureTranscriptView("recover")).toMatchObject({ anchorId: "current-entry", anchorOffset: -want }),
       );
-      expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-        "current",
-      );
+      expect(
+        port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+      ).toBe("current");
     } finally {
       mounted?.unmount();
       external.restore();
@@ -1171,9 +1251,9 @@ test("width-only reflow applies a real 300px prepend once", async () => {
     await waitFor(() =>
       expect(captureTranscriptView("reflow-prepend")).toMatchObject({ anchorId: "current-entry", anchorOffset: -450 }),
     );
-    expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-      "current",
-    );
+    expect(
+      port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+    ).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -1259,9 +1339,9 @@ test("width-only reflow mounts its known source after shrink removes it from the
     await waitFor(() =>
       expect(captureTranscriptView("outside-reflow")).toMatchObject({ anchorId: "current-entry", anchorOffset: 0 }),
     );
-    expect(port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-      "current",
-    );
+    expect(
+      port.querySelector('[data-view-anchor-id="current-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+    ).toBe("current");
   } finally {
     mounted?.unmount();
     external.restore();
@@ -1419,9 +1499,9 @@ test.each([
         }),
       );
       expect(port.querySelector('[data-view-anchor-id="removed"]')).toBeNull();
-      expect(port.querySelector('[data-view-anchor-id="earlier-entry"] [data-testid="user-bubble"]')?.textContent).toBe(
-        "earlier",
-      );
+      expect(
+        port.querySelector('[data-view-anchor-id="earlier-entry"] [data-testid="user-bubble"]')?.textContent?.trim(),
+      ).toBe("earlier");
     } finally {
       mounted?.unmount();
       external.restore();

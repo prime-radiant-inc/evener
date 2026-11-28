@@ -168,53 +168,25 @@ func encodeAnthropicJSON(lr logicalResponse) []byte {
 		strings.Join(content, ","), qs(stop), lr.InTok, lr.OutTok)
 }
 
-// encodeGoogleStreamFinishUsage renders the streamGenerateContent SSE where the
-// usageMetadata rides the SAME chunk as finishReason (the dominant real Gemini
-// shape). The content parts arrive in an earlier chunk; the final chunk carries
-// finishReason + usageMetadata together. This deliberately differs from the
-// cross-provider encodeGoogle (which puts usage in a separate earlier chunk):
-// the usage-on-finish path is precisely where the gemini usage-drop bug lived,
-// so the differential must drive it to guard the fix.
 func encodeGoogleStreamFinishUsage(lr logicalResponse) []byte {
-	var parts []string
-	if lr.Reasoning != "" {
-		parts = append(parts, fmt.Sprintf(`{"thought":true,"text":%s}`, qs(lr.Reasoning)))
-	}
-	if lr.Text != "" {
-		parts = append(parts, fmt.Sprintf(`{"text":%s}`, qs(lr.Text)))
-	}
-	for _, tc := range lr.Tools {
-		parts = append(parts, fmt.Sprintf(`{"functionCall":{"name":%s,"args":%s}}`, qs(tc.Name), tc.argsJSON()))
-	}
-	finish := map[string]string{"stop": "STOP", "length": "MAX_TOKENS", "tool_calls": "STOP"}[lr.Finish]
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "data: {\"candidates\":[{\"content\":{\"parts\":[%s]}}]}\n\n", strings.Join(parts, ","))
-	fmt.Fprintf(&b,
-		"data: {\"candidates\":[{\"finishReason\":%s}],\"usageMetadata\":{\"promptTokenCount\":%d,\"candidatesTokenCount\":%d,\"totalTokenCount\":%d}}\n\n",
-		qs(finish), lr.InTok, lr.OutTok, lr.totalTok())
-	return []byte(b.String())
+	return encodeGoogle(lr)
 }
 
-// encodeGoogleJSON renders a :generateContent non-streaming response: a single
-// candidate whose content.parts carry the content, finishReason and
-// usageMetadata at the top level (the streaming wire splits these across
-// chunks — the skew the gemini usage-on-finish bug lived in).
 func encodeGoogleJSON(lr logicalResponse) []byte {
-	var parts []string
+	var steps []string
 	if lr.Reasoning != "" {
-		parts = append(parts, fmt.Sprintf(`{"thought":true,"text":%s}`, qs(lr.Reasoning)))
+		steps = append(steps, fmt.Sprintf(`{"type":"thought","summary":[{"type":"text","text":%s}]}`, qs(lr.Reasoning)))
 	}
 	if lr.Text != "" {
-		parts = append(parts, fmt.Sprintf(`{"text":%s}`, qs(lr.Text)))
+		steps = append(steps, fmt.Sprintf(`{"type":"model_output","content":[{"type":"text","text":%s}]}`, qs(lr.Text)))
 	}
-	for _, tc := range lr.Tools {
-		parts = append(parts, fmt.Sprintf(`{"functionCall":{"name":%s,"args":%s}}`, qs(tc.Name), tc.argsJSON()))
+	for i, tc := range lr.Tools {
+		steps = append(steps, fmt.Sprintf(`{"type":"function_call","id":"call_%d","name":%s,"arguments":%s}`, i, qs(tc.Name), tc.argsJSON()))
 	}
-	finish := map[string]string{"stop": "STOP", "length": "MAX_TOKENS", "tool_calls": "STOP"}[lr.Finish]
+	status := map[string]string{"stop": "completed", "length": "incomplete", "tool_calls": "requires_action"}[lr.Finish]
 	return fmt.Appendf(nil,
-		`{"candidates":[{"content":{"parts":[%s]},"finishReason":%s}],"usageMetadata":{"promptTokenCount":%d,"candidatesTokenCount":%d,"totalTokenCount":%d}}`,
-		strings.Join(parts, ","), qs(finish), lr.InTok, lr.OutTok, lr.totalTok())
+		`{"id":"int_diff","model":"diff-model","status":%s,"steps":[%s],"usage":{"total_input_tokens":%d,"total_output_tokens":%d,"total_tokens":%d}}`,
+		qs(status), strings.Join(steps, ","), lr.InTok, lr.OutTok, lr.totalTok())
 }
 
 // encodeOpenAIResponsesJSON renders the non-streaming /v1/responses object. It

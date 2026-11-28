@@ -438,7 +438,7 @@ func TestBootLeavesStagedCommitsAloneWhileHubTOMLCannotBeRead(t *testing.T) {
 
 	hub.restartStateRoot(t)
 	cfg := mustLoadConfig(t, hub.configPath)
-	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -687,11 +687,8 @@ func TestRecoveryClassifiesAStagedRemovalAgainstTheFileAsItWas(t *testing.T) {
 // reconciliation whose raise of a live host never reached hub.toml: the import
 // must not replace the mirror's higher generation with the file's.
 func TestMigrationRaisesALiveHostToTheMirrorsHigherGeneration(t *testing.T) {
-	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
 	spent := hostops.Boundary{Generation: 40, IncarnationID: "inc-keep", PresenceEpoch: 3}
-	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"keep": spent}, Live: []string{"keep"}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
-	}
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{pipelineEntry("keep", 3)}, map[string]hostops.Boundary{"keep": spent}, nil)
 	m := fixture.legacyManager(t)
 
 	m.migrateLegacyRecords(fixture.store)
@@ -716,7 +713,7 @@ func TestUnreadableHubTOMLAtStartupStillFencesAnOpenRemnantHost(t *testing.T) {
 		t.Fatalf("Update = (%+v, %v), want the teardown-failure arm", result, err)
 	}
 	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1066,7 +1063,7 @@ func TestNoSingleReadFailureAtBootFinalizesARemovalThatNeverLanded(t *testing.T)
 	bootFailingRead := func(t *testing.T, hub *crashHub, failAt int) (*hubHostManager, *hostops.Store, int) {
 		hub.restartStateRoot(t)
 		cfg := mustLoadConfig(t, hub.configPath)
-		store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+		store, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("hostops.Open: %v", err)
 		}
@@ -1196,7 +1193,7 @@ func TestNoSingleReadFailureWhileStagingARemovalLetsItFinalizeAsLanded(t *testin
 	for failAt := 1; failAt <= total; failAt++ {
 		hub, incarnation, _ := stageAndCrash(t, failAt)
 		hub.restartStateRoot(t)
-		store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+		store, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("hostops.Open: %v", err)
 		}
@@ -1223,7 +1220,7 @@ func TestBootFinalizationNeverRewritesTheHostList(t *testing.T) {
 	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
 
 	hub.restartStateRoot(t)
-	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1269,7 +1266,7 @@ func TestBootRollbackWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
 	syncFails := true
 	flakyHubTOMLDirSync(t, func(int) bool { return syncFails })
 	hub.restartStateRoot(t)
-	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1284,7 +1281,7 @@ func TestBootRollbackWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
 
 	syncFails = false
 	hub.restartStateRoot(t)
-	store, err = hostops.Open(hostops.StorePath(hub.stateRoot))
+	store, err = hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1568,7 +1565,7 @@ func TestBootFinalizationWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
 	syncFails := true
 	flakyHubTOMLDirSync(t, func(int) bool { return syncFails })
 	hub.restartStateRoot(t)
-	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1583,7 +1580,7 @@ func TestBootFinalizationWaitsUntilTheHostFileDirectoryIsDurable(t *testing.T) {
 
 	syncFails = false
 	hub.restartStateRoot(t)
-	store, err = hostops.Open(hostops.StorePath(hub.stateRoot))
+	store, err = hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1609,7 +1606,7 @@ func TestALandedRemovalRecoveredAfterItsRetentionStillMarksTheRemovedHost(t *tes
 	runUntilCrash(t, func() { _, _ = m.RemoveResult(context.Background(), params) })
 
 	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1680,7 +1677,7 @@ func TestBootDoesNotFinalizeALandedRemovalWhoseRemovedHostPassDidNotSettle(t *te
 func TestAShortRetentionDoesNotExpireAStagedRemovalsTombstone(t *testing.T) {
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
 	storePath := hostops.StorePath(hub.stateRoot)
-	store, err := hostops.Open(storePath)
+	store, err := hostops.Open(storePath, hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1757,7 +1754,7 @@ func TestARolledBackReAddsBoundaryOutlivesTheTombstoneExpiry(t *testing.T) {
 	}
 
 	hub.restartStateRoot(t)
-	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	reopened, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1972,7 +1969,7 @@ func TestAReAddRefusedAfterItsFlipGivesBackThePrunedMarkersItEvicted(t *testing.
 // the counters a refused re-add spent beyond it must reach the manager too.
 func TestSpentCountersOfAnExpiredNameReachTheManagerAfterARefusal(t *testing.T) {
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -2072,7 +2069,7 @@ func TestBootRollbackOfAnUnlandedReAddGivesBackTheRepairAttemptsItPurged(t *test
 // counters, and the compensation must not write the older mark back over them.
 func TestAReAddAfterTheTombstoneExpiredKeepsItsSpentCountersWhenStagingIsUnconfirmed(t *testing.T) {
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
-	store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+	store, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -2120,7 +2117,7 @@ func TestBootRollbackOfAnUnlandedReAddGivesBackReceiptsItsCompactionDeleted(t *t
 	hub := newCrashHub(t, []hostreg.Host{{Name: "keep", SSH: "keep.example"}, {Name: "side", SSH: "side.example"}})
 	bootLongRetention := func() (*hubHostManager, *hostops.Store) {
 		hub.restartStateRoot(t)
-		store, err := hostops.Open(hostops.StorePath(hub.stateRoot))
+		store, err := hostops.Open(hostops.StorePath(hub.stateRoot), hostops.RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("hostops.Open: %v", err)
 		}

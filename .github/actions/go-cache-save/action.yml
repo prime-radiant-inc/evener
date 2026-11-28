@@ -1,13 +1,15 @@
 name: Save Go caches
 description: >-
-  On a push to main, save the Go build cache under the key go-cache-restore
-  chose, and with `modules` the shared module cache too. Everywhere else it
-  does nothing: a pull request's saves are readable only by that pull
-  request's branch and would crowd main's entries out of the repository's
-  10GB limit. A re-run whose restore hit this commit's key exactly also skips
-  that save. Put it after the job's last Go build or test step, conditioned
-  on !cancelled() and given the job's status as job-status, so a failing step
-  cannot leave the lane building cold on every later run.
+  On a push to main, delete the entry each save supersedes and then save the
+  Go build cache under the key go-cache-restore chose, and with `modules` the
+  shared module cache too. Everywhere else it does nothing: a pull request's
+  saves are readable only by that pull request's branch and would crowd
+  main's entries out of the repository's 10GB limit. A re-run whose restore
+  hit this commit's key exactly also skips that save. Put it after the job's
+  last Go build or test step, conditioned on !cancelled() and given the job's
+  status as job-status, so a failing step cannot leave the lane building cold
+  on every later run. Deleting needs the calling job's actions: write
+  permission; the delete is skipped wherever the save is.
 inputs:
   job-status:
     description: >-
@@ -42,6 +44,65 @@ runs:
       run: |
         find "$GO_BUILD_CACHE_DIR" -type f -name '*-[ad]' ! -newermt "@$((GO_CACHE_RESTORED_AT - 3600))" -delete
         du -sh "$GO_BUILD_CACHE_DIR"
+
+    # Two live generations do not fit the repository's 10GB cache budget. This
+    # fleet is ~8.3GB per generation plus ~0.6GB of iOS DerivedData, so a main
+    # push that saved beside the previous generation peaked at 16.02GB, and
+    # GitHub then evicted least recently accessed entries: the ones no run had
+    # restored yet, the iOS tree among them, before it was ever restored
+    # (issue #7025). A restore only ever takes the newest entry of a prefix, so
+    # the predecessor is dead weight the moment this run saves, and deleting it
+    # first keeps the peak at the steady state. Deleting it after the save
+    # would not: race-agent alone is ~1.7GiB, which puts the line over.
+    #
+    # The cost is that a save failing after the delete leaves this kind cold
+    # for one run. The delete itself never fails the lane: when the cache API
+    # will not answer, the save still runs and the next main push's
+    # cache-prune collects the predecessor.
+    #
+    # The prefixes come from go-cache-restore without the Go version, so a
+    # toolchain bump also retires the previous version's entries rather than
+    # saving beside them.
+    - name: Delete the cache entries these saves supersede
+      if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        MODULES: ${{ inputs.modules }}
+        BUILD_PREFIX: ${{ env.GO_CACHE_DELETE_PREFIX }}
+        BUILD_KEY: ${{ env.GO_CACHE_KEY }}
+        MODULES_PREFIX: ${{ env.GO_MODULES_DELETE_PREFIX }}
+        MODULES_KEY: ${{ env.GO_MODULES_CACHE_KEY }}
+      run: |
+        supersede() { # prefix, the key this run saves
+          local prefix="$1" kept="$2" listing
+          # A job that failed before go-cache-restore exports neither, and
+          # `gh cache list --key ""` lists every cache in the repository,
+          # Go and iOS alike. Deleting on that would empty the budget.
+          if [ -z "$prefix" ] || [ -z "$kept" ]; then
+            echo "::warning::No cache prefix or key to supersede; leaving the cache entries alone."
+            return
+          fi
+          if ! listing="$(gh cache list --repo "$GITHUB_REPOSITORY" --ref refs/heads/main \
+            --key "$prefix" --limit 100 --json id,key --jq '.[] | "\(.id) \(.key)"')"; then
+            echo "::warning::Could not list the $prefix entries; cache-prune will delete the predecessor."
+            return
+          fi
+          while read -r id key; do
+            if [ -n "$id" ] && [ "$key" != "$kept" ]; then
+              gh cache delete "$id" --repo "$GITHUB_REPOSITORY" \
+                || echo "Cache entry $id was not deleted; another main run may have deleted it first."
+            fi
+          done <<< "$listing"
+        }
+        # The guards mirror the save steps below, so an exact-hit re-run never
+        # deletes the entry it is itself restoring.
+        if [ "$GO_CACHE_EXACT_HIT" != "true" ]; then
+          supersede "$BUILD_PREFIX" "$BUILD_KEY"
+        fi
+        if [ "$MODULES" = "true" ] && [ "$GO_MODULES_EXACT_HIT" != "true" ]; then
+          supersede "$MODULES_PREFIX" "$MODULES_KEY"
+        fi
 
     - name: Save Go build cache
       if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && env.GO_CACHE_EXACT_HIT != 'true' }}

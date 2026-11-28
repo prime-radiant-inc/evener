@@ -150,9 +150,7 @@ func FuzzWobsBuildWatchFrame(f *testing.F) {
 		cfg := &watchConfig{
 			watchID: r.str(),
 			send: &watchSendArgs{
-				To:             r.pick([]string{"caller", "dlg_obs", ""}),
-				Message:        r.str(),
-				IncludeExcerpt: r.boolean(),
+				To: r.pick([]string{"caller", "dlg_obs", ""}),
 			},
 		}
 		jobIDs := []string{shell.JobID, "caller", "*", "", "job_missing"}
@@ -163,7 +161,7 @@ func FuzzWobsBuildWatchFrame(f *testing.F) {
 		p := wobs_drawProvenance(r)
 
 		build := func(struct{}) string {
-			return jm.buildWatchFrame(cfg, jobID, trigger, deliveryID, ev, p)
+			return jm.buildWatchFrameForTest(cfg, jobID, trigger, deliveryID, ev, p)
 		}
 		oracle.Deterministic(t, build, struct{}{}, func(a, b string) bool { return a == b })
 
@@ -204,7 +202,7 @@ func wobs_seedWatchSendEvents(r *wobs_reader, store *jobstore.Store, base time.T
 			Key:               key,
 			DeliveryID:        fmt.Sprintf("dlv_%d", i),
 			UpdateSeq:         seq,
-			Message:           r.str(),
+			Frame:             r.str(),
 			ReceiverSessionID: r.pick([]string{"", "S9"}),
 			CreatedAt:         base.Add(time.Duration(r.intn(8)) * time.Second),
 			UpdatedAt:         base.Add(time.Duration(r.intn(8)) * time.Second),
@@ -303,7 +301,7 @@ func FuzzWobsRestoreWatchSendPending(f *testing.F) {
 // ==========================================================================
 
 // FuzzWobsConfigureWatchSession drives configureWatch through its session-target
-// and receiver-observer paths — caller/"*" targets, output_match/include_excerpt
+// and receiver-observer paths — caller/"*" targets, output_match
 // session-target rejections, receiver_session_id / receiver_delegate_id parent
 // observers, and clears — asserting the watch state stays internally consistent
 // after each op regardless of the fuzzed shape.
@@ -336,7 +334,6 @@ func FuzzWobsConfigureWatchSession(f *testing.F) {
 				OutputMatch:        r.pick([]string{"", "ready", "("}),
 				ProgressIntervalMS: []int{0, 0, 1000, -1}[r.intn(4)],
 				Every:              r.intn(3),
-				Clear:              r.boolean(),
 			}
 			nEvents := r.intn(3)
 			for j := 0; j < nEvents; j++ {
@@ -350,14 +347,22 @@ func FuzzWobsConfigureWatchSession(f *testing.F) {
 			}
 			switch r.intn(4) {
 			case 1:
-				a.Send = &watchSendArgs{To: r.pick([]string{"caller", "dlg_obs"}), Message: "m", IncludeExcerpt: r.boolean()}
+				a.Send = &watchSendArgs{To: r.pick([]string{"caller", "dlg_obs"})}
 			case 2:
 				a.ReceiverSessionID = "S-observer"
 			case 3:
 				a.ReceiverDelegateID = "dlg_obs"
 			}
-			_, _ = jm.configureWatch(a)
+			res, err := jm.configureWatch(a)
 			wobs_checkConfigureInvariants(t, jm)
+			if err == nil && res.WatchID != "" && r.boolean() {
+				if a.ReceiverSessionID != "" || a.ReceiverDelegateID != "" {
+					_, _ = jm.clearReceiverWatchByID(res.WatchID, a.ReceiverSessionID, a.ReceiverDelegateID)
+				} else {
+					_, _ = jm.clearWatchByID(res.WatchID)
+				}
+				wobs_checkConfigureInvariants(t, jm)
+			}
 		}
 	})
 }

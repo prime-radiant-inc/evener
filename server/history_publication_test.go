@@ -44,14 +44,14 @@ func TestHistoryPublicationWiringOrder(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer w.Close()
-			if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("late-wire-input-251"))); err != nil {
+			if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("late-wire-input-251")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 				t.Fatal(err)
 			}
 			if got, _ := h.RecordedLength(); got != w.RecordedLength() {
 				t.Errorf("wired raw hook lost entry: got %d want %d", got, w.RecordedLength())
 			}
 			boundary := w.RecordedLength()
-			if err := w.Append(publicationDemandTurn(sess.ID(), "late-wire-output-252")); err != nil {
+			if _, err := w.Record(publicationDemandTurn(sess.ID(), "late-wire-output-252"), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 				t.Fatal(err)
 			}
 			if got, _ := h.RecordedLength(); got != boundary {
@@ -127,7 +127,7 @@ func TestHistoryPublicationStagedDemandBoundary(t *testing.T) {
 func TestHistoryPublicationCaptureAndNotificationIdentity(t *testing.T) {
 	s := NewServer(ServerConfig{})
 	t.Cleanup(s.Close)
-	s.SetAppIdentity("local", "thread")
+	setAppIdentity(t, s, "local", "thread")
 	_, p := s.transcriptPublicationHooks("thread")
 	path := writeDelegateTranscript(t, "thread", "capture-211")
 	h := s.ensureHistory("thread", "local:thread", path, 0, 0, "1")

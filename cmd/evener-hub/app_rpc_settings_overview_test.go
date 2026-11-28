@@ -635,12 +635,25 @@ func TestHubRPCSettingsOverview_MCPDiscoveredErrorOnMalformedSessionConfig(t *te
 
 func TestSettingsHubOverviewReportsBuildChannel(t *testing.T) {
 	previous := buildinfo.Channel
+	prevTime, prevTag := buildinfo.BuildTime, buildinfo.ReleaseTag
 	buildinfo.Channel = "snapshot"
-	t.Cleanup(func() { buildinfo.Channel = previous })
+	buildinfo.BuildTime = "2026-11-24T14:22:08Z"
+	buildinfo.ReleaseTag = "v0.4.1"
+	t.Cleanup(func() {
+		buildinfo.Channel = previous
+		buildinfo.BuildTime = prevTime
+		buildinfo.ReleaseTag = prevTag
+	})
 
 	got := settingsHubOverview(hubcore.WebConfig{})
 	if got.BuildChannel != "snapshot" {
 		t.Fatalf("BuildChannel = %q, want snapshot", got.BuildChannel)
+	}
+	if got.BuildTime != "2026-11-24T14:22:08Z" {
+		t.Fatalf("BuildTime = %q, want 2026-11-24T14:22:08Z", got.BuildTime)
+	}
+	if got.ReleaseTag != "v0.4.1" {
+		t.Fatalf("ReleaseTag = %q, want v0.4.1", got.ReleaseTag)
 	}
 }
 
@@ -938,7 +951,7 @@ func TestHubRPCSettingsOverviewReportsOperationStoreQuarantine(t *testing.T) {
 // a hub whose store carries no quarantine reports no field at all, so a client
 // cannot mistake a healthy store for a quarantined one.
 func TestHubRPCSettingsOverviewOmitsQuarantineWithoutASignal(t *testing.T) {
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

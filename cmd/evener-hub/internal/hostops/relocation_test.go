@@ -27,7 +27,7 @@ func TestStoreRelocationSettledJournal(t *testing.T) {
 func testStoreRelocation(t *testing.T, withCustody bool) {
 	t.Helper()
 	sourcePath := StorePath(t.TempDir())
-	store, err := Open(sourcePath)
+	store, err := Open(sourcePath, RetentionPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,10 +56,12 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 
 	removed := relocationComplete(t, store, "retired", "relocation-retired")
 	current := relocationComplete(t, store, "current", "relocation-current")
-	if err := store.MirrorBoundaries(map[string]Boundary{
-		"retired": {Generation: 7, IncarnationID: "inc-retired", PresenceEpoch: 9},
-		"current": {Generation: 7, IncarnationID: "inc-current", PresenceEpoch: 11},
-	}, nil); err != nil {
+	if err := store.ImportHostRecords(HostRecords{}, HostMirror{
+		Boundaries: map[string]Boundary{
+			"retired": {Generation: 7, IncarnationID: "inc-retired", PresenceEpoch: 9},
+			"current": {Generation: 7, IncarnationID: "inc-current", PresenceEpoch: 11},
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if marked, dropped, err := store.ApplyHostRemovedPass(map[string]HostRemovedMark{
@@ -76,7 +78,7 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 	}
 	store = reopenFresh(t, sourcePath)
 	original := storeSnapshotForTest(store)
-	originalEpoch := store.CursorEpoch()
+	originalCompactSeq, originalQuarantineEpoch := store.CompactSeq(), store.quarantineEpoch()
 	originalSignal := store.Quarantine()
 	if len(original.Compensations) != 0 || original.Sequence != 2 || original.AllocatorHighWaterMark == 0 {
 		t.Fatalf("fixture is not settled meaningful authority: %+v", original)
@@ -89,7 +91,7 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 		t.Fatal("initial copy changed bytes or modes")
 	}
 	if withCustody {
-		refused, err := Open(destinationPath)
+		refused, err := Open(destinationPath, RetentionPolicy{})
 		if refused != nil || !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
 			t.Fatalf("naive copy = %v, %v, want typed custody refusal", refused, err)
 		}
@@ -137,15 +139,18 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 			t.Fatalf("adjustment changed bytes or mode of %s", name)
 		}
 	}
-	moved, err := Open(destinationPath)
+	moved, err := Open(destinationPath, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("corrected copy cannot open: %v", err)
 	}
 	if got := storeSnapshotForTest(moved); !reflect.DeepEqual(got, original) {
 		t.Fatalf("relocation changed authority:\n got %+v\nwant %+v", got, original)
 	}
-	if got := moved.CursorEpoch(); got != originalEpoch {
-		t.Fatalf("cursor epoch = %+v, want %+v", got, originalEpoch)
+	if got := moved.CompactSeq(); got != originalCompactSeq {
+		t.Fatalf("compactSeq = %d, want %d", got, originalCompactSeq)
+	}
+	if got := moved.quarantineEpoch(); got != originalQuarantineEpoch {
+		t.Fatalf("quarantine epoch = %d, want %d", got, originalQuarantineEpoch)
 	}
 	if originalSignal == nil {
 		if moved.Quarantine() != nil {
@@ -201,10 +206,11 @@ func testStoreRelocation(t *testing.T, withCustody bool) {
 
 func relocationComplete(t *testing.T, store *Store, host, operation string) Record {
 	t.Helper()
-	record, err := store.Create(NewRecord{ClientOperationID: operation, Host: host, Kind: KindRestart, Generation: 7, IncarnationID: "inc-" + host})
+	outcome, err := store.Create(OperationCreateRequest{ClientOperationID: operation, Host: host, Kind: KindRestart, Pair: OperationPair{Generation: 7, IncarnationID: "inc-" + host}, BootID: "test-boot", SequenceBefore: store.Sequence()})
 	if err != nil {
 		t.Fatal(err)
 	}
+	record := outcome.Record
 	// Unknown nested payload keys deliberately contain the old StorePath. They
 	// are operation evidence, never candidates for path substitution.
 	epoch, err := json.Marshal(map[string]any{"bootId": "fixture-boot", "opSeq": 17,

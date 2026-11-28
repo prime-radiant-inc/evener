@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/internal/selfupdate"
 	"primeradiant.com/evener/internal/testfs"
 )
@@ -62,6 +63,48 @@ func TestHubUpdateCheckReportsOnDiskBuild(t *testing.T) {
 	}
 	if resp.RestartPending {
 		t.Fatal("restartPending = true although the running and on-disk builds match")
+	}
+	if resp.OnDiskBuildTime != "2026-10-21T00:00:00Z" {
+		t.Fatalf("on-disk build time = %q, want 2026-10-21T00:00:00Z", resp.OnDiskBuildTime)
+	}
+}
+
+func TestHubUpdateCheckReportsBuildMetadataAndRepoURL(t *testing.T) {
+	setBuild(t, "8e12c04", "release")
+	prevTime, prevTag := buildinfo.BuildTime, buildinfo.ReleaseTag
+	buildinfo.BuildTime, buildinfo.ReleaseTag = "2026-11-18T16:05:30Z", "v0.4.1"
+	t.Cleanup(func() { buildinfo.BuildTime, buildinfo.ReleaseTag = prevTime, prevTag })
+
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:           opts.Channel,
+			LatestTag:         "v0.4.2",
+			LatestCommit:      "9d4e21a8c01f",
+			LatestPublishedAt: "2026-11-22T18:40:00Z",
+			RepoURL:           "https://github.com/prime-radiant-inc/evener",
+			UpdateAvailable:   true,
+		}, nil
+	})
+	setManagedRestartProbe(t, "echo 'evener 8e12c04 (2026-11-18T16:05:30Z)'")
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{Channel: "release"})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if resp.CurrentBuildTime != "2026-11-18T16:05:30Z" {
+		t.Fatalf("CurrentBuildTime = %q, want 2026-11-18T16:05:30Z", resp.CurrentBuildTime)
+	}
+	if resp.CurrentReleaseTag != "v0.4.1" {
+		t.Fatalf("CurrentReleaseTag = %q, want v0.4.1", resp.CurrentReleaseTag)
+	}
+	if resp.OnDiskBuildTime != "2026-11-18T16:05:30Z" {
+		t.Fatalf("OnDiskBuildTime = %q, want 2026-11-18T16:05:30Z", resp.OnDiskBuildTime)
+	}
+	if resp.LatestPublishedAt != "2026-11-22T18:40:00Z" {
+		t.Fatalf("LatestPublishedAt = %q, want 2026-11-22T18:40:00Z", resp.LatestPublishedAt)
+	}
+	if resp.RepoURL != "https://github.com/prime-radiant-inc/evener" {
+		t.Fatalf("RepoURL = %q, want https://github.com/prime-radiant-inc/evener", resp.RepoURL)
 	}
 }
 

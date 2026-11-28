@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LocationRepository, locationForRoute, restoredStack, routeToSave } from "./location";
+import { LocationRepository, locationForRoute, phoneLaunchStack, restoredStack, routeToSave } from "./location";
 
 function storage() {
 	const values = new Map<string, string>();
@@ -14,6 +14,38 @@ function storage() {
 	};
 }
 describe("last mobile location", () => {
+	it("reopens the saved hub and session in the workspace from any previous phone screen", () => {
+		const disk = new LocationRepository(storage());
+		const session = { ref: "remote:one/two", title: "One" };
+		const workspace = { name: "Workspace", params: { hubId: "hub", path: "/s/remote%3Aone%2Ftwo" } };
+		disk.save({ hubId: "hub", conversation: session });
+		expect(phoneLaunchStack(disk.read(["hub"])).routes).toEqual([{ name: "Hubs" }, workspace]);
+		disk.save(locationForRoute(workspace, "hub"));
+		expect(phoneLaunchStack(disk.read(["hub"])).routes.at(-1)).toEqual(workspace);
+		expect(locationForRoute(workspace, "other")).toEqual({ hubId: "other", webPath: "/" });
+		disk.save({ hubId: "hub", conversation: session, pinAssignment: true });
+		expect(phoneLaunchStack(disk.read(["hub"])).routes).toEqual([{ name: "Hubs" }, workspace]);
+		expect(phoneLaunchStack(disk.read([])).routes).toEqual([{ name: "Hubs" }]);
+	});
+	it("restores only the workspace context owned by the selected route", () => {
+		const disk = new LocationRepository(storage());
+		for (const [opened, restored] of [
+			["/settings/hosts?host=studio&extra=discard#help", "/settings/hosts?host=studio"],
+			["/credentials?host=local", "/credentials?host=local"],
+			[
+				"/new?dir=%2Fwork&prompt=two+lines%0Ahere&host=remote&extra=discard",
+				"/new?dir=%2Fwork&prompt=two+lines%0Ahere&host=remote",
+			],
+			["/s/remote%3Aone?host=ignored#row", "/s/remote%3Aone"],
+			["/settings/hosts?host=studio&token=capability", "/"],
+		]) {
+			disk.save(locationForRoute({ name: "Workspace", params: { hubId: "hub", path: opened } }, "hub"));
+			expect(phoneLaunchStack(disk.read(["hub"])).routes.at(-1)).toEqual({
+				name: "Workspace",
+				params: { hubId: "hub", path: restored },
+			});
+		}
+	});
 	it("returns an old unbound Reader to its saved owning conversation without erasing other storage", () => {
 		const disk = storage();
 		disk.setItemSync("evener.draft.other", "keep draft");

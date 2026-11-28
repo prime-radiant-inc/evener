@@ -91,6 +91,10 @@ func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testin
 		Config:    schema.ConfigSnapshot{PluginDirs: []string{newResumeHookPluginDir(t)}},
 		TurnCount: 1,
 	}
+	seedTestTranscript(t, stateDir, meta,
+		schema.NewTurn(schema.TurnUserInput, llm.User("prior user task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("prior assistant answer")),
+	)
 	sess, err := RestoreSessionFromMetaWithConfig(
 		client,
 		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),
@@ -98,10 +102,6 @@ func TestSessionStartDispatchIntoRestoredHistoryIsFlaggedAsReinjection(t *testin
 		meta,
 		RestoreSessionConfig{
 			StateDir: stateDir,
-			resumeHistory: []schema.Turn{
-				schema.NewTurn(schema.TurnUserInput, llm.User("prior user task")),
-				schema.NewTurn(schema.TurnAssistant, llm.Assistant("prior assistant answer")),
-			},
 		},
 	)
 	if err != nil {

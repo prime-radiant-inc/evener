@@ -17,6 +17,7 @@ import { expect, test } from "vitest";
 const here = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8");
 const uncommented = css.replace(/\/\*[\s\S]*?\*\//g, "");
+const speaker = readFileSync(join(here, "speakerheader.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
 test("agent prose is not size-promoted above body text", () => {
   // The pin keeps agent prose at the shared reading step (see the .bubble
@@ -32,9 +33,12 @@ test("prose typography stays with Markdown/StreamingText: the .message wrapper d
   expect(uncommented).not.toMatch(/\.message\s*\{[^}]*[;{\s]font-size\s*:/);
 });
 
-test("the speaker header's name is body-size like the prose it introduces; only the meta drops to the ui size", () => {
-  expect(uncommented).toMatch(/\.name\s*\{[^}]*font-size:\s*var\(--font-size-body\);/);
+test("the speaker header's name is body-size like the prose it introduces; the meta composes the ui-size recipe", () => {
+  expect(speaker).toMatch(/\.name\s*\{[^}]*font-size:\s*var\(--font-size-body\);/);
   // ui, not caption: the model label and clock are read, not glanced past
-  // (typography-spacing-critique-2026-09-06 finding 7).
-  expect(uncommented).toMatch(/\.meta\s*\{[^}]*font-size:\s*var\(--font-size-ui\);/);
+  // (typography-spacing-critique-2026-09-06 finding 7). The size itself is
+  // pinned once in text.contract.test.ts; this site pins the composition.
+  expect(speaker).toMatch(
+    /\.meta\s*\{[^}]*composes:\s*textSecondary from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/text\.module\.css";/,
+  );
 });

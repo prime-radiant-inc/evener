@@ -23,7 +23,7 @@ func TestSessionActivityPublicRoutes(t *testing.T) {
 	} {
 		t.Run(method, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
-			s.SetAppIdentity("local", "root")
+			setAppIdentity(t, s, "local", "root")
 			_, err := s.AppServer().Router().Dispatch(context.Background(), appwire.Request{
 				Method: method, Params: json.RawMessage(`{"ref":"local:root"}`),
 			})
@@ -39,7 +39,7 @@ func TestSessionActivityLogicalReceiverInvalidation(t *testing.T) {
 	for _, descendant := range []bool{false, true} {
 		t.Run(strconv.FormatBool(descendant), func(t *testing.T) {
 			s := NewServer(ServerConfig{})
-			s.SetAppIdentity("local", "root")
+			setAppIdentity(t, s, "local", "root")
 			event := events.SessionEvent{Kind: events.EventSessionActivityChanged, SessionID: "root", Data: events.SessionActivityChangedData{ThreadID: "root", SessionID: "root", Ref: "local:root", Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, appwire.SessionActivityResourceWatches}}}
 			if descendant {
 				event.SessionID = "child"
@@ -65,7 +65,7 @@ func TestSessionActivityLogicalReceiverInvalidation(t *testing.T) {
 					t.Fatal("receiver watch invalidation was also sent to physical observer")
 				}
 			}
-			s.SetAppIdentity("local", "replacement")
+			setAppIdentity(t, s, "local", "replacement")
 			s.RecordDescendantAppEvent("root", event)
 			for _, record := range s.AppNotificationsAfter(0, "replacement") {
 				if record.Notification.Method == appwire.NotifyEvenerThreadActivityChanged {
@@ -78,7 +78,7 @@ func TestSessionActivityLogicalReceiverInvalidation(t *testing.T) {
 
 func TestSessionActivityContextAndChildRef(t *testing.T) {
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", "root")
+	setAppIdentity(t, s, "local", "root")
 	type requestMarker struct{}
 	marker := &struct{}{}
 	ctx := context.WithValue(t.Context(), requestMarker{}, marker)
@@ -118,7 +118,7 @@ func TestSessionActivityHandlerForwardsDomainDelegateNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewServer(ServerConfig{})
-	s.SetAppIdentity("local", "root")
+	setAppIdentity(t, s, "local", "root")
 	s.SetThreadActivityReadFunc(func(ctx context.Context, params appwire.SessionActivityReadParams) (appwire.SessionActivitySummary, error) {
 		return agent.LoadSessionActivitySummary(ctx, stateDir, "leaf", params)
 	})
@@ -294,7 +294,7 @@ func TestSessionActivityRoutesShareRefusals(t *testing.T) {
 	for _, route := range routes {
 		t.Run(route.method, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
-			s.SetAppIdentity("local", "root")
+			setAppIdentity(t, s, "local", "root")
 
 			wire, data := infoOf(t, dispatch(s, route.method, "local:root"))
 			if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {

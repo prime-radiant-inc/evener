@@ -49,7 +49,7 @@ async function measureCard(driver) {
       card: state.box(card), bodyPortal: card.parentElement === document.body,
       pointerEvents: getComputedStyle(card).pointerEvents,
       associated: state.row.getAttribute('aria-describedby')?.split(/\\s+/).includes(card.id),
-      title: state.title.textContent, content: card.textContent, id: card.id,
+      title: (state.title.firstElementChild ?? state.title).textContent, content: card.textContent, id: card.id,
       viewport: { width: innerWidth, height: innerHeight },
       focusUnchanged: document.activeElement === state.initialFocus,
       panes: window.overviewGuardState().panes, errors: window.__shellGuardErrors || [] };

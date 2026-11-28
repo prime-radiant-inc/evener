@@ -472,6 +472,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/devicePairing/cancel":  false,
 		"evener/dirs/create":           true, // discovery: create the host directory the spawn form asked for
 		"evener/favorite/set":          false,
+		"evener/files/search":          true, // discovery: fuzzy-search files under a remote host directory
 		"evener/git/head":              true, // discovery: read-only branch metadata for a remote path
 		"evener/harnesses/list":        true, // discovery: the host's own harnesses
 		"evener/host/request":          false,
@@ -586,6 +587,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/session/seen/set":                 false, // controller-owned: every source's seen marks live in the controller's own store
 		"evener/settings/agentsDoc/get":           true,
 		"evener/settings/agentsDoc/set":           true,
+		"evener/settings/skillDirs/get":           true, // the host's own skill roots, read by the Settings pane
 		"evener/settings/keybindings/get":         false,
 		"evener/settings/keybindings/patch":       false,
 		"evener/settings/overview":                false,
@@ -701,6 +703,7 @@ func TestHostAdminAllowListNamesEverySettingsPaneMethod(t *testing.T) {
 		appwire.MethodEvenerPluginSetAutoUpgrade,
 		appwire.MethodEvenerSettingsAgentsDocGet,
 		appwire.MethodEvenerSettingsAgentsDocSet,
+		appwire.MethodEvenerSettingsSkillDirsGet,
 		appwire.MethodEvenerInstanceList,
 		appwire.MethodEvenerInstanceCreate,
 		appwire.MethodEvenerInstanceEdit,
@@ -1825,7 +1828,9 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 		appwire.MethodEvenerAuthTest:             true,
 		appwire.MethodEvenerAuthList:             true,
 		appwire.MethodEvenerSettingsAgentsDocGet: true,
+		appwire.MethodEvenerSettingsSkillDirsGet: true,
 		appwire.MethodEvenerPathsComplete:        true,
+		appwire.MethodEvenerFilesSearch:          true,
 		appwire.MethodEvenerPathValidate:         true,
 		appwire.MethodEvenerProjectsRecent:       true,
 		appwire.MethodEvenerHarnessesList:        true,

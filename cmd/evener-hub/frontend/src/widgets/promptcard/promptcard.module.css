@@ -10,16 +10,29 @@
  * the controls' --radius-control corner that inset keeps the two arcs
  * concentric (16 - 8 = 8), so the primary verb never crowds the corner arc.
  * The field takes a deeper top inset and its own inline inset (see .field),
- * which seats the writing line one --space-4 from the card's edge. */
+ * which seats the writing line one --space-4 from the card's edge.
+ *
+ * The card clips its own overflow in every state: a rounded surface holds
+ * its content inside its box, and clipping is what tells the liquid-glass
+ * SDK to host its drawn canvas as a positioned sibling of the card rather
+ * than as a child positioned inside it and sized past the card's edge. The
+ * clip margin is one focus ring wide, so a keyboard-focused control keeps
+ * its ring where a zero-padding state seats it flush with the card's
+ * padding edge (the Duo cover's empty resting row, the ≤340px phone card). */
 .card {
   display: flex;
   flex-direction: column;
+  position: relative;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-2) var(--space-2);
   border: 1px solid var(--edge);
   border-radius: var(--radius-panel);
   background: var(--surface-1);
   box-shadow: var(--shadow-raised);
+  overflow: hidden;
+  /* biome-ignore lint/suspicious/noDuplicateProperties: clip supersedes hidden as a true non-scroller where supported; hidden is the fallback for engines that predate it */
+  overflow: clip;
+  overflow-clip-margin: var(--focus-ring-width);
 }
 
 /* The folded one-line row is as tall as its controls plus the same inset
@@ -29,11 +42,10 @@
 }
 
 /* While the card's height interpolates, its content is laid out at the new
- * shape but the box is still short. Bottom-align and clip it so the controls
- * stay at the footer edge instead of dropping below it. */
+ * shape but the box is still short. Bottom-align it so the controls stay
+ * at the footer edge instead of dropping below it. */
 .card[data-animating] {
   justify-content: flex-end;
-  overflow: hidden;
 }
 
 /* The field's own box is the caller's; this slot only gives it a shrinkable
@@ -62,19 +74,103 @@
     var(--shadow-raised);
 }
 
-/* The author-level .card display:flex above outranks the UA stylesheet's
- * [hidden] display:none, so the component's own hidden prop must be
- * re-asserted at author level - otherwise a "hidden" card keeps laying out
- * and painting (kata 99yf: the ask dock sat ABOVE a still-visible composer
- * instead of replacing it). */
-.card[hidden] {
-  display: none;
+/* The phone's composer card is the floating composer (docs/web-ui/
+ * design-system.md §12): no border and no framed surface - a translucent
+ * field color over a 16px backdrop blur, carried by PaneScaffold's footer
+ * overlay over the transcript. Keyed on [data-composer] so the spawn pane's
+ * shared card keeps its framed look inside its scrolling form body. The
+ * card keeps the panel radius in every state: the pill is control geometry,
+ * never a surface shape, so the card stays concentric with its
+ * control-radius verbs at every width. */
+@media (max-width: 899px), (display-mode: standalone) {
+  :where(html:not(:has([data-desktop-workspace]))) {
+    :global([data-composer]) .card {
+      padding-block-end: var(--composer-action-inset);
+      border: none;
+      background: transparent;
+    }
+
+    /* Paint the translucent blur surface on a pseudo-element rather than on
+     * .card itself: a non-none backdrop-filter turns its element into a
+     * containing block for position: fixed descendants, trapping inline modals
+     * rendered from the composer's control row (SessionMenu dialogs and
+     * Verbosity) inside the card. Keeping .card free of isolation: isolate lets
+     * ::before blur the scrolling transcript behind the card, and giving flex
+     * children (.field, .controls) z-index: 0 paints them above ::before in tree
+     * order while leaving .controls static so Attach still anchors to .card. */
+    :global([data-composer]) .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: color-mix(in oklab, var(--field) 88%, transparent);
+      -webkit-backdrop-filter: blur(16px);
+      backdrop-filter: blur(16px);
+      pointer-events: none;
+      transition: background-color var(--motion-duration-spatial) var(--motion-easing-standard);
+    }
+
+    :global([data-composer]) .card > * {
+      z-index: 0;
+    }
+
+    :global(body[data-iphone-glass]) :global([data-composer]) .card::before {
+      background: var(--glass-fill);
+      background-image: var(--glass-sheen);
+      box-shadow: var(--glass-shadow);
+      -webkit-backdrop-filter: var(--glass-filter);
+      backdrop-filter: var(--glass-filter);
+    }
+  }
 }
 
-/* On the Duo cover, an empty, unfocused composer gives its extra inset back
- * to the transcript. Drafts, attachments and editing keep ordinary space. */
+/* The phone composer can occupy a desktop-width workspace in landscape.
+ * Keep the same shape on both sides of the shell breakpoint. */
+:global([data-iphone-composer]) .card {
+  --font-sans: var(--glass-control-font, system-ui);
+  border-radius: var(--glass-radius);
+  row-gap: var(--space-1);
+  padding-block: var(--space-2) var(--composer-action-inset);
+  box-shadow: none;
+}
+
+:global([data-iphone-composer]) .card[data-folded="true"] {
+  border-radius: var(--radius-pill);
+  padding-block: var(--composer-action-inset);
+}
+
+/* The wide workspace docks its composer in flow, on an opaque footer. */
+@media (min-width: 900px) {
+  :where(:global([data-desktop-workspace])) :global([data-iphone-composer]) .card {
+    background: var(--glass-panel);
+    background-image: var(--glass-sheen);
+    border-color: transparent;
+    box-shadow: var(--glass-shadow);
+  }
+}
+
+:global(body[data-iphone-glass="regular"]) :global([data-iphone-composer]) .card[data-iphone-glass-drawn]:not([data-lg-fallback]),
+:global(body[data-iphone-glass="regular"]) :global([data-iphone-composer]) .card[data-iphone-glass-drawn]:not([data-lg-fallback])::before {
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* The editor's caret identifies a touch selection. Keyboard entry keeps
+ * the card's focus ring, and each action retains its own focus outline. */
+:global([data-iphone-composer][data-touch-editing]) .card:focus-within {
+  outline: none;
+}
+
+/* On the Duo cover, an empty, folded composer gives its extra inset back to
+ * the transcript. Focus does not change that shape; content does. */
 @media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
-  :global([data-composer]):not([data-composer-editing]) .card:has([role="textbox"][data-empty="true"]) {
+  :global([data-composer]) .card {
+    padding-bottom: 0;
+  }
+
+  :global([data-composer]) .card[data-folded="true"]:has([role="textbox"][data-empty="true"]) {
     gap: 0;
     padding-block: 0;
   }
@@ -87,28 +183,53 @@
 }
 
 /* The trailing cluster, pushed to the row's far edge whether or not a leading
- * slot was supplied. */
+ * slot was supplied. flex: none keeps action buttons whole while the leading
+ * slot absorbs any horizontal shrink. */
 .actions {
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  flex: none;
   margin-left: auto;
 }
 
-/* Below this width the controls leave too little for a readable placeholder,
- * so the card falls back to the stacked shape it has always had. */
-@container (min-width: 620px) {
-  .card[data-folded="true"] {
-    flex-direction: row;
-    align-items: center;
-  }
+/* Folded: the field and the control row become one line at EVERY card width.
+ * A resting card never grows a second line for its own chrome: under width
+ * pressure the chrome drops its facts (the effort readout first, then the
+ * model label floor - statusrow/modelswitch own that ladder) and only a
+ * draft engaging the card stacks it. The field keeps a readable floor for
+ * its placeholder and absorbs all leftover space, while the control row hugs
+ * its controls and shrinks when a long model name needs to ellipsize. */
+.card[data-folded="true"] {
+  flex-direction: row;
+  align-items: center;
+}
 
-  /* Folded: the field and the control row become one line. The control row
-   * keeps its natural width and the field yields, so a resting composer
-   * shows its placeholder beside the model, effort, menu and verbs instead
-   * of above them. */
+.card[data-folded="true"] .field {
+  flex: 1 1 14rem;
+  min-width: 14rem;
+}
+
+/* At the narrowest cards even the effort-dropped, label-floored control row
+ * cannot share the line with a 14rem field. The floor yields there so the
+ * one-line shape survives; the placeholder clips instead of the card growing
+ * a chrome-only second line. */
+@container (max-width: 420px) {
   .card[data-folded="true"] .field {
     flex: 1 1 10ch;
+    min-width: 0;
+  }
+}
+
+/* Editor focus returns the effort picker (statusrow's [data-composer-editing]
+ * exemption), and the restored readout spends width the resting row gave the
+ * field floor: at a 421px card the floor held the model trigger to 0px. Yield
+ * the floor over the exemption's whole range so the picker pays out of the
+ * field, never out of the trigger's usable geometry. */
+@container (width < 620px) {
+  :global([data-composer-editing]) .card[data-folded="true"] .field {
+    flex: 1 1 10ch;
+    min-width: 0;
   }
 }
 
@@ -116,8 +237,8 @@
   min-width: 0;
 }
 
-/* A caller that knows its control row is compact can use the same one-line
- * shape below the normal width threshold (the phone's menu-only resting row). */
+/* A caller that knows its control row is compact can use the compact variant
+ * of the one-line shape (the phone's Attach/menu resting row). */
 .card[data-folded="true"][data-folded-compact="true"] {
   flex-direction: row;
   align-items: center;
@@ -125,6 +246,27 @@
 
 .card[data-folded="true"][data-folded-compact="true"] .field {
   flex: 1 1 10ch;
+  min-width: 0;
+}
+
+/* The field owns its text inset, so a narrow composer card can yield its
+ * inline padding and column gap in every state. Three tap targets and half
+ * the card remain available to the writing field without moving on expansion. */
+@container (max-width: 340px) {
+  :global([data-composer]) .card {
+    padding-inline: 0;
+    column-gap: 0;
+  }
+  /* The composer's editor slot carries its own 8px inset there (and the 44px
+   * Attach inset when folded), so the field yields its padding: the 320px row
+   * spends the whole card on three 44px targets and the writing surface.
+   * composer.module.css's matching 340px rule moves Attach and the editor. */
+  :global([data-composer]) .field {
+    padding-inline: 0;
+  }
+  :global([data-composer]) .controls {
+    gap: 0;
+  }
 }
 
 /* The row never wraps. It once did, below 399px, for a three-verb cluster

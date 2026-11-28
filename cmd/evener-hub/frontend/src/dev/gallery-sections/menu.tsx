@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
+import { MoreIcon } from "../../shell/rail/railIcons";
 import { Menu, type MenuItem } from "../../widgets/menu";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./menu.module.css";
 
 const ITEMS: MenuItem[] = [
@@ -38,22 +39,12 @@ function IconTriggerDemo() {
   return (
     <div className={styles.frame}>
       <p className={styles.hint}>Icon-only trigger, default and quiet.</p>
-      <Menu icon="⋯" label="Actions for Alpha" items={ITEMS} />
-      <Menu icon="⋯" label="Actions for Beta" variant="quiet" items={ITEMS} />
+      <Menu icon={<MoreIcon />} label="Actions for Alpha" items={ITEMS} />
+      <Menu icon={<MoreIcon />} label="Actions for Beta" variant="quiet" items={ITEMS} />
     </div>
   );
 }
 
 export default function MenuGallerySection() {
-  return (
-    <section>
-      <h2>Menu</h2>
-      <ThemeFlip>
-        <MenuDemo />
-      </ThemeFlip>
-      <ThemeFlip>
-        <IconTriggerDemo />
-      </ThemeFlip>
-    </section>
-  );
+  return <GallerySection title="Menu" flips={[<MenuDemo key="default" />, <IconTriggerDemo key="quiet" />]} />;
 }

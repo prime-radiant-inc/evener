@@ -1,9 +1,12 @@
-package sandbox
+package sandbox_test
 
 import (
 	"reflect"
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 )
 
 // TestContractMatrix runs the golden floor-matrix table against the real
@@ -11,7 +14,12 @@ import (
 // green here is the cross-backend contract for M1.
 func TestContractMatrix(t *testing.T) {
 	t.Parallel()
-	AssertResolve(t, Resolve)
+	sandboxtest.AssertResolve(t, sandbox.Resolve)
+}
+
+func TestReRootContract(t *testing.T) {
+	t.Parallel()
+	sandboxtest.AssertReRoot(t, sandboxtest.ReRootCases())
 }
 
 // TestContractCoverage guards the golden table's breadth: every backend outcome,
@@ -22,21 +30,21 @@ func TestContractMatrix(t *testing.T) {
 // bwrap-matrix check below closes that gap for the tier M2/M3 lean on hardest.)
 func TestContractCoverage(t *testing.T) {
 	t.Parallel()
-	cases := ContractCases()
+	cases := sandboxtest.ContractCases()
 
 	// The bwrap tier must carry every sandboxed mode × net cell (a per-cell drop,
 	// not just a whole-tier drop, must fail).
 	type cell struct {
-		mode Mode
+		mode sandbox.Mode
 		net  bool
 	}
 	bwrapCells := map[cell]bool{}
 	for _, c := range cases {
-		if c.Host.BwrapCapable && !c.WantRefusal && c.Mode != ModeOff {
+		if c.Host.BwrapCapable && !c.WantRefusal && c.Mode != sandbox.ModeOff {
 			bwrapCells[cell{c.Mode, c.Net}] = true
 		}
 	}
-	for _, m := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+	for _, m := range []sandbox.Mode{sandbox.ModeReadOnly, sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted} {
 		for _, net := range []bool{true, false} {
 			if !bwrapCells[cell{m, net}] {
 				t.Errorf("bwrap tier missing cell (mode=%v net=%v)", m, net)
@@ -45,9 +53,9 @@ func TestContractCoverage(t *testing.T) {
 	}
 
 	// Every backend outcome is represented among the resolving cells.
-	backends := map[Backend]bool{}
+	backends := map[sandbox.Backend]bool{}
 	oses := map[string]bool{}
-	modes := map[Mode]bool{}
+	modes := map[sandbox.Mode]bool{}
 	var refusals, resolutions int
 	sawNetOff := false
 	sawNoBackendRefusal, sawRequiredSeatbelt := false, false
@@ -74,12 +82,12 @@ func TestContractCoverage(t *testing.T) {
 
 	// The Linux tier has exactly one backend (bwrap); a non-bwrap Linux host never
 	// resolves, it refuses with no backend that would satisfy it.
-	for _, b := range []Backend{BackendNone, BackendBwrap, BackendSeatbelt} {
+	for _, b := range []sandbox.Backend{sandbox.BackendNone, sandbox.BackendBwrap, sandbox.BackendSeatbelt} {
 		if !backends[b] {
 			t.Errorf("golden table has no resolving case with backend %v", b)
 		}
 	}
-	for _, m := range AllModes() {
+	for _, m := range sandbox.AllModes() {
 		if !modes[m] {
 			t.Errorf("golden table missing mode %v", m)
 		}
@@ -110,11 +118,11 @@ func TestContractCoverage(t *testing.T) {
 func TestContractRefusalTiersAreComplete(t *testing.T) {
 	t.Parallel()
 	type cell struct {
-		mode Mode
+		mode sandbox.Mode
 		net  bool
 	}
 	tiers := map[string]map[cell]bool{}
-	for _, c := range ContractCases() {
+	for _, c := range sandboxtest.ContractCases() {
 		if !c.WantRefusal {
 			continue
 		}
@@ -131,7 +139,7 @@ func TestContractRefusalTiersAreComplete(t *testing.T) {
 			t.Errorf("no refusal cases for tier %q", tier)
 			continue
 		}
-		for _, m := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		for _, m := range []sandbox.Mode{sandbox.ModeReadOnly, sandbox.ModeWorkspaceWrite, sandbox.ModeRestricted} {
 			for _, net := range []bool{true, false} {
 				if !cells[cell{m, net}] {
 					t.Errorf("refusal tier %q missing cell (mode=%v net=%v)", tier, m, net)
@@ -143,7 +151,7 @@ func TestContractRefusalTiersAreComplete(t *testing.T) {
 
 // refusalTierLabel classifies a HostFacts into the refusal tier it belongs to
 // (the tiers that cannot enforce any sandboxed mode).
-func refusalTierLabel(h HostFacts) string {
+func refusalTierLabel(h sandbox.HostFacts) string {
 	switch {
 	case h.OS == "windows":
 		return "windows"
@@ -156,7 +164,7 @@ func refusalTierLabel(h HostFacts) string {
 	}
 }
 
-// recordingT is a sandbox.TestingT that records Errorf/Fatalf calls instead of
+// recordingT is a sandboxtest.TestingT that records Errorf/Fatalf calls instead of
 // failing, so a test can assert that AssertResolve REJECTS a bad resolver. It
 // borrows a real *testing.T for TempDir/Helper and delegates Skipf (git-missing
 // skips the whole test).
@@ -174,8 +182,8 @@ func (r *recordingT) Fatalf(string, ...any) { r.errors++ }
 // such grants slip through; ancestor-aware checks catch them.
 func TestAssertResolveRejectsOverBroadGrants(t *testing.T) {
 	t.Parallel()
-	overBroad := func(p SandboxPolicy, h HostFacts, cwd string) (ResolvedPolicy, error) {
-		rp, err := Resolve(p, h, cwd)
+	overBroad := func(p sandbox.SandboxPolicy, h sandbox.HostFacts, cwd string) (sandbox.ResolvedPolicy, error) {
+		rp, err := sandbox.Resolve(p, h, cwd)
 		if err != nil {
 			return rp, err
 		}
@@ -189,13 +197,13 @@ func TestAssertResolveRejectsOverBroadGrants(t *testing.T) {
 		return rp, nil
 	}
 	rec := &recordingT{T: t}
-	AssertResolve(rec, overBroad)
+	sandboxtest.AssertResolve(rec, overBroad)
 	if rec.errors == 0 {
 		t.Fatal("AssertResolve accepted an over-broad-granting resolver; the oracle must reject over-broad ancestor grants")
 	}
 
 	// Sanity: the real resolver still passes the strengthened oracle.
-	if rec2 := (&recordingT{T: t}); func() int { AssertResolve(rec2, Resolve); return rec2.errors }() != 0 {
+	if rec2 := (&recordingT{T: t}); func() int { sandboxtest.AssertResolve(rec2, sandbox.Resolve); return rec2.errors }() != 0 {
 		t.Fatalf("real Resolve failed the strengthened oracle with %d errors", rec2.errors)
 	}
 }
@@ -205,8 +213,8 @@ func TestAssertResolveRejectsOverBroadGrants(t *testing.T) {
 // call and never shares mutable backing state between calls.
 func TestContractCasesAreDataOnly(t *testing.T) {
 	t.Parallel()
-	a := ContractCases()
-	b := ContractCases()
+	a := sandboxtest.ContractCases()
+	b := sandboxtest.ContractCases()
 	if len(a) != len(b) {
 		t.Fatalf("ContractCases() length varies: %d vs %d", len(a), len(b))
 	}

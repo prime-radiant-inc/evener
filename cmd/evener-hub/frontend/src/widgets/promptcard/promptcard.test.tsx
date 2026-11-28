@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useLayoutEffect, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { blockBody, readModuleCss } from "../../styles/cssBlock";
+import { mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { Textarea } from "../textarea";
 import { PromptCard } from "./index";
 import promptCardStyles from "./promptcard.module.css";
@@ -145,11 +145,11 @@ test("hidden takes the card out of the interaction tree, not just out of sight",
 // the field would show nothing at all. jsdom applies no stylesheet, so the rule
 // is checked against the stylesheet text and the state against the DOM.
 test("the card owns the focus ring for the seamless field inside it", () => {
-  expect(moduleCss()).toMatch(/\.card:focus-within\s*\{[^}]*outline: var\(--focus-ring\)/);
+  expect(topRuleBlock(moduleCss(), ".card:focus-within")).toMatch(/outline: var\(--focus-ring\)/);
 });
 
 test("the focus ring sits on the card edge, so the field shows one line instead of two", () => {
-  const rule = /\.card:focus-within\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  const rule = topRuleBlock(moduleCss(), ".card:focus-within");
   expect(rule).toMatch(/outline-offset:\s*0;/);
   expect(rule).toMatch(/border-color:\s*var\(--accent\);/);
 });
@@ -164,23 +164,20 @@ test("focusing the field puts the card in :focus-within", () => {
 });
 
 test("the card draws exactly one hairline border, so a seamless field inside is not a box in a box", () => {
-  const rule = /\.card\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  const rule = topRuleBlock(moduleCss(), ".card");
   expect(rule).toMatch(/border:\s*1px solid var\(--edge\)/);
 });
 
 test("the field slot stretches the caller's field across the card", () => {
-  const rule = /\.field\s*\{([^}]*)\}/.exec(moduleCss())?.[1] ?? "";
+  const rule = topRuleBlock(moduleCss(), ".field");
   expect(rule).toMatch(/display:\s*flex/);
   expect(rule).toMatch(/flex-direction:\s*column/);
 });
 
-test("the card owns compact spacing for an empty, unfocused Duo composer", () => {
-  const css = moduleCss();
-  const mediaStart = css.indexOf("@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)");
-  expect(mediaStart).toBeGreaterThanOrEqual(0);
-  const compact = blockBody(css, css.indexOf("{", mediaStart));
+test("the card owns compact spacing for an empty, folded Duo composer even when focused", () => {
+  const compact = mediaBlock(moduleCss(), "min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4");
   expect(compact).toMatch(
-    /:global\(\[data-composer\]\):not\(\[data-composer-editing\]\) \.card:has\(\[role="textbox"\]\[data-empty="true"\]\)\s*\{[^}]*gap:\s*0;[^}]*padding-block:\s*0;/,
+    /:global\(\[data-composer\]\) \.card\[data-folded="true"\]:has\(\[role="textbox"\]\[data-empty="true"\]\)\s*\{[^}]*gap:\s*0;[^}]*padding-block:\s*0;/,
   );
 });
 
@@ -194,25 +191,6 @@ test("folded marks the card for the one-line layout", () => {
 test("an expanded card carries no folded marker", () => {
   render(<LiveCard />);
   expect(screen.getByTestId("card").hasAttribute("data-folded")).toBe(false);
-});
-
-// The width container exists so a spread-out composer gets the one-line
-// shape while a narrow pane keeps the stacked one, regardless of the
-// viewport. jsdom applies no layout, so the rule itself is the assertion.
-test("the folded card goes one line only when the card has room", () => {
-  const css = moduleCss();
-  expect(css).toMatch(/\.root\s*\{[^}]*container-type:\s*inline-size;/);
-  const queryStart = css.indexOf("@container (min-width: 620px)");
-  expect(queryStart).toBeGreaterThanOrEqual(0);
-  const oneLine = blockBody(css, css.indexOf("{", queryStart));
-  expect(oneLine).toMatch(/\.card\[data-folded="true"\]\s*\{[^}]*flex-direction:\s*row;/);
-  expect(css).toMatch(/\.card\[data-folded="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
-});
-
-test("a compact folded card goes one line below the normal width threshold", () => {
-  const css = moduleCss();
-  expect(css).toMatch(/\.card\[data-folded="true"\]\[data-folded-compact="true"\]\s*\{[^}]*flex-direction:\s*row;/);
-  expect(css).toMatch(/\.card\[data-folded="true"\]\[data-folded-compact="true"\] \.field\s*\{[^}]*flex:\s*1 1 10ch;/);
 });
 
 test("foldedCompact marks the card for the narrow one-line row", () => {

@@ -3,8 +3,9 @@ import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
+import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import {
   activitySidebarStore,
   resetActivitySidebarStoreForTests,
@@ -12,7 +13,8 @@ import {
 import { ActivitySidebar } from "../../../shell/activitybar/activitySidebarTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
-import { MOBILE_QUERY } from "../../../shell/useIsMobile";
+import * as railAlignment from "../../../shell/rail/alignCreateWithComposer";
+import { LANDSCAPE_PHONE_QUERY, MOBILE_QUERY } from "../../../shell/useIsMobile";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
@@ -27,6 +29,7 @@ import { connectReadyFakeClient } from "../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as FULL_CAPABILITIES } from "../../../threadTestUtils";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import statusRowStyles from "../chrome/statusrow.module.css";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
 import { editorCursor, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -41,6 +44,7 @@ import {
   installStalledDecodeStub,
   mountComposer,
   mountComposerWithHandle,
+  PAST_THREAD_CAPABILITIES,
   pendingAskTurns,
   REVIEW_RELEASE_CATALOG,
   readResponse,
@@ -49,7 +53,7 @@ import {
   textarea,
 } from "./composerTestUtils";
 import { readDraft, writeComposerDraft } from "./draft";
-import { LANDSCAPE_PHONE_QUERY } from "./narrowComposer";
+import { DUO_COVER_QUERY } from "./narrowComposer";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -89,91 +93,142 @@ class ControlledDiscardStorage extends MutationOutboxIndexedDB {
   }
 }
 
-function installDuoCoverViewport(): void {
-  vi.stubGlobal("matchMedia", (media: string) => ({
-    media,
-    matches: media === "(min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4)",
-    addEventListener() {},
-    removeEventListener() {},
-  }));
-}
+test.each([
+  { name: "wide desktop", compact: false, inlineSteer: true },
+  { name: "narrow desktop", compact: false, inlineSteer: false, width: 382 },
+  { name: "Duo cover", compact: false, inlineSteer: true, width: 450, duo: true },
+  { name: "phone portrait", compact: true, inlineSteer: false, width: 360, phone: true },
+  { name: "iPhone Safari", compact: true, inlineSteer: false, width: 360, phone: true, safari: true },
+  { name: "iPad Safari", compact: false, inlineSteer: true, safari: true },
+  { name: "hosted iPhone", compact: true, inlineSteer: false, width: 360, phone: true, hosted: true },
+  { name: "Duo landscape", compact: true, inlineSteer: true, width: 526, phoneQuery: LANDSCAPE_PHONE_QUERY },
+  {
+    name: "hosted Duo landscape",
+    compact: true,
+    inlineSteer: true,
+    width: 526,
+    phoneQuery: LANDSCAPE_PHONE_QUERY,
+    hosted: true,
+  },
+])(
+  "$name keeps the empty composer folded until content arrives",
+  async ({ compact, inlineSteer, width, duo, phone, phoneQuery, hosted, safari }) => {
+    const restoreViewport =
+      phone || phoneQuery || duo ? installMobileViewport(duo ? DUO_COVER_QUERY : phoneQuery) : undefined;
+    if (width !== undefined) installNarrowComposer(width);
+    const ua =
+      hosted || safari
+        ? vi.spyOn(navigator, "userAgent", "get").mockReturnValue(hosted ? "EvenerNative/1" : phone ? "iPhone" : "iPad")
+        : undefined;
+    if (hosted) vi.stubGlobal("ReactNativeWebView", { postMessage: vi.fn() });
+    try {
+      await mountComposerWithHandle("ref_a", { status: { type: "active" } });
+      const editor = textarea();
+      const card = screen.getByTestId("composer-input-card");
+      expect(card.closest("[data-iphone-composer]") !== null).toBe(!!(hosted || safari));
+      const order = () =>
+        [...card.querySelectorAll("button")]
+          .map((button) => button.getAttribute("data-testid"))
+          .filter((id) => id === "composer-stop" || id === "composer-submit" || id === "composer-steer");
 
-test("the Duo cover composer expands on focus and retains its two-line draft height", async () => {
-  installDuoCoverViewport();
-  installNarrowComposer(450);
-  await mountComposerWithHandle("ref_a");
-  const editor = textarea();
-  expect(editor.style.minHeight).toBe("1lh");
-  act(() => editor.focus());
-  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
-  await replaceEditorText(editor, "a saved draft");
-  expect(editor.style.minHeight).toBe("2lh");
-  act(() => editor.blur());
-  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
-});
+      expect(editor.style.minHeight).toBe("1lh");
+      expect(card.getAttribute("data-folded")).toBe("true");
+      expect(card.getAttribute("data-folded-compact")).toBe(compact ? "true" : null);
+      expect(screen.getByTestId("composer-attach")).toBeTruthy();
+      expect(order()).toEqual(["composer-stop"]);
 
-test("a narrow desktop pane folds its resting field to one line", async () => {
-  installNarrowComposer(382);
-  await mountComposerWithHandle("ref_a");
-  const editor = textarea();
-  expect(editor.style.minHeight).toBe("1lh");
-  act(() => editor.focus());
-  await waitFor(() => expect(editor.style.minHeight).toBe("2lh"));
-});
+      act(() => editor.focus());
+      expect(editor.style.minHeight).toBe("1lh");
+      expect(card.getAttribute("data-folded")).toBe("true");
+      expect(card.getAttribute("data-folded-compact")).toBe(compact ? "true" : null);
+      expect(order()).toEqual(["composer-stop"]);
 
-test("the wide empty composer folds to one line and unfolds on focus", async () => {
-  await mountComposerWithHandle("ref_a");
-  const editor = textarea();
-  const card = screen.getByTestId("composer-input-card");
-  expect(editor.style.minHeight).toBe("1lh");
-  expect(card.getAttribute("data-folded")).toBe("true");
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
-  act(() => editor.focus());
-  await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
-  expect(editor.style.minHeight).toBe("2lh");
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  act(() => editor.blur());
-  await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
-  expect(editor.style.minHeight).toBe("1lh");
-});
+      act(() => replaceEditorText(editor, "draft"));
+      expect(editor.style.minHeight).toBe(hosted || (safari && phone) ? "1lh" : "2lh");
+      expect(card.hasAttribute("data-folded")).toBe(false);
+      expect(card.hasAttribute("data-folded-compact")).toBe(false);
+      expect(order()).toEqual(inlineSteer ? ["composer-steer", "composer-submit"] : ["composer-submit"]);
 
-test("a phone's folded composer is compact, and focus reveals the full row", async () => {
-  const restoreViewport = installMobileViewport();
-  try {
-    await mountComposerWithHandle("ref_a");
+      act(() => editor.blur());
+      expect(card.hasAttribute("data-folded")).toBe(false);
+    } finally {
+      cleanup();
+      restoreViewport?.();
+      if (hosted) vi.unstubAllGlobals();
+      ua?.mockRestore();
+    }
+  },
+);
+
+const PHONE_CHROME_CASES = [
+  { name: "phone portrait at rest", query: MOBILE_QUERY, state: "resting", cold: false },
+  { name: "phone portrait engaged", query: MOBILE_QUERY, state: "engaged", cold: false },
+  { name: "phone portrait ask-pending", query: MOBILE_QUERY, state: "ask", cold: false },
+  { name: "coarse landscape at rest", query: LANDSCAPE_PHONE_QUERY, state: "resting", cold: false },
+  { name: "coarse landscape engaged", query: LANDSCAPE_PHONE_QUERY, state: "engaged", cold: false },
+  { name: "coarse landscape ask-pending", query: LANDSCAPE_PHONE_QUERY, state: "ask", cold: false },
+  { name: "cold follow-up engaged", query: MOBILE_QUERY, state: "engaged", cold: true },
+] as const;
+
+// The phone shell keeps model, status, and effort out of the composer in every
+// state; those live in the Overview sheet and Settings (design-system.md
+// section 12). This table is the single owner of that assertion.
+test.each(PHONE_CHROME_CASES)(
+  "the phone composer mounts no model, status, or effort chrome: $name",
+  async ({ query, state, cold }) => {
+    onTestFinished(installMobileViewport(query));
+    await mountComposer(
+      "ref_a",
+      cold
+        ? {
+            status: { type: "notLoaded" },
+            evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+          }
+        : state === "ask"
+          ? { ...pendingAskTurns(), evener: { ...currentWorkEvener({}), askPending: true } }
+          : {},
+    );
+
     const card = screen.getByTestId("composer-input-card");
-    expect(card.getAttribute("data-folded")).toBe("true");
-    expect(card.getAttribute("data-folded-compact")).toBe("true");
-    expect(screen.queryByTestId("composer-attach")).toBeNull();
+    if (state === "resting") {
+      expect(card.getAttribute("data-folded")).toBe("true");
+      expect(card.getAttribute("data-folded-compact")).toBe("true");
+    } else if (state === "engaged") {
+      act(() => replaceEditorText(textarea(), "draft"));
+      await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+      expect(card.hasAttribute("data-folded-compact")).toBe(false);
+    } else {
+      expect(card.hasAttribute("hidden")).toBe(true);
+      expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
+    }
+
     expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
-    expect(screen.getByTestId("composer-submit")).toBeTruthy();
+    expect(screen.queryByTestId("status-row")).toBeNull();
+    expect(screen.queryByTestId("status-row-effort")).toBeNull();
+    expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
+  },
+);
 
-    act(() => textarea().focus());
-    await waitFor(() => expect(card.getAttribute("data-folded-compact")).toBeNull());
-    expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
-    expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  } finally {
-    cleanup();
-    restoreViewport();
-  }
-});
-
-test("a landscape phone's folded composer uses the compact one-line row", async ({ onTestFinished }) => {
-  onTestFinished(installMobileViewport(LANDSCAPE_PHONE_QUERY));
-  // The Duo's 951pt landscape viewport uses the desktop shell, while its
-  // session pane leaves the PromptCard below the desktop folded threshold.
-  installNarrowComposer(526);
-  await mountComposerWithHandle("ref_a");
+test("clearing a focused draft keeps the card open until an outside click", async () => {
+  await mountComposerWithHandle("ref_a", { status: { type: "active" } });
+  const editor = textarea();
   const card = screen.getByTestId("composer-input-card");
+  act(() => editor.focus());
   expect(card.getAttribute("data-folded")).toBe("true");
-  expect(card.getAttribute("data-folded-compact")).toBe("true");
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
-  expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+  act(() => replaceEditorText(editor, "draft"));
+  expect(card.hasAttribute("data-folded")).toBe(false);
 
-  act(() => textarea().focus());
-  await waitFor(() => expect(card.getAttribute("data-folded-compact")).toBeNull());
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  expect(screen.getByTestId("model-switch-trigger")).toBeTruthy();
+  act(() => replaceEditorText(editor, ""));
+  expect(card.hasAttribute("data-folded")).toBe(false);
+  expect(screen.getByTestId("composer-stop")).toBeTruthy();
+
+  await act(async () => {
+    fireEvent.pointerDown(document.body);
+    editor.blur();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    fireEvent.click(document.body);
+  });
+  await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
 });
 
 test("the composer's inline status row packs its facts to the far end", async () => {
@@ -246,6 +301,34 @@ test("renders current work directly before the compose card", async () => {
   const currentWork = screen.getByTestId("current-work");
   const composerCard = screen.getByTestId("composer-input-card");
   expect(currentWork.compareDocumentPosition(composerCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
+test("a phone composer hides the visible current-work rows but keeps their announcement", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(installMobileViewport());
+  const task = "task-4c1a";
+  const goal = "goal-7e92";
+  await mountComposer("ref_a", {
+    evener: {
+      ...currentWorkEvener({}),
+      tasks: { total: 1, done: 0, current: { id: 1, description: task } },
+      goal: { objective: goal, status: "active", iterations: 1 },
+    },
+  });
+
+  // Nothing arrived above the card to move the phone's persistent controls.
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  expect(screen.queryByTestId("current-work")).toBeNull();
+  // The live region still carries the work, so a screen reader hears what the
+  // visual rows no longer show.
+  const announcements = screen
+    .getAllByRole("status")
+    .filter((node) => node.getAttribute("aria-atomic") === "true")
+    .map((node) => node.textContent ?? "");
+  expect(announcements).toHaveLength(1);
+  expect(announcements[0]).toContain(task);
+  expect(announcements[0]).toContain(goal);
 });
 
 test("the current-work goal row carries the goal's live status", async () => {
@@ -471,6 +554,131 @@ test("goal replacement preserves the consolidated recovery owner while its commi
   }
 });
 
+test("the focused iPhone composer retries a share after its draft write is rejected", async () => {
+  const path = "/s/local%3Aone";
+  const previous = window.location.href;
+  window.history.replaceState({}, "", path);
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    window.history.replaceState({}, "", previous);
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  writeComposerDraft("local:one", { text: "existing draft", skillNames: [] });
+  const source = createTestComposerSource("local:one");
+  const { fake } = await mountComposerWithHandle("local:one", {}, { focused: true, source });
+  const editor = textarea();
+  const deliver = (destination: string, origin = "") =>
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          origin,
+          data: JSON.stringify({
+            type: "shareText",
+            path: destination,
+            id: "payload",
+            text: "incoming",
+          }),
+        }),
+      );
+    });
+  deliver("/s/other");
+  deliver(path, "https://another.example");
+  expect(editor.textContent).toBe("existing draft");
+  const failedWrites = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+    throw new Error("quota");
+  });
+  deliver(path);
+  expect(editor.textContent).toBe("existing draft");
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  const user = userEvent.setup();
+  await user.type(editor, " edit");
+  expect(editor.textContent).toBe("existing draft edit");
+  expect(readDraft("local:one")).toBe("existing draft");
+  failedWrites.mockRestore();
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(editor.textContent).toBe("existing draft edit\n\nincoming");
+  expect(readDraft("local:one")).toBe("existing draft edit\n\nincoming");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  deliver(path);
+  expect(editor.textContent).toBe("existing draft edit\n\nincoming");
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+});
+
+test("an unrelated send does not consume a failed share and retry saves it into the now empty draft", async () => {
+  const path = "/s/local%3Aone";
+  const previous = window.location.href;
+  window.history.replaceState({}, "", path);
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const postMessage = vi.fn();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  onTestFinished(() => {
+    window.history.replaceState({}, "", previous);
+    agent.mockRestore();
+    vi.unstubAllGlobals();
+  });
+  const { fake } = await mountComposerWithHandle("local:one", {}, { focused: true });
+  let releaseStart: (() => void) | undefined;
+  fake.on(
+    "turn/start",
+    (params) =>
+      new Promise((resolve) => {
+        releaseStart = () =>
+          resolve({
+            receipt: appliedReceipt(params.clientMutationId, "thread_one"),
+            turn: { id: "turn_one", status: "inProgress", itemsView: "" },
+          });
+      }),
+  );
+  vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
+    throw new Error("quota");
+  });
+  act(() =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({ type: "shareText", path, id: "payload", text: "incoming" }),
+      }),
+    ),
+  );
+  expect(screen.getByRole("alert")).toBeTruthy();
+  const user = userEvent.setup();
+  const editor = textarea();
+  await user.type(editor, "unrelated message");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+  expect(editor.textContent).toBe("");
+  expect(screen.getByRole("alert")).toBeTruthy();
+  await act(async () => releaseStart?.());
+  expect(screen.getByRole("alert")).toBeTruthy();
+  expect(editor.textContent).toBe("");
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).not.toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(editor.textContent).toBe("incoming");
+  expect(readDraft("local:one")).toBe("incoming");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw))).toContainEqual({
+    type: "sharePlaced",
+    id: "payload",
+    path,
+  });
+});
+
 test("goal replacement closes slash completion and resets selection", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
@@ -492,6 +700,8 @@ test("goal replacement closes slash completion and resets selection", async () =
 });
 
 test("goal replacement focus waits until an ended follow-up textarea mounts", async () => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("iPad");
+  const align = vi.spyOn(railAlignment, "alignCreateWithComposer");
   const user = userEvent.setup();
   let overrides: Partial<Thread> = {
     status: { type: "closed" },
@@ -500,7 +710,7 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
       capabilities: { ...FULL_CAPABILITIES, send: false },
     },
   };
-  const fake = await mountComposer("ref_a", overrides);
+  const { fake } = await mountComposerWithHandle("ref_a", overrides, { focused: true });
   fake.on("thread/read", () => readResponse("ref_a", overrides));
   expect(screen.queryByRole("textbox", { name: /^message$/i })).toBeNull();
 
@@ -519,12 +729,14 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
   // re-queried on every poll rather than cached before the mount settles.
   await waitFor(() => expect(document.activeElement).toBe(textarea()));
   expect(textarea().textContent).toBe("/goal Keep the session focused");
+  expect(align).toHaveBeenCalledWith(screen.getByTestId("composer-submit"));
 });
 
 // Desktop Tasks everywhere is the activity sidebar, preselected to its tasks
 // tab (the same retarget the rail row and the chrome menu share) - the
-// current-task button opens no sessionTasks pane. Mobile keeps the Sheet (the
-// mobile test below pins that).
+// current-task button opens no sessionTasks pane. The phone shell hides the
+// visible current-work rows (the test above pins that); its Tasks entry is the
+// top bar's Overview sheet.
 test("clicking the current task opens the activity sidebar's tasks tab, never a pane, on desktop", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {
@@ -532,8 +744,7 @@ test("clicking the current task opens the activity sidebar's tasks tab, never a 
   });
 
   await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
-  expect(activitySidebarStore.getState().open).toBe(true);
-  expect(activitySidebarStore.getState().tab).toBe("tasks");
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "ref_a", tab: "tasks" });
   expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
   // act(): the chrome subscribes to focus-derived state (its Activity check
   // reads currentSessionRef), so this raw store mutation re-renders it.
@@ -553,24 +764,6 @@ test("clicking the current task opens the activity sidebar's tasks tab, never a 
   ).toHaveLength(0);
 });
 
-test("clicking the current task opens the existing mobile tasks sheet for this session", async () => {
-  const restoreViewport = installMobileViewport();
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", {
-    evener: currentWorkEvener({ task: true }),
-  });
-  let calledRef: unknown;
-  fake.on("evener/tasks/list", (params) => {
-    calledRef = params.ref;
-    return { data: [] };
-  });
-
-  await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
-  await waitFor(() => expect(calledRef).toBe("ref_a"));
-  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
-  restoreViewport();
-});
-
 test("the composer region fills pane height and bottom-anchors the replacement slot", () => {
   const css = readModuleCss(import.meta.url, "composer.module.css");
   expect(css).toContain("flex: 1 1 auto");
@@ -578,25 +771,28 @@ test("the composer region fills pane height and bottom-anchors the replacement s
   expect(css).toContain("justify-content: flex-end");
 });
 
-// The word beside the paper plane collapses by PANE width, not viewport
-// width: a docked pane squeezed narrow on a desktop display needs the same
-// icon-only Send the phone gets, and a viewport media query cannot see that
+// The words beside the Send and Stop glyphs collapse by PANE width, not
+// viewport width: a docked pane squeezed narrow on a desktop display needs the
+// same icon-only controls the phone gets, and a viewport media query cannot see that
 // (the overflowguard's 390px-pane-in-desktop-window measurement proved it).
 // The 559px boundary matches the status row's own first compression threshold (statusrow.module.css).
-test("the Send button's word collapses to the glyph below the compact pane threshold", () => {
+test("the Send and Stop words collapse to glyphs below the compact pane threshold", () => {
   const css = readModuleCss(import.meta.url, "composer.module.css");
+  const shared = readModuleCss(import.meta.url, "../../../styles/sendbutton.module.css");
   expect(topRuleBlock(css, ".composer")).toMatch(/container-type:\s*inline-size/);
-  expect(css).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.submitLabel\s*\{[^}]*display:\s*none/);
-});
-
-// The model and effort are the session's facts about the next turn, so they
-// sit beside the verbs rather than immediately after the paperclip. The slot
-// reserves the compact chrome rung for the leading's wrap calculation and
-// grows into the expanded row; the row's own `align="end"` places the facts
-// at its far end.
-test("the session chrome reserves its compact rung and fills the expanded row", () => {
-  const css = readModuleCss(import.meta.url, "composer.module.css");
-  expect(topRuleBlock(css, ".chromeSlot")).toMatch(/flex:\s*1 1 200px/);
+  const sendWord = /composes:\s*sendWord from "\.\.\/\.\.\/\.\.\/styles\/sendbutton\.module\.css"/;
+  expect(topRuleBlock(css, ".submitLabel")).toMatch(sendWord);
+  expect(topRuleBlock(css, ".stopLabelStack")).toMatch(sendWord);
+  expect(topRuleBlock(css, ".stopLabelStack")).not.toMatch(/display:/);
+  expect(topRuleBlock(css, ":where(.stopLabelStack)")).toMatch(/display:\s*grid/);
+  expect(css).toMatch(/\.stopLabelStack > span\s*\{[^}]*grid-area:\s*1 \/ 1/);
+  expect(shared).toMatch(/@container \(max-width: 559px\)[\s\S]*?\.sendWord\s*\{[^}]*display:\s*none/);
+  // The floor reaches coarse pointers as well as phone widths: a 951pt
+  // landscape Duo is past the 899px phone boundary while its composer pane
+  // still folds the words away, so the icon-only action keeps 44px there.
+  expect(css).toMatch(
+    /@media \(max-width: 899px\), \(any-pointer: coarse\) \{\s*\.composer\s+:global\(button\):has\(> \.submitLabel\),\s*\.composer\s+:global\(button\):has\(> \.stopLabelStack\)\s*\{[^}]*min-width:\s*var\(--tap-min\)/,
+  );
 });
 
 beforeEach(() => {
@@ -686,7 +882,7 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
         ref: "ref_a",
       }),
     );
-    expect(screen.getByRole("radio", { name: "About" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("tab", { name: "About", selected: true })).toBeTruthy();
     if (mobile && invocation === 0) {
       await waitFor(() => expect(screen.getByTestId("activity-sidebar").contains(document.activeElement)).toBe(true));
     }
@@ -695,12 +891,10 @@ test.each([false, true])("repeated composer /status targets its ref, phone=%s", 
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
 
-// A phone's composer rests by shedding what an empty editor does not need -
-// attach, the status chips and the activity chips - while the session menu
-// and Send stay, so a landscape phone spends its height on the transcript
-// and session actions stay reachable without focusing first. Focus engages
-// the full row again.
-test("a resting phone composer sheds attach, status chrome and its activity line", async ({ onTestFinished }) => {
+// The phone's activity counts live in the top bar's Overview sheet
+// (design-system.md section 12), so the composer never grows an activity line,
+// resting or engaged.
+test("a phone composer never grows an activity line", async ({ onTestFinished }) => {
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
@@ -712,79 +906,60 @@ test("a resting phone composer sheds attach, status chrome and its activity line
   );
   await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
+  await settleActivityDiscovery("ref_a");
 
-  // At rest: no attach, no status chrome, and no activity line - the folded
-  // card is the phone's smallest surface and the counts return with it. The
-  // menu-only chrome keeps the session actions reachable, and Send stays.
-  expect(screen.queryByTestId("composer-attach")).toBeNull();
-  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   const form = screen.getByTestId("composer-form");
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
   expect(screen.queryByTestId("composer-activity-line")).toBeNull();
-  // The pane footer keys its home-indicator padding off this marker, so a
-  // folded card must not publish it.
-  expect(document.querySelector('[data-composer-activity-line="true"]')).toBeNull();
-  expect(screen.getByTestId("session-chrome-menu")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Session actions" })).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
 
-  // Focus engages the full row, and its activity line comes back with it.
-  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
-  await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
-  expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
-  expect(document.querySelector('[data-composer-activity-line="true"]')).toBeTruthy();
+  act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), "draft"));
+  expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false);
+  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
   expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.queryByTestId("session-chrome-menu")).toBeNull();
+  await settleActivityDiscovery("ref_a");
 });
 
-// A cascade column's chrome renders the conversation's activity controls
-// below the footer (CascadeColumn's ScopeActivityControls), so its seat
-// declares that ownership and the phone composer renders no second activity
-// line below its card.
-test("a composer whose seat owns the activity counts never mounts chips", async ({ onTestFinished }) => {
+test("a phone composer leaves inspection actions to the top bar at rest and with content", async ({
+  onTestFinished,
+}) => {
   onTestFinished(installMobileViewport());
+  const user = userEvent.setup();
   const fake = connectReadyFakeClient();
-  fake.on("thread/read", () => readResponse("ref_owned_counts"));
-  await threadsStore.getState().ensureThread("ref_owned_counts");
+  fake.on("thread/read", () => readResponse("ref_phone_header_menu"));
+  await threadsStore.getState().ensureThread("ref_phone_header_menu");
+  const paneId = workspaceStore.getState().openPane("session", { ref: "ref_phone_header_menu" });
   render(
     <ClientProvider client={fake}>
       <Composer
-        ref="ref_owned_counts"
-        source={createTestComposerSource("ref_owned_counts")}
+        ref="ref_phone_header_menu"
+        paneId={paneId}
+        source={createTestComposerSource("ref_phone_header_menu")}
         focused={false}
-        ownsActivityCounts
       />
     </ClientProvider>,
   );
-  await screen.findByRole("textbox", { name: "Message" });
+  const editor = await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
 
-  // The engaged row keeps the status chrome and attach, but no chips.
-  fireEvent.focus(screen.getByRole("textbox", { name: "Message" }));
-  await waitFor(() => expect(screen.getByTestId("session-chrome-inline")).toBeTruthy());
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  expect(document.querySelector('[data-testid="composer-form"] [data-activity-tab]')).toBeNull();
-  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
+  for (const withContent of [false, true]) {
+    if (withContent) {
+      act(() => replaceEditorText(editor, "draft"));
+      await waitFor(() => expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false));
+    }
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.queryByRole("menuitem", { name: /find/i })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Overview/ })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Verbosity…" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+  }
 });
 
-// A turn in flight keeps its Stop control even while the editor rests
-// collapsed: stopping a runaway turn must never depend on focusing first.
-test("a collapsed mobile composer still offers Stop while a turn is running", async ({ onTestFinished }) => {
-  onTestFinished(installMobileViewport());
-  const fake = connectReadyFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "active" } } as Partial<Thread>));
-  await threadsStore.getState().ensureThread("ref_a");
-  render(
-    <ClientProvider client={fake}>
-      <Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />
-    </ClientProvider>,
-  );
-  await screen.findByRole("textbox", { name: "Message" });
-  await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(screen.getByTestId("composer-stop")).toBeTruthy());
-});
+// The phone's activity counts live in the top bar's Overview sheet
+// (design-system.md section 12), so no seat - not a cascade column's, not
+// an ordinary pane's - renders a composer activity line. The sheet's
+// behavior is SessionChrome.test.tsx's "one Overview sheet" test.
 
 // A press on a row control can blur the focused editor to body without
 // moving focus, and the press's focus transfer lands only a task after its
@@ -804,9 +979,10 @@ test("a phone press keeps the pressed control mounted through the press", async 
   const editor = await screen.findByRole("textbox", { name: "Message" });
   await flushPendingTurnsProjectionForTests();
 
-  // The editor's focus engages the full row.
+  // Real content engages the full row; focus alone no longer does.
   await act(async () => {
     editor.focus();
+    replaceEditorText(editor, "draft");
   });
   await waitFor(() => expect(screen.getByTestId("composer-attach")).toBeTruthy());
 
@@ -834,8 +1010,7 @@ test("a phone press keeps the pressed control mounted through the press", async 
     await nextMacrotask();
   });
 
-  // The press released and focus stayed on body: the row rests again, with
-  // the controls that never shed still in it.
-  await waitFor(() => expect(screen.queryByTestId("composer-attach")).toBeNull());
+  // The press released without destroying the draft or its expanded controls.
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
 });

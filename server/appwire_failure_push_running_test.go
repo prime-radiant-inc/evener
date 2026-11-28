@@ -16,7 +16,7 @@ import (
 // objection the kata itself raised).
 func TestRunningExecutionPushesTheFailureCountWhenItChanges(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	publishFailureCount(srv, 0)
 	startExecution(srv, "th_1", "t_go")
 	toolEnded := func() {
@@ -48,7 +48,7 @@ func TestRunningExecutionPushesTheFailureCountWhenItChanges(t *testing.T) {
 // as it always has.
 func TestAnIdleThreadDoesNotPushTheFailureCount(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	publishFailureCount(srv, 2)
 	srv.RecordAppEvent(threadEvent("th_1", events.ToolCallEndData{ToolName: "shell", CallID: "call"}))
 	if statuses := statusNotifications(t, srv, "th_1"); len(statuses) != 0 {
@@ -58,7 +58,7 @@ func TestAnIdleThreadDoesNotPushTheFailureCount(t *testing.T) {
 
 func TestRunningExecutionOmitsAnUnmeasuredFailureCount(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.failedToolCalls = 0; e.failuresMeasured = false })
 	startExecution(srv, "th_1", "t_go")
 	srv.RecordAppEvent(threadEvent("th_1", events.ToolCallEndData{ToolName: "shell", CallID: "call"}))
@@ -74,7 +74,7 @@ func TestRunningExecutionOmitsAnUnmeasuredFailureCount(t *testing.T) {
 
 func TestRunningExecutionOmitsTheCountOnADaemonThatNeverWiredIt(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	startExecution(srv, "th_1", "t_go")
 	srv.RecordAppEvent(threadEvent("th_1", events.ToolCallEndData{ToolName: "shell", CallID: "call"}))
 
@@ -88,11 +88,11 @@ func TestRunningExecutionOmitsTheCountOnADaemonThatNeverWiredIt(t *testing.T) {
 // count: its own figure is compared with what its own statuses carried.
 func TestTheLastPushedFailureCountResetsOnNewIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	publishFailureCount(srv, 3)
 	startExecution(srv, "th_1", "t_one")
 
-	srv.SetAppIdentity("local", "th_2")
+	setAppIdentity(t, srv, "local", "th_2")
 	srv.mu.RLock()
 	remembered := srv.appPushedFailedToolCalls
 	srv.mu.RUnlock()

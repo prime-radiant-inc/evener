@@ -121,6 +121,36 @@ test("the model label is plain text, not a bordered chip", () => {
   expect(label.querySelector("*")).toBeNull();
 });
 
+// The picker marks the running row by the catalog's qualified "provider/model"
+// identity, not by the display label. A bundled equal pair
+// (kimi-for-coding/kimi-for-coding) carries its identity in modelProfile even
+// though the visible label collapses to the bare provider string - the row
+// must still mark, and the trigger must keep the collapsed text.
+test("marks the running row for a bundled equal provider/model pair, keeping the trigger label collapsed", async () => {
+  const user = userEvent.setup();
+  const fake = connectReadyFakeClient();
+  fake.on("model/list", () => ({
+    data: [...(modelListResponse().data ?? []), { provider: "kimi-for-coding", model: "kimi-for-coding" }],
+  }));
+
+  render(
+    <ModelSwitch
+      sessionRef="ref_a"
+      model={testModel({
+        modelProvider: "kimi-for-coding",
+        model: "kimi-for-coding",
+        modelProfile: "kimi-for-coding",
+      })}
+    />,
+  );
+  await user.click(trigger());
+  await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(4));
+
+  expect(screen.getByRole("option", { name: /kimi-for-coding/i }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("kimi-for-coding");
+});
+
 test("the trigger is disabled when the thread's changeModel capability is unavailable", () => {
   render(
     <ModelSwitch sessionRef="ref_a" model={testModel({ capabilities: { ...CAPABILITIES, changeModel: false } })} />,

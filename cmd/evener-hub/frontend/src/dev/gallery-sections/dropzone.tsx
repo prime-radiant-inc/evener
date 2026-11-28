@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Dropzone } from "../../widgets/dropzone";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./dropzone.module.css";
 
 function LiveDropzone() {
@@ -17,20 +17,17 @@ function LiveDropzone() {
 
 export default function DropzoneGallerySection() {
   return (
-    <section>
-      <h2>Dropzone</h2>
-      <ThemeFlip>
-        <div className={styles.row}>
-          <LiveDropzone />
-        </div>
-        <div className={styles.row}>
-          <Dropzone onFiles={() => {}} disabled>
-            <div className={styles.zoneBody}>
-              <p>Disabled - dragging has no effect.</p>
-            </div>
-          </Dropzone>
-        </div>
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Dropzone">
+      <div className={styles.row}>
+        <LiveDropzone />
+      </div>
+      <div className={styles.row}>
+        <Dropzone onFiles={() => {}} disabled>
+          <div className={styles.zoneBody}>
+            <p>Disabled - dragging has no effect.</p>
+          </div>
+        </Dropzone>
+      </div>
+    </GallerySection>
   );
 }

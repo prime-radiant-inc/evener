@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { MoreIcon } from "../../shell/rail/railIcons";
 import { DisclosureHeading, Menu } from "../../widgets";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./disclosure.module.css";
 
 // The rail's section headings: an eyebrow group label open and folded, and
@@ -30,7 +31,7 @@ function DisclosureHeadingDemo() {
         action={
           <Menu
             variant="quiet"
-            icon="⋯"
+            icon={<MoreIcon />}
             label="Actions for Release prep"
             items={[
               { id: "rename", label: "Rename", onSelect: () => {} },
@@ -48,11 +49,8 @@ function DisclosureHeadingDemo() {
 
 export default function DisclosureHeadingGallerySection() {
   return (
-    <section>
-      <h2>DisclosureHeading</h2>
-      <ThemeFlip>
-        <DisclosureHeadingDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="DisclosureHeading">
+      <DisclosureHeadingDemo />
+    </GallerySection>
   );
 }

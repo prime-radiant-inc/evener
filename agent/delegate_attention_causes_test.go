@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -18,6 +19,100 @@ import (
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
+
+// Resolving a queued child attention forgets its cause. A resolution whose
+// first journal append fails keeps it only until the retry lands: resolving or
+// discarding an item must leave no cause behind for a later full-history turn
+// to re-adopt after the item is spent.
+func TestResolvingDelegateAttentionForgetsItsCause(t *testing.T) {
+	t.Parallel()
+	const (
+		delegateID  = "dlg_cause"
+		consumedID  = "delegate:dlg_cause/update/1"
+		discardedID = "delegate:dlg_cause/update/2"
+	)
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	for _, attentionID := range []string{consumedID, discardedID} {
+		if !c.noteDelegateAttentionForTest(delegateID, attentionID) {
+			t.Fatalf("seed the queued attention row %q", attentionID)
+		}
+		c.attentionCauses.remember(attentionID, provenance.WithMessage(nil, "child-session", attentionID))
+	}
+
+	appendErr := errors.New("test: resolution append failure")
+	c.mu.Lock()
+	c.appendFault = func(events []delegatestore.Event) error {
+		for _, event := range events {
+			if event.Kind == delegatestore.EventDelegateAttentionResolved {
+				return appendErr
+			}
+		}
+		return nil
+	}
+	c.mu.Unlock()
+	if err := c.forgetDelegateAttention(delegateID, consumedID); !errors.Is(err, appendErr) {
+		t.Fatalf("failed resolution append = %v, want %v", err, appendErr)
+	}
+	if got := c.attentionCauses.union([]string{consumedID}); got == nil {
+		t.Fatal("a resolution that never landed dropped the row's cause")
+	}
+	c.mu.Lock()
+	c.appendFault = nil
+	c.mu.Unlock()
+	if err := c.forgetDelegateAttention(delegateID, consumedID); err != nil {
+		t.Fatalf("retry the attention resolution: %v", err)
+	}
+	if got := c.attentionCauses.union([]string{consumedID}); got != nil {
+		t.Fatal("consumed attention kept its cause, so a later turn could re-adopt spent lineage")
+	}
+
+	c.mu.Lock()
+	err := c.forgetDelegateAttentionLocked(delegateID, discardedID)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("discard the queued attention: %v", err)
+	}
+	if got := c.attentionCauses.union([]string{discardedID}); got != nil {
+		t.Fatal("discarded attention kept its cause")
+	}
+	for _, attentionID := range []string{consumedID, discardedID} {
+		if _, resolved := c.durable[delegateID].ResolvedAttention[attentionID]; !resolved {
+			t.Fatalf("attention %q is not recorded resolved in delegatestore", attentionID)
+		}
+	}
+}
+
+// A transferred attention keeps its cause for the root's receiving turn: the
+// escalation resolves the source row but hands the same identity to the root,
+// so only the root's own resolution may forget the cause.
+func TestEscalatedDelegateAttentionKeepsItsCauseForTheRoot(t *testing.T) {
+	t.Parallel()
+	fenced := newFencedGrandchildAttention(t)
+	root := fenced.root
+	fenced.closeParent(t)
+	// The grandchild's update remembered this cause when it was delivered; the
+	// transfer must carry it to the root without the source resolution dropping
+	// it first.
+	root.delegateController.attentionCauses.remember(fenced.attentionID, provenance.WithMessage(nil, "grandchild-session", fenced.attentionID))
+
+	plans := root.delegateController.permanentlyFencedDelegateAttention()
+	if len(plans) != 1 {
+		t.Fatalf("fenced escalation plans = %d, want exactly one", len(plans))
+	}
+	if err := root.escalateOneUnreachableDelegateAttention(plans[0], readDelegateAttentionFold); err != nil {
+		t.Fatalf("escalate unreachable delegate attention: %v", err)
+	}
+	if got := root.delegateController.attentionCauses.union([]string{fenced.attentionID}); got == nil {
+		t.Fatal("the transfer resolved the source row before the root's receiving turn could adopt its cause")
+	}
+	if err := root.resolveAttentionDurably([]string{fenced.attentionID}, delegateAttentionConsumed); err != nil {
+		t.Fatalf("root resolves the transferred attention: %v", err)
+	}
+	if got := root.delegateController.attentionCauses.union([]string{fenced.attentionID}); got != nil {
+		t.Fatal("the root's own resolution kept the transferred cause")
+	}
+}
 
 // A delegate's update carries the lineage of the turn that produced it across
 // the hop: the parent's turn that consumes the update adopts it, with an entry
@@ -162,7 +257,7 @@ func TestSendWatchFrameMarksAnEventCausedByTheWatchersOwnMessage(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	cause := provenance.WithMessage(nil, jm.sessionID, "delegate:dlg_x/update/1")
 	jm.onSessionEvent(events.SessionEvent{Kind: events.EventCommunicate, SessionID: jm.sessionID, Data: events.CommunicateData{Message: "reply"}, Provenance: cause})

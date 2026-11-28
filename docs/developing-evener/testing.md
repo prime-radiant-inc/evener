@@ -37,29 +37,27 @@ a scripted `llm.ProviderAdapter` response and assert the Evener side effects.
 
 ### Prompt Prose Is Not a Test Oracle
 
-Pin assembled/system prompts, prompt sections, model-facing tool and agent
-descriptions, and natural-language steering, reminder, warning, or tool-result
-prose only with a whole-output golden snapshot. `agenttest.CheckGolden` compares
-the complete rendered text with a file under `testdata/`, and a wording change
-regenerates the file with an `-update-prompt` flag so the diff is read in
-review. `agent/testdata/memoryprompt` and `agent/testdata/messagingprompt` are
-the pattern: one golden per session kind, rendered from the requests a real
-session sends.
+Do not test system prompts, prompt sections, tool descriptions, or
+model-facing prose by wording. Never pin prompt prose with whole-output golden
+snapshots (`agenttest.CheckGolden` or `-update-prompt`), and never assert on
+wording by presence, absence, substring, regex, token count, or clause order.
+Both break on legitimate edits without proving behavior. Review prompt wording
+in the diff instead.
 
-Never test prose by presence, absence, substring, regex match, token count, or
-order of words or clauses. Those assertions pin fragments of copy, not behavior,
-and they pass while the surrounding text drifts. If a test's only claim is that
-the prose contains a sentence, delete it and let the golden cover the text.
+Test prompt plumbing structurally:
 
-Assert behavior structurally: typed template inputs, section identity and order,
-schema properties and enums, capability metadata, route or branch selection,
-structured event or data fields, provider request shape, or downstream side
-effects. An opaque sentinel may prove that user or task data crosses a plumbing
-boundary, but it must not encode or pin natural-language copy.
+- typed template inputs and gating predicates;
+- section presence and omission by heading;
+- advertised tool lists, schema properties, and enums;
+- capability metadata and route or branch selection;
+- structured event or data fields, wire request shape, and downstream side
+  effects.
 
-Exact text assertions are allowed only when the text is itself a machine or API
-contract value, such as a JSON field name, enum token, error code, or CLI flag.
-Prefer asserting such values through their structured representation.
+An opaque sentinel may prove that caller or task data crosses a plumbing
+boundary, as long as it does not encode natural-language copy. Exact text
+assertions belong only on machine or API contract tokens (a JSON field name,
+enum value, error code, or CLI flag), checked through their structured form
+whenever possible.
 
 ### Copy Is Not a Test Oracle
 
@@ -90,48 +88,6 @@ Assert what the copy is for instead:
 When the text really is the contract (an enum token, a wire field, a CLI flag,
 a file format), assert it through its structured form, as above. When it is
 copy a person reads, review it in the diff and test the behavior around it.
-
-Two audits enforce the rule against tests whose whole claim is that some copy
-exists. Each fails on a test whose name says it shows, renders or says
-something and whose every check compares output with production copy:
-
-- `make lint-repo-audit`'s `copy-only-tests` check (part of `make lint`) runs
-  `internal/devtool/copyonly` over every tracked Go test. Its allowlist is
-  `internal/devtool/copyonly/allowlist.tsv`.
-- `cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts` (part of
-  `make test-web`) reads every tracked TypeScript test in the frontend,
-  `mobile-native` and `appwire-client/typescript` with the
-  TypeScript compiler. Its allowlist is
-  `cmd/evener-hub/frontend/src/dev/copyonly/allowlist.tsv`.
-
-Both skip expected errors, counts, attribute and state reads, spy assertions,
-role queries, machine-contract tokens, and text the test supplied itself. When
-an audit flags your test, assert the behavior instead. If the copy must stay
-the oracle (model-facing text whose conversion is deferred, or a false
-positive), add a row to that language's allowlist: the file, the test name,
-and the reason it is kept, tab-separated. Rows are keyed by file and test name,
-not line. Each audit also fails on a row whose test is no longer flagged, so
-remove the row when you convert, delete or rename the test.
-
-A third audit, `lint-repo-audit`'s `error-text-assertions` check, covers Go
-tests that are not named for wording. It counts the
-checks of an error's text against a phrase from production source
-(`strings.Contains(err.Error(), "not found")`) anywhere in a test file. Its
-allowlist, `internal/devtool/copyonly/errstring_allowlist.tsv`, has one row per
-test file: the file and how many such checks it holds. A file may hold no more
-than its row, and a file with no row may hold none, so a new test matches a
-sentinel with `errors.Is`, a type with `errors.As`, or a code. The counts only
-go down: when you convert checks in a file, lower its count (delete the row at
-zero), because the audit also fails on a file that holds fewer than its row.
-
-To find what is left to convert, `go run ./cmd/evener-dev/bin dev copy-oracle`
-inventories every assertion whose oracle is production copy, per package and
-category, using the same two scanners. `--hits FILE` writes each one as TSV,
-`--copy-only FILE` lists the copy-only tests instead, and `--path PREFIX` and
-`--only ts|go` narrow the scan. The TypeScript half runs under `node` with the
-frontend's install, so run `make web-preflight` first, or pass `--only go`.
-After converting a test, `tools/copy-oracle/mutate.sh` breaks the behavior it
-now checks and confirms the test fails.
 
 ## Flakes and Timeouts
 
@@ -225,15 +181,9 @@ Pick the first of these that fits:
    module, so the root and `agent` modules can import it; `llm`, `auth` and
    the other leaf modules cannot without a new module edge.
 
-Never use a fixed `time.Sleep` to wait for work to happen. `make lint`'s
-`test-sleeps-within-baseline` check (in `make lint-repo-audit`) counts the
-`time.Sleep` calls in tracked Go tests and fails when the count rises above
-`testSleepBaseline` in `internal/devtool/repoaudit/testsleeps.go`. When a
-change brings the count down, the check passes and prints a `NOTE` with the new
-count; set the constant to that number in the same change. The count leaves out every
-file that imports `testing/synctest`, since a sleep in a bubble is free, and
-files under `testdata`. It reads imports rather than following calls, so a
-sleep outside the bubble in a synctest file goes uncounted.
+Never use a fixed `time.Sleep` to wait for work to happen. Wait on the
+condition the work changes with `testwait.Until`, or run the test under
+`testing/synctest` so a sleep advances a fake clock.
 
 ## Agent Tests Run in Parallel by Default
 
@@ -1162,16 +1112,18 @@ pull request in the merge queue, which still runs every lane.
 GitHub gives the repository 10GB of Actions cache. Past that it evicts the
 least recently accessed entries, whatever they are, so an over-budget cache
 evicts entries lanes are still restoring, and those lanes run cold and slow.
-Keep the steady state under 6GB: the
-headroom absorbs the second generation each main push writes before
-`cache-prune` deletes the first.
+Each saving job deletes the entry its save supersedes before it saves, so a
+main push never holds two generations of a kind and its peak is the steady
+state plus that push's own growth. Keep the steady state under 6GB: that
+headroom is what keeps a push's growth clear of the line.
 
 What is cached, and where it is saved:
 
 - **Go build cache, one entry per kind.** `.github/actions/go-cache-restore`
   restores the newest `go-<kind>-<os>-<arch>-<go version>-<commit>` entry by
-  prefix; `.github/actions/go-cache-save` saves this commit's entry on pushes to
-  main only. Jobs whose compiled output differs (race and non-race, lint, vet,
+  prefix; `.github/actions/go-cache-save` deletes the entries that save
+  supersedes and then saves this commit's entry, on pushes to main only. Jobs
+  whose compiled output differs (race and non-race, lint, vet,
   tags) use different kinds; jobs that compile nearly the same thing share one,
   saved by the one that compiles the most (the `web-browser` shards share
   `web-browser`, saved by the cascade shard; the two agent race shards share
@@ -1213,21 +1165,54 @@ What is cached, and where it is saved:
 
 The rules that keep the budget:
 
-- **One generation on main.** CI's `cache-prune` job runs after every lane of a
-  ci.yml main push and deletes each `go-*`, `gomod-*`, `golangci-lint-*` and
+- **One generation on main.** Every job that saves through `go-cache-save`,
+  and the iOS lane's DerivedData save, deletes the entries its save supersedes
+  before saving, so a main push keeps one entry per kind through the whole save
+  window instead of two generations (issue #7025). Deleting before the save
+  rather than after it matters: `race-agent` alone is about 1.7GiB, enough to
+  cross the line while both copies of that one kind exist. A restore only ever
+  takes the newest entry of a prefix, so the predecessor is dead weight the
+  moment the new entry saves; a save that fails after the delete costs that
+  kind one cold run, while leaving the predecessor costs whichever entry the
+  eviction picks. The delete names entries by kind, runner image and arch but
+  leaves out the Go version, although the restore and save keys carry it: a
+  toolchain bump makes the previous version's entries dead weight no restore
+  can pick, and the first save of the new version has to retire them or two
+  whole fleets sit in the budget until the prune. A delete also stands down
+  when the restore exported no prefix or key, which is what a job that failed
+  before `go-cache-restore` leaves behind: `gh cache list --key ""` lists
+  every entry in the repository, Go and iOS alike, and deleting on it would
+  empty the budget. The delete needs `actions: write`, held by each saving job
+  (skipped wherever the save is) and by `cache-prune` below;
+  `TestCacheSavesReplaceTheirPredecessor` pins the grant, the main-push guard
+  on each delete, the prefix and key it names, and that the delete precedes
+  the save. `TestCacheDeleteScriptAgainstStubGH` runs the shipped scripts
+  against a stub `gh` and shows each predecessor deleted, the key this run
+  saves kept, and exact-hit, unset-prefix and failed-listing runs deleting
+  nothing. `TestActionsWriteStaysOnSavingJobs` keeps the scope off every job
+  that does not save a cache, and requires each of those jobs' checkout to set
+  `persist-credentials: false`: a pull request or merge group runs the branch
+  author's steps after the checkout, and a persisted credential would leave
+  the write-capable token in `.git/config` for any of them to read. The
+  checkout still authenticates its own fetch and then removes the token.
+
+  CI's `cache-prune` job remains the backstop: after every lane of a ci.yml
+  main push it deletes each `go-*`, `gomod-*`, `golangci-lint-*` and
   `ios-deriveddata-*` entry on main that a newer entry of the same kind
-  supersedes. A key's Go version and linter-config components belong to the
-  generation too: a toolchain or config bump makes every older entry dead
-  weight, so the job strips those components as well and the bump leaves one
-  generation instead of two fleets for 7 days. The iOS lock hashes name a
-  different build rather than a newer generation of one key, so they stay part
-  of its prefix. It never deletes a kind's newest entry, so a lane that saved
-  nothing keeps its last one. The iOS lane saves from its own workflow, possibly
-  after that push's ci.yml prune already ran, so a superseded iOS entry can sit
-  on main until the next main-push prune. An entry left by a renamed kind or a
-  changed pod or package lock is its kind's newest, so the job keeps it until
-  it expires after 7 days; the former `race-agent-1` and `race-agent-2` kinds
-  are the exception, folded into `race-agent` so their entries are pruned with
+  supersedes. It collects what a lane's own delete skipped: an exact-hit
+  re-run, a failed save, the golangci-lint analysis caches (a few MB, left to
+  the prune rather than given their own delete steps), and the iOS entry when
+  its own workflow's delete did not run. A key's Go version and linter-config
+  components belong to the generation too: a toolchain or config bump makes
+  every older entry dead weight, so the job strips those components as well
+  and the bump leaves one generation instead of two fleets for 7 days. The iOS
+  lock hashes name a different build rather than a newer generation of one
+  key, so they stay part of its prefix. It never deletes a kind's newest
+  entry, so a lane that saved nothing keeps its last one. An entry left by a
+  renamed kind or a changed pod or package lock is its kind's newest, so the
+  job keeps it until it expires after 7 days; the former `race-agent-1` and
+  `race-agent-2` kinds are the exception, folded into `race-agent` so their
+  entries are pruned with
   it.
 - **A saved entry is one job's build.** go-cache-restore dates every restored
   build cache entry two hours back on main, Go refreshes the mtime of an entry
@@ -1259,10 +1244,14 @@ it: on 2026-11-20 the Go, module and lint kinds measured 8,315,126,220 bytes,
 and sharing `race-agent` projects them at 7,562,333,972 bytes once agent-2
 saves the shared kind; the iOS DerivedData tree adds about 605MB. Every kind in
 that total keeps a lane warm, so it does not shrink further without a lane
-building cold. Both generations at this size exceed the 10GB limit while a main
-push saves, so an entry the push never restored can still be evicted before
-`cache-prune` deletes the first generation; the arithmetic lives in the
-cache-budget issue (#6985).
+building cold. With one generation live, a main push peaks at ~8.9GB: one
+generation's entries summed to 7,933MiB (8.32GB) in the 2026-11-21 cache list,
+plus about 605MB of iOS DerivedData, plus the push's own growth. Before the
+replace-on-save rule the same push peaked at 16,019,565,696B (16.02GB) and
+GitHub evicted the iOS entry before any run restored it (#7025). The 6GB
+target is still unmet; the difference is that the headroom above the steady
+state no longer has to hold a whole second generation. The arithmetic lives in
+the cache-budget issue (#6985).
 
 To read the budget, list the entries and the total:
 

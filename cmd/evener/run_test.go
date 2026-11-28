@@ -265,8 +265,8 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("source context"))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User("source context")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close writer: %v", err)
@@ -350,8 +350,8 @@ func TestRunResumeWithCarriesInvocationATIFExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("source context"))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User("source context")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("Close writer: %v", err)
@@ -1070,6 +1070,9 @@ func TestDrainEventsHuman_CommunicateEchoesAssistantText(t *testing.T) {
 		if !strings.Contains(out, "[assistant] the answer") {
 			t.Fatalf("expected the surviving line to be the [assistant] one:\n%s", out)
 		}
+		if strings.Contains(out, "[communicate:end_turn]") {
+			t.Fatalf("expected [communicate:end_turn] echo to be omitted:\n%s", out)
+		}
 		// Suppressing the echo must not swallow the rest of the stream.
 		if !strings.Contains(out, "[usage] in=100 out=50 total=150") {
 			t.Fatalf("expected [usage] line in output:\n%s", out)
@@ -1704,5 +1707,30 @@ func TestDrainEventsHumanToolArgsKeepRunesWhole(t *testing.T) {
 	<-drainEventsHuman(feedEvents(evs), &buf)
 	if !utf8.ValidString(buf.String()) {
 		t.Fatalf("tool args split a rune: %q", buf.String())
+	}
+}
+
+func TestRootBareTextFallbackRunStdout(t *testing.T) {
+	const answer = "Server up"
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant(answer), Finish: llm.FinishReason{Reason: llm.FinishReasonStop}}
+		},
+		func(llm.Request) llm.Response { return scriptedCommunicate("Unexpected retry") },
+	}})
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), runConfig{prompt: "Question", model: "openai/gpt-test", workDir: t.TempDir(), stateDir: t.TempDir(), stdout: &stdout, stderr: &stderr})
+	if err != nil || stdout.String() != answer+"\n" {
+		t.Fatalf("stdout=%q err=%v", stdout.String(), err)
+	}
+	errOut := stderr.String()
+	if got := strings.Count(errOut, answer); got != 1 {
+		t.Fatalf("stderr printed bare answer %d times, want 1:\n%s", got, errOut)
+	}
+	if !strings.Contains(errOut, "[assistant] "+answer) {
+		t.Fatalf("expected [assistant] line in stderr:\n%s", errOut)
+	}
+	if strings.Contains(errOut, "[communicate:end_turn]") {
+		t.Fatalf("expected [communicate:end_turn] echo to be omitted from stderr:\n%s", errOut)
 	}
 }

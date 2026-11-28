@@ -26,8 +26,10 @@ import {
   askUserSummary,
   parseAskUserQuestions,
 } from "@evener/appwire-client";
-import { Card, Eyebrow } from "../../../../widgets";
+import { Card, InlineNotice } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { AskOptionCopy } from "../../AskOptionCopy";
+import { AgentMarkdown } from "../messages/AgentMarkdown";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import styles from "./askuser.module.css";
@@ -38,11 +40,9 @@ const CLASS = {
   question: requireClass(styles.question, "askuser.module.css", "question"),
   options: requireClass(styles.options, "askuser.module.css", "options"),
   option: requireClass(styles.option, "askuser.module.css", "option"),
-  label: requireClass(styles.label, "askuser.module.css", "label"),
-  detail: requireClass(styles.detail, "askuser.module.css", "detail"),
+
   note: requireClass(styles.note, "askuser.module.css", "note"),
   footer: requireClass(styles.footer, "askuser.module.css", "footer"),
-  fallback: requireClass(styles.fallback, "askuser.module.css", "fallback"),
 };
 
 // isMalformedArgumentsJSON is true only for a genuine JSON syntax error in
@@ -67,15 +67,22 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
   return (
     <Card variant="outlined" data-testid="ask-user-question">
       <div className={CLASS.content}>
+        {/* Model-authored prose (question, why, if_unanswered) renders
+            through AgentMarkdown - the shared sanitized markdown pipeline
+            plus the transcript's own reference resolution, the same
+            treatment as the composer's interactive card
+            (askDock/AskQuestionCard). The option label stays plain - it is
+            the answer value the reply echoes back verbatim - and the
+            shared AskOptionCopy renders label and detail inside spans,
+            whose phrasing-only content model cannot host the widget's
+            block root. */}
         <div className={CLASS.question} data-slot="question">
-          {q.question}
+          <AgentMarkdown source={q.question} />
         </div>
         <ul className={CLASS.options}>
           {q.options.map((opt) => (
             <li key={opt.label} className={CLASS.option} data-recommended={opt.recommended ? "true" : undefined}>
-              <span className={CLASS.label}>{opt.label}</span>
-              <span className={CLASS.detail}>{opt.detail}</span>
-              {opt.recommended && <Eyebrow as="span">Recommended</Eyebrow>}
+              <AskOptionCopy label={opt.label} detail={opt.detail} recommended={opt.recommended} />
             </li>
           ))}
         </ul>
@@ -86,12 +93,15 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
         )}
         {q.why && (
           <div className={CLASS.note} data-note="why">
-            {q.why}
+            <AgentMarkdown source={q.why} />
           </div>
         )}
         {q.ifUnanswered && (
           <div className={CLASS.note} data-note="if-unanswered">
-            If unanswered: {q.ifUnanswered}
+            {/* The prefix rides inside the source: the widget's root is a
+                block element, so a plain sibling prefix would break onto
+                its own line. */}
+            <AgentMarkdown source={`If unanswered: ${q.ifUnanswered}`} />
           </div>
         )}
       </div>
@@ -108,13 +118,14 @@ function AskUserBody({ item }: ToolRenderProps) {
     // own, distinct wording.
     const malformed = isMalformedArgumentsJSON(item.argumentsJSON);
     return (
-      <div
-        className={CLASS.fallback}
+      <InlineNotice
+        tone="neutral"
+        live="off"
         data-testid="ask-user-fallback"
         data-reason={malformed ? "malformed" : "unavailable"}
       >
         {malformed ? "Couldn't read this question - the data looks malformed." : "Question data unavailable."}
-      </div>
+      </InlineNotice>
     );
   }
   return (

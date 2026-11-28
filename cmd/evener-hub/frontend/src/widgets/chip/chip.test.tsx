@@ -9,10 +9,12 @@ import rawStyles from "./chip.module.css";
 import { Chip, type ChipTone } from "./index";
 
 const styles = {
+  mono: requireClass(rawStyles.mono, "chip.module.css", "mono"),
   neutral: requireClass(rawStyles.neutral, "chip.module.css", "neutral"),
   attention: requireClass(rawStyles.attention, "chip.module.css", "attention"),
   alive: requireClass(rawStyles.alive, "chip.module.css", "alive"),
   danger: requireClass(rawStyles.danger, "chip.module.css", "danger"),
+  accent: requireClass(rawStyles.accent, "chip.module.css", "accent"),
 };
 
 test("renders its children as the visible label", () => {
@@ -25,6 +27,22 @@ test("defaults to the neutral tone", () => {
   expect(container.firstElementChild!.classList.contains(styles.neutral)).toBe(true);
 });
 
+test("defaults to the sans face", () => {
+  const { container } = render(<Chip>backend</Chip>);
+  expect(container.firstElementChild!.classList.contains(styles.mono)).toBe(false);
+});
+
+test("mono puts the label in the mono face", () => {
+  const { container } = render(<Chip mono>apply_patch</Chip>);
+  expect(container.firstElementChild!.classList.contains(styles.mono)).toBe(true);
+});
+
+test("the mono modifier declares the mono font token", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "chip.module.css"), "utf8");
+  expect(css).toMatch(/\.mono\s*\{[^}]*font-family:\s*var\(--font-mono\)/);
+});
+
 const TONES: ChipTone[] = ["neutral", "attention", "alive", "danger"];
 
 for (const tone of TONES) {
@@ -33,6 +51,19 @@ for (const tone of TONES) {
     expect(container.firstElementChild!.classList.contains(styles[tone])).toBe(true);
   });
 }
+
+test("the accent tone maps to the accent token family", () => {
+  const accent = requireClass(rawStyles.accent, "chip.module.css", "accent");
+  const { container } = render(<Chip tone="accent">backend</Chip>);
+  expect(container.firstElementChild!.classList.contains(accent)).toBe(true);
+});
+
+test("the accent tone declares the accent token family", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "chip.module.css"), "utf8");
+  expect(css).toMatch(/\.accent\s*\{[^}]*background:\s*var\(--accent-bg\)/);
+  expect(css).toMatch(/\.accent\s*\{[^}]*color:\s*var\(--accent-ink\)/);
+});
 
 test("renders no remove button when onRemove is not provided", () => {
   render(<Chip>backend</Chip>);
@@ -56,6 +87,16 @@ test("when children is not a plain string, the remove button falls back to a bar
     </Chip>,
   );
   expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+});
+
+test("removeLabel names the remove button instead of deriving one from the children", () => {
+  render(
+    <Chip removeLabel="back to command list" onRemove={() => {}}>
+      Spawn
+    </Chip>,
+  );
+  expect(screen.getByRole("button", { name: "back to command list" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Remove Spawn" })).toBeNull();
 });
 
 test("clicking the remove button fires onRemove", async () => {
@@ -96,4 +137,37 @@ test("marks its kind as data-kind when one is given", () => {
   expect(container.firstElementChild?.getAttribute("data-kind")).toBe("default");
   rerender(<Chip>backend</Chip>);
   expect(container.firstElementChild?.hasAttribute("data-kind")).toBe(false);
+});
+
+test("defaults to the solid variant", () => {
+  const { container } = render(<Chip>backend</Chip>);
+  expect(container.firstElementChild?.getAttribute("data-variant")).toBe("solid");
+});
+
+test("variant quiet marks the chip quiet", () => {
+  const { container } = render(<Chip variant="quiet">current</Chip>);
+  expect(container.firstElementChild?.getAttribute("data-variant")).toBe("quiet");
+});
+
+test("the quiet variant declares a fill-free rule without narrowing the shared pill padding", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "chip.module.css"), "utf8");
+  expect(css).toMatch(/\.chip\s*\{[^}]*height:\s*20px[^}]*font-weight:\s*var\(--font-weight-medium\)/s);
+  expect(css).toMatch(/\.chip\[data-variant="quiet"\]\s*\{[^}]*background:\s*transparent/);
+  expect(css).not.toMatch(/\.chip\[data-variant="quiet"\]\s*\{[^}]*padding:\s*0\s+var\(--space-1\)/);
+});
+
+test("forwards a caller className after its own classes", () => {
+  const { container } = render(<Chip className="caller-class">backend</Chip>);
+  expect(container.firstElementChild!.classList.contains("caller-class")).toBe(true);
+  expect(container.firstElementChild!.classList.contains(styles.neutral)).toBe(true);
+});
+
+test("forwards data-* attributes to its span", () => {
+  render(
+    <Chip data-testid="state-chip" data-state="revoked">
+      revoked
+    </Chip>,
+  );
+  expect(screen.getByTestId("state-chip").dataset.state).toBe("revoked");
 });

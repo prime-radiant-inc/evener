@@ -10,7 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
-	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
@@ -47,7 +47,7 @@ func TestDelegateIdleRelease_ColdRestoreReopensItsScratch(t *testing.T) {
 			skipGitSnapshot:          true,
 			minimalSystemPrompt:      true,
 			noSyncJobStore:           true,
-			sandboxProber:            sandbox.FakeProber{Facts: facts},
+			sandboxProber:            sandboxtest.FakeProber{Facts: facts},
 			delegateIdleReleaseDelay: &shortGrace,
 			idleTeardownMemberSettled: func(runtime *Session) {
 				done := teardownDoneFor(runtime)

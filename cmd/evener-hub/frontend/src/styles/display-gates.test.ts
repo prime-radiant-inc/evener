@@ -250,39 +250,52 @@ test("the folded-run summary meets the phone tap floor", () => {
 });
 
 // A phone mounts no status bar: the session's activity counts sit on their
-// own line below the composer card, where the desktop strip puts them, and
+// own line above the composer card, and
 // the writing row carries only its controls. The line stays a flex strip at
 // the phone tap floor and drops the category names rather than scrolling
 // sideways: four named chips do not fit a card line, so each chip keeps its
-// glyph and count and its accessible name carries the label.
+// glyph and count and its accessible name carries the label. CountButton
+// owns the collapse and the floor now; this pins where they live so a
+// statusbar rule cannot shadow the widget's.
 test("the phone's activity line keeps every chip a tappable glyph", () => {
   const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const css = readFileSync(join(srcRoot, "shell/statusbar/statusbar.module.css"), "utf8");
   const blocks = mediaBlocks(css);
-  const tapFloor = blocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
-  expect(tapFloor, `statusbar.module.css must have a ${TAP_FLOOR_QUERY} block`).toBeDefined();
-  expect(tapFloor!.body).toMatch(/\.chip\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
   const phone = blocks.find((block) => block.prelude === MOBILE_QUERY);
   expect(phone, "statusbar.module.css must have a mobile block").toBeDefined();
   // The narrow-pane grid below (two max-content columns) belongs to the
   // desktop strip; the phone's own line stays a flex row. mediaBlocks strips
   // comments, so this reads rules only.
   expect(phone!.body).toMatch(/\.chips\s*\{[^}]*display:\s*flex/);
-  expect(phone!.body).toMatch(/\.chipName\s*\{[^}]*display:\s*none/);
-  expect(phone!.body).toMatch(/\.chipGlyph\s*\{[^}]*display:\s*inline-flex/);
+  const widgetCss = readFileSync(join(srcRoot, "widgets/countbutton/countbutton.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    " ",
+  );
+  const widgetBlocks = mediaBlocks(widgetCss);
+  const widgetFloor = widgetBlocks.find((block) => block.prelude === TAP_FLOOR_QUERY);
+  expect(widgetFloor, `countbutton.module.css must have a ${TAP_FLOOR_QUERY} block`).toBeDefined();
+  expect(widgetFloor!.body).toMatch(/\.root\s*\{[^}]*min-height:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)/);
+  // compact drops the visible name; the accessible name keeps it.
+  expect(widgetCss).toMatch(/\.root\[data-compact="true"\]\s+\.label\s*\{[^}]*display:\s*none/);
+  // Only the statusbar's narrow container drops the glyph; the phone keeps
+  // it. The name matters: a phone composer is an inline-size container too,
+  // so an unnamed query would resolve there and hide the phone's glyphs.
+  const narrow = /@container\s+statusbar\s*\(max-width:\s*320px\)\s*\{([\s\S]*?)\n\}/.exec(widgetCss);
+  expect(narrow, "countbutton.module.css must have its named 320px statusbar container rule").not.toBeNull();
+  expect(widgetCss).toMatch(/@container\s+statusbar\s*\(max-width:\s*600px\)/);
+  expect(narrow![1]).toMatch(/\.glyph\s*\{[^}]*display:\s*none/);
+  expect(
+    widgetBlocks
+      .filter((block) => block.prelude === MOBILE_QUERY)
+      .every((block) => !/\.glyph\s*\{[^}]*display:\s*none/.test(block.body)),
+    "the phone block must not hide the glyph",
+  ).toBe(true);
   const composerCss = readFileSync(join(srcRoot, "panes/session/composer/composer.module.css"), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,
     " ",
   );
-  const activityRow = /\.activityRow\s*\{[^}]*display:\s*flex[^}]*min-height:\s*var\(--tap-min\)/.exec(composerCss);
-  expect(activityRow, "composer.module.css must give the phone's activity line the tap floor").not.toBeNull();
-  // The line break itself is decided by honest bases, not a threshold query:
-  // the chrome's .body container containment hides its status content from
-  // the flex algorithm, so the composer placement's .inline must carry its
-  // measured compact rung as the basis. With the rung honest, the leading's
-  // flex-wrap breaks the line - the strip takes its own line - exactly when
-  // one line cannot hold both the rung and the strip, and no band of widths
-  // starves the model picker beside the counts.
+  // The removal is the contract: no counts row may return over the composer.
+  expect(composerCss).not.toMatch(/activityRow/);
   const chromeCss = readFileSync(join(srcRoot, "panes/session/chrome/sessionchrome.module.css"), "utf8").replace(
     /\/\*[\s\S]*?\*\//g,
     " ",
@@ -301,37 +314,4 @@ test("the phone's activity line keeps every chip a tappable glyph", () => {
     rung,
     "sessionchrome.module.css must give the composer chrome its compact-rung flex basis so the row wraps instead of starving it",
   ).not.toBeNull();
-});
-
-// The folded row reserves the chrome's intrinsic width so a content-sized
-// leading still reports the pickers it will hold. That reservation is sized
-// for the full folded row (the status rung plus the menu); the phone's
-// compact resting row holds the menu alone. While it applied there, WebKit
-// sized the control row from the 356px reservation instead of the compact
-// basis and the writing field collapsed to a quarter of the card, with a dead
-// gap where the pickers would go. The reservation must therefore never apply
-// to a compact row.
-test("no leading rule reserves width on the phone's compact resting row", () => {
-  const srcRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-  const css = readFileSync(join(srcRoot, "panes/session/composer/composer.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    " ",
-  );
-  const reserving: string[] = [];
-  for (const block of css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)) {
-    const selector = block[1]!.trim().split("\n").pop()!.trim();
-    if (!selector.startsWith(".leading")) continue;
-    const declared = /contain-intrinsic-inline-size:\s*([^;]+)/.exec(block[2]!);
-    if (declared === null || declared[1]!.trim() === "none") continue;
-    reserving.push(selector);
-  }
-  expect(reserving.length, "the folded row still needs its intrinsic reservation").toBeGreaterThan(0);
-  for (const selector of reserving) {
-    // Every occurrence of the compact attribute must sit inside a :not(),
-    // i.e. the selector subtracts compact rows rather than including them.
-    const compactMentions = selector.match(/\[data-compact="true"\]/g) ?? [];
-    const compactExclusions = selector.match(/:not\(\[data-compact="true"\]\)/g) ?? [];
-    expect(compactMentions.length, `${selector} reserves width on a compact row`).toBe(compactExclusions.length);
-    expect(compactExclusions.length, `${selector} must exclude the compact resting row`).toBeGreaterThan(0);
-  }
 });

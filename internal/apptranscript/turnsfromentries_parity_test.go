@@ -32,7 +32,7 @@ func largeEntryProjectionFixture(t testing.TB) (string, transcript.Header, []tra
 		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("message %d with some body text to make the line realistic", i)))
 		turn.Usage = llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
 		turn.Timestamp = time.Unix(1_700_000_000+int64(i), 0).UTC()
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}
@@ -56,10 +56,11 @@ func largeEntryProjector(turn schema.Turn, turnID string, entryIndex int) []appw
 
 func TestItemTurnsFromEntriesLargeFixtureParity(t *testing.T) {
 	path, header, entries := largeEntryProjectionFixture(t)
-	fileTurns, err := ItemTurnsFromFile(path, 1<<30, largeEntryProjector)
+	fileProj, err := ItemTurnProjectionFromFile(path, 1<<30, largeEntryProjector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	fileTurns := fileProj.Turns
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +83,7 @@ func BenchmarkItemTurnsLargeFixture(b *testing.B) {
 	b.Run("file", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
-			if _, err := ItemTurnsFromFile(path, 1<<30, largeEntryProjector); err != nil {
+			if _, err := ItemTurnProjectionFromFile(path, 1<<30, largeEntryProjector); err != nil {
 				b.Fatal(err)
 			}
 		}

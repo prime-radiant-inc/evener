@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -49,7 +50,7 @@ func writeSessionsFixtureSession(t testing.TB, bucketDir, sid string, header tra
 		t.Fatal(err)
 	}
 	for _, turn := range turns {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -792,8 +793,16 @@ func TestFormatOutcome(t *testing.T) {
 	}
 	plain := formatOutcome(json.RawMessage(`{"end_turn":true}`))
 	decided := formatOutcome(json.RawMessage(`{"end_turn":true,"output":{"decision":"approve-sentinel"}}`))
+	nextFinal := formatOutcome(json.RawMessage(`{"message":"done","next":"send_and_end_turn","output":{"decision":"approve-sentinel"}}`))
+	nextContinue := formatOutcome(json.RawMessage(`{"message":"working","next":"send_and_continue"}`))
 	if !strings.Contains(decided, "approve-sentinel") || !strings.HasPrefix(decided, plain) {
 		t.Errorf("formatOutcome(decision) = %q, want %q plus the decision", decided, plain)
+	}
+	if nextFinal != "end_turn=true decision=approve-sentinel" {
+		t.Errorf("nextFinal = %q, want end_turn=true decision=approve-sentinel", nextFinal)
+	}
+	if nextContinue != "end_turn=false" {
+		t.Errorf("nextContinue = %q, want end_turn=false", nextContinue)
 	}
 }
 
@@ -814,6 +823,26 @@ func TestListSessionsReportsASessionWithACorruptJournalUnreadable(t *testing.T) 
 				t.Fatalf("sessions = %d, unreadable = %+v; want the session listed unreadable", len(res.Sessions), res.Unreadable)
 			}
 		})
+	}
+}
+
+func TestOutcomeHintPassesThroughBareTextQuietYield(t *testing.T) {
+	t.Parallel()
+	acceptedState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+	prior := communicateCall(true, "approve")
+	accepted := healthToolResult(prior.ToolCall.ID, "communicate", nil, false)
+	accepted.ToolResult.ToolState = acceptedState
+	entries := []transcript.Entry{
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnUserInput, Message: llm.User("ship it")}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{prior}}}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{accepted}}}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", Kind: schema.TurnSteering, SteeringKind: events.SteeringKindNotification, Message: llm.User("job finished")}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", Kind: schema.TurnAssistant, QuietYield: true, Message: llm.Assistant("Noted in prose.")}},
+		{Turn: schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}},
+	}
+	if got := outcomeHint(transcriptDoc{Entries: entries}, "communicate"); got != "end_turn=true decision=approve" {
+		t.Fatalf("outcomeHint across bare-text QuietYield = %q, want %q", got, "end_turn=true decision=approve")
 	}
 }
 
@@ -994,5 +1023,260 @@ func TestListSessions_OutcomeBeyondFirstTailWindow(t *testing.T) {
 	}
 	if got := res.Sessions[0].Outcome; got != "end_turn=true decision=approve" {
 		t.Errorf("Outcome = %q, want the assistant turn beyond the first window's end_turn=true decision=approve", got)
+	}
+}
+
+func TestRootBareTextFallbackOutcomeHint(t *testing.T) {
+	entries := finalReplyThenQuietEntries()
+	if got := outcomeHint(transcriptDoc{Entries: entries}, "communicate"); got != "end_turn=true decision=approve" {
+		t.Errorf("outcome after quiet yield = %q", got)
+	}
+	entries[0] = acceptedBareTextEntry(t)
+	if got := outcomeHint(transcriptDoc{Entries: entries[:1]}, "communicate"); got != "end_turn=true" {
+		t.Errorf("standalone bare-text outcome = %q", got)
+	}
+	if got := outcomeHint(transcriptDoc{Entries: entries}, "communicate"); got != "end_turn=true" {
+		t.Errorf("bare-text outcome = %q", got)
+	}
+}
+
+func TestRootBareTextFallbackOutcomeBeyondTrailingQuietTail(t *testing.T) {
+	origTail := sessionRowTranscriptTailBytes
+	sessionRowTranscriptTailBytes = 8 << 10
+	t.Cleanup(func() { sessionRowTranscriptTailBytes = origTail })
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := newSessionsTestSID(t)
+	entries := finalReplyThenQuietEntries()
+	turns := []schema.Turn{entries[0].Turn}
+	for range 3 {
+		turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("p", 4096))))
+	}
+	turns = append(turns, entries[1].Turn)
+	writeSessionsFixtureSession(t, bucket, sid, transcript.Header{CreatedAt: time.Unix(1, 0).UTC(), Model: "m"}, turns, schema.SessionMeta{Model: "m", TurnCount: len(turns)}, nil, time.Unix(2, 0).UTC())
+	res, err := ListSessions(context.Background(), base, SessionsOpts{})
+	if err != nil || len(res.Sessions) != 1 {
+		t.Fatalf("sessions=%+v err=%v", res, err)
+	}
+	if got := res.Sessions[0].Outcome; got != "end_turn=true decision=approve" {
+		t.Fatalf("outcome=%q", got)
+	}
+}
+
+func TestOutcomeHintHealedVisibleReply(t *testing.T) {
+	entries := finalReplyThenQuietEntries()
+	healed := healthToolCall("healed", "communicate", `{}`)
+	healed.ToolCall.RawArguments = `{message:"Recovered answer","output":{"decision":"reject"}}`
+	entries = append(entries[:1], transcript.Entry{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healed}})}, entries[1])
+	if got := outcomeHint(transcriptDoc{Entries: entries}, "communicate"); got != "end_turn=true decision=reject" {
+		t.Errorf("healed outcome=%q", got)
+	}
+	if got := finalEndTurnIndex(entries, "communicate"); got != 1 {
+		t.Errorf("healed final index=%d, want 1", got)
+	}
+}
+
+// Not parallel: overrides sessionRowTranscriptTailBytes.
+func TestDoctorOutcomeAfterRejectedStructuredReply(t *testing.T) {
+	origTail := sessionRowTranscriptTailBytes
+	sessionRowTranscriptTailBytes = 8 << 10
+	t.Cleanup(func() { sessionRowTranscriptTailBytes = origTail })
+
+	for _, result := range []struct {
+		name               string
+		isError            bool
+		state              json.RawMessage
+		content            any
+		legacyFallback     bool
+		completionAccepted bool
+	}{
+		{name: "missing_required_output", isError: true},
+		{name: "lost_terminal_capture", state: json.RawMessage(`{"communicate_accepted":false,"communicate_end_turn":true}`)},
+		{name: "quiet_result", state: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)},
+		{name: "legacy_quiet_result", content: `{"accepted":true,"end_turn":true,"quiet":true}`},
+		{name: "legacy_no_verdict", content: `{}`, legacyFallback: true},
+		{name: "stop_hook_pending_unsettled", state: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_boundary_pending":true}`)},
+		{name: "stop_hook_completed_accepted", state: json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_boundary_pending":true}`), completionAccepted: true},
+	} {
+		t.Run(result.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name         string
+				earlierReply bool
+				reuseCallID  bool
+				wantOutcome  string
+				wantBoundary int
+			}{
+				{name: "only_attempt", wantOutcome: "none", wantBoundary: -1},
+				{name: "earlier_reply", earlierReply: true, wantOutcome: "end_turn=true decision=approve", wantBoundary: 0},
+				{name: "earlier_reply_reused_id", earlierReply: true, reuseCallID: true, wantOutcome: "end_turn=true decision=approve", wantBoundary: 0},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					const attemptID = "attempt"
+					var turns []schema.Turn
+					if tc.earlierReply {
+						prior := communicateCall(true, "approve")
+						if tc.reuseCallID {
+							prior.ToolCall.ID = attemptID
+						}
+						accepted := healthToolResult(prior.ToolCall.ID, "communicate", nil, false)
+						accepted.ToolResult.ToolState = json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+						turns = append(turns,
+							schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{prior}}),
+							schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{accepted}}),
+						)
+					}
+					// Keep the earlier reply outside the first tail window.
+					turns = append(turns, schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("p", 12<<10))))
+					wantOutcome, wantBoundary := tc.wantOutcome, tc.wantBoundary
+					if result.legacyFallback || result.completionAccepted {
+						wantOutcome, wantBoundary = "end_turn=true", len(turns)
+					}
+					reply := healthToolCall(attemptID, "communicate", `{"message":"done"}`)
+					verdict := healthToolResult(attemptID, "communicate", result.content, result.isError)
+					verdict.ToolResult.ToolState = result.state
+					assistantTurn := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{reply}})
+					resultTurn := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{verdict}})
+					assistantTurn.Format, assistantTurn.TurnID = schema.TurnFormatIdentity, "turn_attempt"
+					resultTurn.Format, resultTurn.TurnID = schema.TurnFormatIdentity, "turn_attempt"
+					turns = append(turns, assistantTurn, resultTurn)
+					if result.completionAccepted {
+						turns = append(turns, schema.Turn{
+							Format: schema.TurnFormatIdentity,
+							TurnID: "turn_attempt",
+							Kind:   schema.TurnCompletion,
+							Completion: &schema.TurnCompletionInfo{
+								Status:                    schema.TurnCompleted,
+								AcceptedCommunicateCallID: attemptID,
+							},
+						})
+					}
+					base := t.TempDir()
+					bucket := stateHomeBucket(base, hash1)
+					sid := newSessionsTestSID(t)
+					meta := schema.SessionMeta{TurnCount: len(turns)}
+					writeSessionsFixtureSession(t, bucket, sid, transcript.Header{CreatedAt: time.Unix(1, 0).UTC()}, turns, meta, nil, time.Unix(2, 0).UTC())
+					doc, err := loadRecordedTranscriptContext(t.Context(), filepath.Join(bucket, "sessions", sid+".transcript.jsonl"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := outcomeHint(doc, "communicate"); got != wantOutcome {
+						t.Errorf("full outcome = %q, want %q", got, wantOutcome)
+					}
+					if got := finalEndTurnIndex(doc.Entries, "communicate"); got != wantBoundary {
+						t.Errorf("final boundary = %d, want %d", got, wantBoundary)
+					}
+					rows, err := ListSessions(t.Context(), base, SessionsOpts{})
+					if err != nil || len(rows.Sessions) != 1 || len(rows.Unreadable) != 0 {
+						t.Fatalf("ListSessions = %+v, %v", rows, err)
+					}
+					if got := rows.Sessions[0].Outcome; got != wantOutcome {
+						t.Errorf("tail outcome = %q, want %q", got, wantOutcome)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestOutcomeHintMultiRoundQuietWakePreservesEarlierReply(t *testing.T) {
+	t.Parallel()
+	quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
+	acceptedState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true}`)
+	stamped := func(turnID string, turn schema.Turn) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = turnID
+		return turn
+	}
+
+	for _, tc := range []struct {
+		name              string
+		earlierReply      bool
+		quietWakeFinishes bool
+		wantOutcome       string
+	}{
+		{
+			name:              "multi_round_quiet_wake_preserves_prior_decision",
+			earlierReply:      true,
+			quietWakeFinishes: true,
+			wantOutcome:       "end_turn=true decision=approve",
+		},
+		{
+			name:              "newer_unquiet_execution_without_reply_reports_none",
+			earlierReply:      true,
+			quietWakeFinishes: false,
+			wantOutcome:       "none",
+		},
+		{
+			name:              "unquiet_earlier_execution_before_multi_round_quiet_wake_stays_none",
+			earlierReply:      false,
+			quietWakeFinishes: true,
+			wantOutcome:       "none",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var turns []schema.Turn
+			if tc.earlierReply {
+				prior := communicateCall(true, "approve")
+				accepted := healthToolResult(prior.ToolCall.ID, "communicate", nil, false)
+				accepted.ToolResult.ToolState = acceptedState
+				turns = append(turns,
+					stamped("turn_1", schema.NewTurn(schema.TurnUserInput, llm.User("ship it"))),
+					stamped("turn_1", schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{prior}})),
+					stamped("turn_1", schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{accepted}})),
+					schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+				)
+			} else {
+				inspect := healthToolCall("init-read", "read_file", `{"file_path":"a.go"}`)
+				inspectRes := healthToolResult("init-read", "read_file", "package a", false)
+				turns = append(turns,
+					stamped("turn_1", schema.NewTurn(schema.TurnUserInput, llm.User("inspect"))),
+					stamped("turn_1", schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{inspect}})),
+					stamped("turn_1", schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{inspectRes}})),
+					schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_1", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+				)
+			}
+
+			notify := stamped("turn_2", schema.NewTurn(schema.TurnSteering, llm.User(strings.Repeat("n", 12<<10))))
+			notify.SteeringKind = events.SteeringKindNotification
+			inspectJob := healthToolCall("wake-inspect", "read_transcript", `{"transcript_ref":"job:1"}`)
+			inspectJobRes := healthToolResult("wake-inspect", "read_transcript", "ok", false)
+			turns = append(turns,
+				notify,
+				stamped("turn_2", schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{inspectJob}})),
+				stamped("turn_2", schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{inspectJobRes}})),
+			)
+			if tc.quietWakeFinishes {
+				quietCall := healthToolCall("wake-quiet", "communicate", `{}`)
+				quietRes := healthToolResult("wake-quiet", "communicate", nil, false)
+				quietRes.ToolResult.ToolState = quietState
+				turns = append(turns,
+					stamped("turn_2", schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{quietCall}})),
+					stamped("turn_2", schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{quietRes}})),
+					schema.Turn{Format: schema.TurnFormatIdentity, TurnID: "turn_2", Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+				)
+			}
+
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, hash1)
+			sid := newSessionsTestSID(t)
+			meta := schema.SessionMeta{TurnCount: len(turns)}
+			writeSessionsFixtureSession(t, bucket, sid, transcript.Header{CreatedAt: time.Unix(1, 0).UTC()}, turns, meta, nil, time.Unix(2, 0).UTC())
+
+			doc, err := loadRecordedTranscriptContext(t.Context(), filepath.Join(bucket, "sessions", sid+".transcript.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := outcomeHint(doc, "communicate"); got != tc.wantOutcome {
+				t.Errorf("full outcome = %q, want %q", got, tc.wantOutcome)
+			}
+			rows, err := ListSessions(t.Context(), base, SessionsOpts{})
+			if err != nil || len(rows.Sessions) != 1 || len(rows.Unreadable) != 0 {
+				t.Fatalf("ListSessions = %+v, %v", rows, err)
+			}
+			if got := rows.Sessions[0].Outcome; got != tc.wantOutcome {
+				t.Errorf("tail outcome = %q, want %q", got, tc.wantOutcome)
+			}
+		})
 	}
 }

@@ -5,53 +5,28 @@
   display: inline-block;
 }
 
+/* The trigger is a real button: it composes the bordered md recipe, so the
+ * hairline, fill, lift, face, press and focus ring all come from Button. */
 .trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  height: 32px;
-  padding: 0 var(--space-4);
-  border-radius: var(--radius-control);
-  border: 1px solid var(--edge);
-  background: var(--surface-1);
-  box-shadow: var(--shadow-card);
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  cursor: pointer;
-  transition:
-    background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    transform var(--motion-duration-press) var(--motion-easing-standard);
-}
-
-.trigger:hover {
-  background: var(--hover-1);
-}
-
-/* The press, as Button's. */
-@media (prefers-reduced-motion: no-preference) {
-  .trigger:active:not(:disabled):not([aria-disabled="true"]) {
-    transform: scale(var(--press-scale-control));
-  }
-}
-
-.trigger:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
+  composes: button from "../button/button.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: md from "../button/button.module.css";
+  composes: secondary from "../button/button.module.css";
+  composes: tapFloor from "../../styles/tapfloor.module.css";
 }
 
 /* "quiet" variant (index.tsx's own MenuProps.variant doc comment): no
- * border, fill or lift at rest - border-color: transparent (not
- * `border: none`) keeps this pixel-identical in size to the default variant,
- * the same convention Button's own .quiet uses
- * (widgets/button/button.module.css). Hover comes for free from
- * .trigger:hover above, which outranks this rule regardless of variant; this
- * adds a pressed wash while OPEN, since a borderless trigger otherwise has no
- * persistent affordance left to show which one currently owns an open
- * popup. */
+ * border, fill or lift at rest. It composes Button's own .quiet; the two
+ * declarations quiet does not carry (border-color, box-shadow) stay here.
+ * Both classes sit at the same specificity as the composed recipes, so
+ * source order decides: this file's rules come after the composed ones, and
+ * this rule comes after .trigger, which is why the plain class is enough.
+ * This adds a pressed wash while OPEN, since a borderless trigger otherwise
+ * has no persistent affordance left to show which one currently owns an
+ * open popup. */
 .triggerQuiet {
+  composes: quiet from "../button/button.module.css";
   border-color: transparent;
-  background: transparent;
   box-shadow: none;
 }
 
@@ -60,9 +35,10 @@
 }
 
 /* Icon-only trigger: IconButton's sm square (widgets/iconbutton), glyph
- * centred. Declared after .trigger so its size wins at equal specificity;
- * the tap-floor block below adds IconButton's tap floor on both axes. */
+ * centred. Declared after .trigger so its 28px box wins over the composed md
+ * size at equal specificity; composing the tap floor widens it on a phone. */
 .triggerIcon {
+  composes: tapFloorWidth from "../../styles/tapfloor.module.css";
   justify-content: center;
   width: 28px;
   height: 28px;
@@ -82,6 +58,8 @@
  * trigger's corner, which index.tsx sets inline with the placement. */
 .popup {
   composes: float from "../../styles/motion.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: panel from "../../styles/floatingSurface.module.css";
   position: fixed;
   z-index: var(--z-menu);
   min-width: 180px;
@@ -104,12 +82,12 @@
    * square hover corner meets the popup's rounded one. */
   padding: var(--space-1) var(--menu-inline-pad, var(--space-1));
   list-style: none;
-  background: var(--surface-2);
-  border-radius: var(--radius-pane);
-  box-shadow: var(--shadow-overlay);
 }
 
 .item {
+  composes: tapFloor from "../../styles/tapfloor.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: CSS Modules composes takes one source per declaration. */
+  composes: choice from "../../styles/floatingSurface.module.css";
   /* A zoomed-in viewport can leave a cap narrower than the two insets put
    * together - 52px of viewport caps the popup at 36, and the popup's own 4px
    * and the row's 12px leave 4px for a glyph, which cannot wrap. The widget
@@ -131,8 +109,8 @@
  * the one case where keeping it on one line would push it out of the scrollport
  * instead of shortening the popup. The widget writes that class itself, so
  * every other menu keeps the single-line rows that make a menu scannable. A
- * wrapped label makes the row taller, which the phone tap floor below already
- * permits: it is a MIN-height, not a height. */
+ * wrapped label makes the row taller, which the composed phone tap floor
+ * already permits: it is a MIN-height, not a height. */
 .popupNarrow .item {
   white-space: normal;
   overflow-wrap: anywhere;
@@ -156,19 +134,10 @@
 }
 
 @media (max-width: 899px), (any-pointer: coarse) {
-  .trigger {
-    min-height: var(--tap-min);
-  }
-
-  .triggerIcon {
-    min-width: var(--tap-min);
-  }
-
   .item {
     box-sizing: border-box;
     display: flex;
     align-items: center;
-    min-height: var(--tap-min);
   }
 }
 
@@ -191,4 +160,14 @@
   margin: var(--space-1) calc(-1 * var(--menu-inline-pad, var(--space-1)));
   border-top: 1px solid var(--edge);
   list-style: none;
+}
+
+:global(body[data-iphone-glass]) .popup {
+  --motion-float-from: var(--motion-scale-from);
+  --menu-row-inline-pad: var(--space-4);
+}
+
+:global(body[data-iphone-glass]) .separator {
+  margin-inline: var(--menu-row-inline-pad);
+  border-color: var(--glass-edge);
 }

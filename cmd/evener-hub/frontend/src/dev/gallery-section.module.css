@@ -16,17 +16,29 @@
   gap: var(--space-3);
 }
 
+/* The same row with its cases top-aligned, for a section whose samples are
+ * taller than one line (a card, a drop zone). */
+.rowStart {
+  composes: row;
+  align-items: flex-start;
+}
+
 .rowLabel {
-  /* Sized for the longest label across every section that uses this file
-   * (badge/chip's "attention", cadence's "needs-you" - both 9 characters)
-   * plus a little breathing room; shorter labels (button's "primary",
-   * etc.) just get a bit of extra alignment space. */
-  width: 80px;
-  flex: none;
   margin: 0;
   color: var(--ink-mid);
   font-family: var(--font-sans); /* a chrome label, never mono - see Direction */
   font-size: var(--font-size-caption);
+}
+
+/* Sized for the longest label across every section that uses this file
+ * (badge/chip's "attention", cadence's "needs-you" - both 9 characters)
+ * plus a little breathing room; shorter labels (button's "primary",
+ * etc.) just get a bit of extra alignment space. Zero specificity, so a
+ * composing module's own width/flex override wins whatever order the
+ * stylesheets load in. */
+:where(.rowLabel) {
+  width: 80px;
+  flex: none;
 }
 
 /* A narrow column for a state that only shows when space runs out (Button's
@@ -41,8 +53,6 @@
 /* Fixture-data caption under a surface section's heading: reminds the
  * reader the surface below renders canned data, not a live hub. */
 .note {
+  composes: helpMuted from "../styles/help.module.css";
   margin: 0;
-  color: var(--ink-low);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
 }

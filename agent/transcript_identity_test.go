@@ -45,7 +45,7 @@ func TestSessionWritesCarryIdentityAndModel(t *testing.T) {
 	s := newIdentitySession(t)
 	// A model switch before the first execution of a fresh session is a
 	// startup entry: the prelude.
-	if err := s.SetModel("gpt-5.4"); err != nil {
+	if err := s.SetModel("", "gpt-5.4"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ProcessInput(context.Background(), "hello", nil); err != nil {

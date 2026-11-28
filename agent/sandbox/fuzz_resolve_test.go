@@ -16,7 +16,7 @@ import (
 
 func TestFuzzResolveFixtureStaysUnderTempRoot(t *testing.T) {
 	fixture := newFuzzResolveFixture(t, "../../ambient/path")
-	layout, err := ClassifyWorkspace(fixture.cwd)
+	layout, err := ClassifyWorkspace(fixture.cwd, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace(%q): %v", fixture.cwd, err)
 	}
@@ -38,7 +38,7 @@ type fuzzResolveFixture struct {
 // newFuzzResolveFixture gives Resolve a structurally valid main checkout and a
 // fake home beneath one temp root. cwd is derived from fuzz bytes but never uses
 // them as a host path, because ClassifyWorkspace walks parent directories.
-func newFuzzResolveFixture(t TestingT, cwdHint string) fuzzResolveFixture {
+func newFuzzResolveFixture(t testing.TB, cwdHint string) fuzzResolveFixture {
 	t.Helper()
 	root := identifier.ResolveClean(t.TempDir())
 	fixture := fuzzResolveFixture{

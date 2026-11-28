@@ -4,40 +4,27 @@
 }
 
 .top {
-  position: absolute;
+  composes: dock from "../../overlayDock.module.css";
   top: var(--space-3);
   left: 0;
   right: 0;
-  z-index: var(--z-raised);
-  display: flex;
-  flex-direction: column;
   align-items: center;
-  pointer-events: none; /* only its own interactive children (LoadOlderRow) opt back in */
-}
-
-.top > * {
-  pointer-events: auto;
 }
 
 .stack {
-  position: absolute;
-  bottom: var(--space-3);
+  composes: dock from "../../overlayDock.module.css";
+  bottom: 0;
+  /* The observed border box includes the gutter, composer and home indicator.
+   * A change to the inset alone must also resize the transcript's end reserve. */
+  padding-bottom: calc(var(--space-3) + var(--floating-composer-reserve, 0px));
   /* Both inline anchors, not just the trailing one: the stack's width is
    * then the pane's width less the two insets. With only `right` it
    * shrink-wrapped its content, so a trigger label wider than the pane
    * pushed the control out to the left instead of being truncated. */
   left: var(--space-3);
   right: var(--space-3);
-  z-index: var(--z-raised);
-  display: flex;
-  flex-direction: column;
   align-items: flex-end;
   gap: var(--space-2);
-  pointer-events: none;
-}
-
-.stack > * {
-  pointer-events: auto;
 }
 
 .pillSlot {

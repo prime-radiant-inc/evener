@@ -28,7 +28,7 @@
 // owns what every other action DOES (opening an editor, a confirm, or
 // calling the store), the same division of labor as before.
 
-import type { AuthTestResponse, InstanceEditParams, InstanceEntry } from "@evener/appwire-client";
+import type { AuthTestResponse, InstanceEditParams, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
@@ -54,6 +54,8 @@ import {
   FormRow,
   InlineNotice,
   Input,
+  Select,
+  type SelectOption,
   Sheet,
   StatusDot,
   Switch,
@@ -62,7 +64,7 @@ import {
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ConnectionFacts, ConnectionSettingsDisclosure, connectionSettingsFields } from "./ConnectionFacts";
 import { CREDENTIAL_DOT, credentialState } from "./credentialState";
-import type { FormError } from "./formError";
+import { checkCredentialHeader, type FormError } from "./formError";
 import { InstanceModelEditor } from "./InstanceModelEditor";
 import styles from "./InstanceSheet.module.css";
 import { draftFor, type InstanceDraft, instanceEditParams, varRows } from "./instanceEdit";
@@ -76,6 +78,7 @@ import {
 } from "./instanceLanding";
 import { formatModelRowSummary } from "./instanceModelEdit";
 import { CODEX_AUTH_SCHEME } from "./oauthFlow";
+import { formatProviderLabel } from "./providerLabel";
 import { confirmListingState } from "./reconcileListing";
 
 const CLASS = {
@@ -85,7 +88,6 @@ const CLASS = {
   layer: requireClass(styles.layer, "InstanceSheet.module.css", "layer"),
   unconfigured: requireClass(styles.unconfigured, "InstanceSheet.module.css", "unconfigured"),
   actionRows: requireClass(styles.actionRows, "InstanceSheet.module.css", "actionRows"),
-  fullRow: requireClass(styles.fullRow, "InstanceSheet.module.css", "fullRow"),
   divider: requireClass(styles.divider, "InstanceSheet.module.css", "divider"),
   modelNote: requireClass(styles.modelNote, "InstanceSheet.module.css", "modelNote"),
   modelHeaderActions: requireClass(styles.modelHeaderActions, "InstanceSheet.module.css", "modelHeaderActions"),
@@ -95,8 +97,6 @@ const CLASS = {
   modelSummary: requireClass(styles.modelSummary, "InstanceSheet.module.css", "modelSummary"),
 };
 
-const LITERAL_HEADER_ERROR =
-  "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.";
 const EMPTY_NAME_ERROR = "Name cannot be empty.";
 // The save landed, but its response was superseded, so nothing reseeded the
 // form: the toast says what the sheet is showing - the user's own draft - and
@@ -153,7 +153,7 @@ type FormErrorReason =
 // protocol, surface, vars, apiKeyEnv, credentialHeader - are deliberately not
 // here: a change to one of them is this instance edited, not a different
 // instance under the same name.
-const DRAFT_IDENTITY_FIELDS = ["name", "providerId", "base", "auth", "endpointFingerprint"] as const;
+const DRAFT_IDENTITY_FIELDS = ["name", "providerId", "base", "auth", "endpointFingerprint", "loadError"] as const;
 
 /** The identity a draft was seeded from, so a listing change that leaves the
  * name but puts a different instance under it cannot silently re-target the
@@ -192,6 +192,19 @@ function renameNote(instance: InstanceEntry): string {
   return renameLeavesEnvironmentRow(instance)
     ? `Renaming adds a new instance and leaves this one in place, because the environment supplies it. ${keepsOldName}`
     : keepsOldName;
+}
+
+function baseSelectOptions(base: string, availableProviders: readonly ProviderDescriptor[]): SelectOption[] {
+  const options: SelectOption[] = [];
+  if (base === "") {
+    options.push({ value: "", label: "(none)" });
+  } else if (!availableProviders.some((p) => p.id === base)) {
+    options.push({ value: base, label: `${base} (unavailable)` });
+  }
+  for (const provider of availableProviders) {
+    options.push({ value: provider.id, label: formatProviderLabel(provider.id, provider.name) });
+  }
+  return options;
 }
 
 export interface InstanceSheetProps {
@@ -346,7 +359,9 @@ export function InstanceSheet({
   // fired now would act on whatever occupies that name, not the instance shown.
   const renameGap = atRenameDestination && !renameLandedHere;
   const instance = renameGap ? renamingFrom.entry : (stored ?? renamingFrom?.entry);
-  const template = instance === undefined ? undefined : availableProviders.find((p) => p.id === instance.providerId);
+  const activeProviderId = draft?.base || instance?.providerId;
+  const template =
+    activeProviderId === undefined ? undefined : availableProviders.find((p) => p.id === activeProviderId);
 
   function seed(inst: InstanceEntry): void {
     const seeded = draftFor(
@@ -383,6 +398,7 @@ export function InstanceSheet({
       }
       return {
         name: prevDraft.name.trim() !== prevInitial.name.trim() ? prevDraft.name : landedDraft.name,
+        base: prevDraft.base.trim() !== prevInitial.base.trim() ? prevDraft.base : landedDraft.base,
         baseUrl: prevDraft.baseUrl.trim() !== prevInitial.baseUrl.trim() ? prevDraft.baseUrl : landedDraft.baseUrl,
         protocol: prevDraft.protocol !== prevInitial.protocol ? prevDraft.protocol : landedDraft.protocol,
         surface: prevDraft.surface !== prevInitial.surface ? prevDraft.surface : landedDraft.surface,
@@ -641,8 +657,9 @@ export function InstanceSheet({
       return;
     }
     if (params === null) return;
-    if (params.credentialHeader !== undefined && !params.credentialHeader.includes("$")) {
-      setFormError({ reason: "literal-header", message: LITERAL_HEADER_ERROR });
+    const headerError = checkCredentialHeader(params.credentialHeader);
+    if (headerError) {
+      setFormError(headerError);
       return;
     }
     // The endpoint the draft was seeded from travels with the save, so the hub
@@ -752,6 +769,7 @@ export function InstanceSheet({
                 ? current
                 : {
                     name: landedDraft.name,
+                    base: declared.has("base") ? current.base : landedDraft.base,
                     baseUrl: declared.has("baseUrl") ? current.baseUrl : landedDraft.baseUrl,
                     protocol: declared.has("protocol") ? current.protocol : landedDraft.protocol,
                     surface: declared.has("surface") ? current.surface : landedDraft.surface,
@@ -891,11 +909,14 @@ export function InstanceSheet({
   // record, not the file, when one is active; issue #713). This action
   // always targets the store layer only, so it is safe to offer regardless
   // of what is effective.
-  const showClearStoredKey = instance?.hasStoredFile && instance.activeSource !== "store";
+  const isBroken = Boolean(instance?.loadError);
+  const showClearStoredKey = !isBroken && instance?.hasStoredFile && instance.activeSource !== "store";
   // The danger zone is Clear + Clear stored key + Remove under a divider; an
   // implicit instance with nothing stored offers none of them, and a divider
   // over nothing reads as a rendering bug.
-  const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !fromEnvironment(instance));
+  const showDangerZone =
+    instance !== undefined && ((!isBroken && showClear) || showClearStoredKey || !fromEnvironment(instance));
+  const baseOptions = draft === null ? [] : baseSelectOptions(draft.base, availableProviders);
   const layers = instance === undefined ? [] : credentialLayers(instance);
   const unconfigured = instance === undefined ? null : unconfiguredLabel(instance);
   // The sheet's per-model toggles read the registry's own inventory. The
@@ -958,6 +979,11 @@ export function InstanceSheet({
                 {instance.isDefault && <Chip kind="default">★ default</Chip>}
                 {fromEnvironment(instance) && <Chip kind="environment">from environment</Chip>}
               </div>
+              {instance.loadError ? (
+                <InlineNotice tone="danger" live="status" aria-label="Provider load error">
+                  {instance.loadError}
+                </InlineNotice>
+              ) : null}
               {draft !== null && (
                 <form
                   className={CLASS.form}
@@ -972,7 +998,6 @@ export function InstanceSheet({
                     data-testid="connection-facts"
                     rows={[
                       {
-                        key: "name",
                         label: "Name",
                         htmlFor: `${ids}-name`,
                         value: (
@@ -981,17 +1006,28 @@ export function InstanceSheet({
                             value={draft.name}
                             onChange={(event) => update({ name: event.target.value })}
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: nameHelp,
                       },
                       {
-                        key: "base-provider",
                         label: "Base provider",
-                        value: <span data-testid="base-provider">{instance.providerId}</span>,
+                        htmlFor: !instance.implicit ? `${ids}-base` : undefined,
+                        value: !instance.implicit ? (
+                          <Select
+                            id={`${ids}-base`}
+                            data-testid="base-provider"
+                            value={draft.base}
+                            onChange={(event) => update({ base: event.target.value })}
+                            options={baseOptions}
+                            disabled={busy}
+                          />
+                        ) : (
+                          <span data-testid="base-provider">{instance.providerId}</span>
+                        ),
                       },
                       {
-                        key: "base-url",
                         label: "Base URL",
                         htmlFor: `${ids}-baseurl`,
                         value: (
@@ -1001,6 +1037,7 @@ export function InstanceSheet({
                             onChange={(event) => update({ baseUrl: event.target.value })}
                             placeholder="https://…"
                             disabled={busy}
+                            fill
                           />
                         ),
                         help: clearingBaseUrl ? "Resets the endpoint to the provider's default." : undefined,
@@ -1054,30 +1091,31 @@ export function InstanceSheet({
                   {authError}
                 </InlineNotice>
               ) : null}
-              {unconfigured !== null ? (
-                <p className={CLASS.unconfigured}>{unconfigured}</p>
-              ) : (
-                <div className={CLASS.layers}>
-                  {layers.map((layer) => (
-                    <div key={layer.source} className={CLASS.layer} data-source={layer.source}>
-                      <span>↳ {layer.label}</span>
-                      <Chip
-                        tone={layer.effective ? "alive" : "neutral"}
-                        kind={layer.effective ? "effective" : "shadowed"}
-                      >
-                        {layer.effective ? "effective" : "shadowed"}
-                      </Chip>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {!isBroken &&
+                (unconfigured !== null ? (
+                  <p className={CLASS.unconfigured}>{unconfigured}</p>
+                ) : (
+                  <div className={CLASS.layers}>
+                    {layers.map((layer) => (
+                      <div key={layer.source} className={CLASS.layer} data-source={layer.source}>
+                        <span>↳ {layer.label}</span>
+                        <Chip
+                          tone={layer.effective ? "alive" : "neutral"}
+                          kind={layer.effective ? "effective" : "shadowed"}
+                        >
+                          {layer.effective ? "effective" : "shadowed"}
+                        </Chip>
+                      </div>
+                    ))}
+                  </div>
+                ))}
               {/* Every action below takes Save's `busy` gate, not just the form:
               the write in flight may be a rename, and until it settles the
               sheet still shows the instance under its old name. An action
               fired in that window goes out against the name the write is
               moving away from - and the credential ones would recreate under
               it the orphan the rename just moved. */}
-              {instance !== undefined && (
+              {instance !== undefined && !isBroken && (
                 <>
                   <h3>Models</h3>
                   <div className={CLASS.modelHeaderActions}>
@@ -1160,9 +1198,10 @@ export function InstanceSheet({
                   </div>
                 </>
               )}
-              <div className={CLASS.actionRows}>
-                <div className={CLASS.fullRow}>
+              {!isBroken && (
+                <div className={CLASS.actionRows}>
                   <Button
+                    block
                     variant="quiet"
                     onClick={renameGap ? refuseDuringRename : onTestCredentials}
                     aria-disabled={testCredentialsPending}
@@ -1170,85 +1209,86 @@ export function InstanceSheet({
                   >
                     {testCredentialsPending ? "Testing credentials…" : "Test credentials"}
                   </Button>
-                </div>
-                {safeTestResult && (
-                  <InlineNotice data-state={safeTestResult.status}>
-                    {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
-                  </InlineNotice>
-                )}
-                {supportsApiKey && (
-                  <div className={CLASS.fullRow}>
-                    <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onSetApiKey} disabled={busy}>
+                  {safeTestResult && (
+                    <InlineNotice data-state={safeTestResult.status}>
+                      {safeTestResult.status}: {safeCredentialTestMessage(safeTestResult.status)}
+                    </InlineNotice>
+                  )}
+                  {supportsApiKey && (
+                    <Button
+                      block
+                      variant="quiet"
+                      onClick={renameGap ? refuseDuringRename : onSetApiKey}
+                      disabled={busy}
+                    >
                       {instance.hasStoredFile ? "Replace key" : "Set key"}
                     </Button>
-                  </div>
-                )}
-                {supportsCredentialJson && (
-                  <div className={CLASS.fullRow}>
+                  )}
+                  {supportsCredentialJson && (
                     <Button
+                      block
                       variant="quiet"
                       onClick={renameGap ? refuseDuringRename : onSetCredentialJson}
                       disabled={busy}
                     >
                       {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                     </Button>
-                  </div>
-                )}
-                {supportsOAuth && (
-                  <div className={CLASS.fullRow}>
-                    <Button variant="quiet" onClick={renameGap ? refuseDuringRename : onOAuthStart} disabled={busy}>
+                  )}
+                  {supportsOAuth && (
+                    <Button
+                      block
+                      variant="quiet"
+                      onClick={renameGap ? refuseDuringRename : onOAuthStart}
+                      disabled={busy}
+                    >
                       {instance.hasStoredOAuth ? "Refresh OAuth" : "Sign in…"}
                     </Button>
-                  </div>
-                )}
-                {!instance.isDefault && (
-                  <div className={CLASS.fullRow}>
+                  )}
+                  {!instance.isDefault && (
                     <Button
+                      block
                       variant="quiet"
                       onClick={renameGap ? refuseDuringRename : onSetDefault}
                       disabled={busy || writesRefused}
                     >
                       ★ make default
                     </Button>
-                  </div>
-                )}
-              </div>
+                  )}
+                </div>
+              )}
               {showDangerZone && (
                 <>
                   <hr className={CLASS.divider} />
                   <div className={CLASS.actionRows}>
                     {showClearStoredKey && (
-                      <div className={CLASS.fullRow}>
-                        <Button
-                          variant="dangerQuiet"
-                          onClick={renameGap ? refuseDuringRename : onClearStoredKey}
-                          disabled={busy}
-                        >
-                          {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
-                        </Button>
-                      </div>
+                      <Button
+                        block
+                        variant="dangerQuiet"
+                        onClick={renameGap ? refuseDuringRename : onClearStoredKey}
+                        disabled={busy}
+                      >
+                        {supportsCredentialJson ? "Clear stored credential JSON" : "Clear stored key"}
+                      </Button>
                     )}
-                    {showClear && (
-                      <div className={CLASS.fullRow}>
-                        <Button
-                          variant="dangerQuiet"
-                          onClick={renameGap ? refuseDuringRename : onClear}
-                          disabled={busy}
-                        >
-                          Clear
-                        </Button>
-                      </div>
+                    {!isBroken && showClear && (
+                      <Button
+                        block
+                        variant="dangerQuiet"
+                        onClick={renameGap ? refuseDuringRename : onClear}
+                        disabled={busy}
+                      >
+                        Clear
+                      </Button>
                     )}
                     {!fromEnvironment(instance) && (
-                      <div className={CLASS.fullRow}>
-                        <Button
-                          variant="danger"
-                          onClick={renameGap ? refuseDuringRename : onRemove}
-                          disabled={busy || writesRefused}
-                        >
-                          Remove
-                        </Button>
-                      </div>
+                      <Button
+                        block
+                        variant="danger"
+                        onClick={renameGap ? refuseDuringRename : onRemove}
+                        disabled={busy || writesRefused}
+                      >
+                        Remove
+                      </Button>
                     )}
                   </div>
                 </>

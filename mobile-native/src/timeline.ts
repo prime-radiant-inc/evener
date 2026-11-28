@@ -1,7 +1,13 @@
-import { ERROR_EVENT_KIND } from "@evener/appwire-client";
+import {
+	ERROR_EVENT_KIND,
+	hasFailedNotification,
+	isQuietYield,
+	steeringNotificationFragments,
+} from "@evener/appwire-client";
 import type { AttachmentRef, MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
+export type DetailsEntry = Notice | Extract<MobileTimelineItem, { kind: "activity" }>;
 
 // A labelled notice folds to its label until opened: a daemon steer
 // (steeringNotice) or a compaction's summary (systemNotice).
@@ -33,7 +39,8 @@ export type TimelineRow =
 	| {
 			kind: "details";
 			id: string;
-			entries: Notice[];
+			entries: DetailsEntry[];
+			summary?: string;
 	  }
 	// Consecutive steps, folded into one line (spec 8.2). It keeps its first
 	// step's identity, so a reading position saved on that step still resolves.
@@ -85,25 +92,106 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 		// Intent draws one line per action where a run would fold them: the
 		// lines read as one list, so they keep the run's rhythm.
 		(item.kind === "activity" && item.summaryOnly === true && item.state === "completed") ||
-		(item.kind === "notice" && noticeLabel(item) !== undefined);
+		(item.kind === "notice" && (noticeLabel(item) !== undefined || isQuietYield(item)));
 	return routine(before) || routine(after) ? 8 : 24;
+}
+
+function isQuietYieldNotice(item: MobileTimelineItem | undefined): boolean {
+	return item?.kind === "notice" && isQuietYield(item) && !isCriticalNotice(item);
+}
+
+const QUIET_WAKE_BOUNDARY_EVENT_KINDS: ReadonlySet<string> = new Set([
+	"warning",
+	"interrupted",
+	"loop_detection",
+	"turn_limit",
+	"tool_repair",
+]);
+
+function isRoutineNotificationSteeringNotice(item: MobileTimelineItem | undefined): boolean {
+	if (
+		item?.kind !== "notice" ||
+		item.origin !== "steering" ||
+		item.steeringKind === "human-note" ||
+		item.fromParent ||
+		isCriticalNotice(item)
+	) {
+		return false;
+	}
+	const fragments = item.notifications ?? steeringNotificationFragments(item.text);
+	if (hasFailedNotification(fragments)) return false;
+	return item.steeringKind === "notification" || fragments !== null;
+}
+
+function isRoutineQuietWakeItem(item: MobileTimelineItem | undefined): item is DetailsEntry {
+	if (item === undefined) return false;
+	if (item.kind === "activity") {
+		return item.family === "reasoning" && item.state === "completed";
+	}
+	if (item.kind !== "notice") return false;
+	if (item.origin === "steering") return isRoutineNotificationSteeringNotice(item);
+	if (isCriticalNotice(item) || item.tone === "attention" || item.family === "approval") return false;
+	if (item.eventKind !== undefined && QUIET_WAKE_BOUNDARY_EVENT_KINDS.has(item.eventKind)) return false;
+	return true;
 }
 
 // Keep technical context available without putting it between the reader and the conversation.
 export function groupTimeline(items: readonly MobileTimelineItem[]): TimelineRow[] {
-	const rows: TimelineRow[] = [];
+	const nonQuietTurns = new Set<string>();
+	const quietTurns = new Set<string>();
 	for (const item of items) {
+		if (item.turnId === undefined) continue;
+		if (isQuietYieldNotice(item)) {
+			quietTurns.add(item.turnId);
+		} else if (!isRoutineQuietWakeItem(item)) {
+			nonQuietTurns.add(item.turnId);
+		}
+	}
+	const isQuietWakeItem = (item: MobileTimelineItem | undefined): item is DetailsEntry => {
+		if (!isRoutineQuietWakeItem(item)) return false;
+		if (item.turnId === undefined) return isQuietYieldNotice(item);
+		return quietTurns.has(item.turnId) && !nonQuietTurns.has(item.turnId);
+	};
+	const rows: TimelineRow[] = [];
+	let index = 0;
+	while (index < items.length) {
+		const item = items[index];
+		if (!item) {
+			index += 1;
+			continue;
+		}
+		if (isQuietWakeItem(item)) {
+			let end = index + 1;
+			while (end < items.length && isQuietWakeItem(items[end])) {
+				end += 1;
+			}
+			const groupEnd = end;
+			const entries = items.slice(index, groupEnd) as DetailsEntry[];
+			const quietCount = entries.filter((entry) => isQuietYieldNotice(entry)).length;
+			if (quietCount >= 2) {
+				rows.push({
+					kind: "details",
+					id: `quiet-yields:${item.id}`,
+					entries,
+					summary: `${quietCount} quiet yields`,
+				});
+				index = groupEnd;
+				continue;
+			}
+		}
 		const internal =
 			item.kind === "notice" &&
 			!isCriticalNotice(item) &&
 			(item.family === "hidden-instruction" || item.family === "system-prelude" || item.family === "diagnostic");
 		if (!internal) {
 			rows.push(item);
+			index += 1;
 			continue;
 		}
 		const previous = rows.at(-1);
-		if (previous?.kind === "details") previous.entries.push(item);
+		if (previous?.kind === "details" && previous.summary === undefined) previous.entries.push(item);
 		else rows.push({ kind: "details", id: `details:${item.id}`, entries: [item] });
+		index += 1;
 	}
 	return rows;
 }

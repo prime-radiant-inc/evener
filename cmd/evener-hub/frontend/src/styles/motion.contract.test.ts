@@ -44,11 +44,10 @@ const read = (rel: string): string => {
 // with raw delays, or declare keyframes outside the recipes module.
 const CONTINUOUS = new Set(["statusDotSpin", "loader-pulse", "streamingCaretBlink"]);
 
-// Layout properties are animated only by the spatial surfaces that do it in
-// CSS; the composer fold and the zoom columns move through src/motion.
+// Layout properties are never animated in CSS; the composer fold and the zoom
+// columns move through src/motion.
 const LAYOUT_PROPERTIES =
   /^(?:height|width|min-height|max-height|min-width|max-width|top|right|bottom|left|inset|margin(?:-\w+)?|padding(?:-\w+)?|grid-template-\w+|flex(?:-basis)?)$/;
-const SPATIAL_CSS = new Set(["widgets/sheet/sheet.module.css"]);
 
 type Rule =
   | "transition-all"
@@ -181,7 +180,7 @@ function violationsIn(file: string, css: string): Violation[] {
             add("transition-all", item);
             continue;
           }
-          if (LAYOUT_PROPERTIES.test(subject) && !SPATIAL_CSS.has(file)) add("layout-transition", item);
+          if (LAYOUT_PROPERTIES.test(subject)) add("layout-transition", item);
         }
         // An instant visibility flip timed to a neighbour's fade is not motion.
         const instantFlip = subject === "visibility" && tokens.some((t) => ZERO_TIME.test(t));
@@ -456,6 +455,7 @@ const CONSUMERS: [file: string, selector: string, recipe: string][] = [
   ["shell/mobile/StackHost.module.css", ".leavingOver", "slideRight"],
   ["widgets/disclosure/disclosure.module.css", ".body", "bodyReveal"],
   ["panes/session/transcript/toolcallitem.module.css", ".body", "bodyReveal"],
+  ["panes/session/chrome/detailspanel.module.css", ".goalActions", "bodyReveal"],
   ["panes/session/transcript/streamingtext.module.css", ".live", "caret"],
   ["panes/session/transcript/messages/agentmessageitem.module.css", ".stream", "caretLast"],
 ];

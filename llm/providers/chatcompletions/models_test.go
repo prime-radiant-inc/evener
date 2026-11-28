@@ -2,7 +2,9 @@ package chatcompletions
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"slices"
 	"testing"
 
@@ -434,5 +436,317 @@ func TestListModelsDecodeFailure(t *testing.T) {
 	srv, _ := server(t, 200, `not json at all`)
 	if _, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil)); err == nil {
 		t.Fatal("an undecodable models listing must fail")
+	}
+}
+
+const copilotRoster = `{"data":[
+ {"id":"claude-haiku-5.5","supported_endpoints":["/v1/messages","/chat/completions"],"model_picker_enabled":true,"capabilities":{"family":"claude","limits":{"max_prompt_tokens":200000,"max_output_tokens":32000},"supports":{"tool_calls":true,"vision":true,"reasoning":true}}},
+ {"id":"gpt-5.6-sol","supported_endpoints":["/responses","/chat/completions"],"capabilities":{"family":"gpt","limits":{"max_output_tokens":64000},"supports":{"tool_calls":true}}},
+ {"id":"chat-only","supported_endpoints":["/chat/completions"]},
+ {"id":"no-metadata"},
+ {"id":"picker-hidden","supported_endpoints":["/chat/completions"],"model_picker_enabled":false},
+ {"id":"policy-disabled","supported_endpoints":["/chat/completions"],"policy":{"state":"Disabled"}},
+ {"id":"image-unproven","supported_endpoints":["/chat/completions"],"capabilities":{"family":"gpt","supports":{"vision":true}}},
+ {"id":"gateway-vision","supported_endpoints":["/chat/completions"],"capabilities":{"family":"gpt","vision":true}},
+ {"id":"architecture-vision","supported_endpoints":["/chat/completions"],"architecture":{"input_modalities":["text","image"]},"capabilities":{"family":"gpt"}},
+ {"id":"embedding-only","supported_endpoints":["/embeddings"],"capabilities":{"family":"gpt"}}
+]}`
+
+// withCopilotAuth returns res as the subscription roster's transport: the
+// listing policy is selected by the auth scheme, not by the payload's shape.
+func withCopilotAuth(res registry.Resolved) registry.Resolved {
+	res.Transport.Auth = registry.AuthOAuthGitHubCopilot
+	return res
+}
+
+// TestListModelsRoutesAccountRoster pins the subscription roster's routing:
+// the account states which wire endpoints each id serves, so Claude goes to
+// Messages, GPT prefers Responses, chat-only rows stay on Chat, absent
+// metadata keeps the OpenAI-compatible default, and a row advertising no
+// endpoint Evener speaks is dropped rather than launched down a wrong path.
+func TestListModelsRoutesAccountRoster(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, 200, copilotRoster)
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, copilotTestAuthenticator{})
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(ctx, withCopilotAuth(liveRes(srv, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]registry.Model{}
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	for _, hidden := range []string{"picker-hidden", "policy-disabled", "embedding-only"} {
+		if _, ok := byID[hidden]; ok {
+			t.Fatalf("%s must not be offered: %+v", hidden, rows)
+		}
+	}
+	claude := byID["claude-haiku-5.5"]
+	if claude.Protocol != registry.ProtocolAnthropic {
+		t.Fatalf("claude protocol = %q, want %q", claude.Protocol, registry.ProtocolAnthropic)
+	}
+	if claude.Transport == nil || claude.Transport.Endpoint != "/v1/messages" || claude.Transport.StreamEndpoint != "/v1/messages" {
+		t.Fatalf("claude transport = %+v, want /v1/messages", claude.Transport)
+	}
+	if claude.Transport.CountTokensEndpoint != registry.EndpointUnsupported {
+		t.Fatalf("claude count tokens = %q, want unsupported", claude.Transport.CountTokensEndpoint)
+	}
+	if claude.Family != "claude" || claude.Surface != registry.SurfaceAnthropic {
+		t.Fatalf("claude family/surface = %q/%q", claude.Family, claude.Surface)
+	}
+	if claude.Caps.ContextWindow == nil || *claude.Caps.ContextWindow != 200000 || claude.Caps.MaxOutputTokens == nil || *claude.Caps.MaxOutputTokens != 32000 {
+		t.Fatalf("claude limits = %+v", claude.Caps)
+	}
+	if claude.Caps.Tools == nil || !*claude.Caps.Tools || claude.Caps.Reasoning == nil || !*claude.Caps.Reasoning {
+		t.Fatalf("claude supports = %+v", claude.Caps)
+	}
+	if !claude.Caps.AcceptsModality("image") {
+		t.Fatalf("claude-haiku-5.5 is the live-proven image row: %+v", claude.Caps.InputModalities)
+	}
+	if claude.Caps.Cost != nil {
+		t.Fatalf("an account roster must not publish dollar prices: %+v", claude.Caps.Cost)
+	}
+	if gpt := byID["gpt-5.6-sol"]; gpt.Protocol != registry.ProtocolOpenAIResponses {
+		t.Fatalf("gpt protocol = %q, want responses", gpt.Protocol)
+	}
+	if chat := byID["chat-only"]; chat.Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("chat-only protocol = %q, want chat", chat.Protocol)
+	}
+	if plain := byID["no-metadata"]; plain.Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("no-metadata protocol = %q, want chat fallback", plain.Protocol)
+	}
+	// Every shared gateway field that can advertise vision — the account's
+	// supports block, the embedded gateway capabilities, and the OpenAI-compatible
+	// architecture modalities — is outranked by the live proof: only
+	// claude-haiku-5.5 has an image path that works.
+	for _, id := range []string{"image-unproven", "gateway-vision", "architecture-vision"} {
+		if unproven := byID[id]; unproven.Caps.AcceptsModality("image") {
+			t.Fatalf("%s must stay text-only until its own live image proof: %+v", id, unproven.Caps.InputModalities)
+		}
+	}
+}
+
+// TestListModelsCopilotPolicyComesFromAuthScheme pins the policy selector: a
+// Copilot row with no optional metadata still gets Copilot treatment, so its
+// advertised prices are not published as live cost and its absent endpoint
+// metadata falls back to Chat. The same payload on a non-Copilot
+// OpenAI-compatible endpoint keeps the gateway's price, vision, and protocol
+// behavior without any Copilot filtering.
+func TestListModelsCopilotPolicyComesFromAuthScheme(t *testing.T) {
+	t.Parallel()
+	const priced = `{"id":"no-metadata-priced","pricing":{"prompt":"0.000001","completion":"0.000002"}}`
+	copilot := listRowsWith(t, withCopilotAuth, priced)
+	if len(copilot) != 1 {
+		t.Fatalf("copilot rows = %+v, want the no-metadata row", copilot)
+	}
+	if copilot[0].Caps.Cost != nil {
+		t.Fatalf("copilot row published dollar prices: %+v", copilot[0].Caps.Cost)
+	}
+	if copilot[0].Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("copilot row protocol = %q, want Chat fallback", copilot[0].Protocol)
+	}
+
+	const gatewayShaped = `{"id":"gateway-shaped","supported_endpoints":["/responses","/chat/completions"],"model_picker_enabled":false,"capabilities":{"family":"gpt","vision":true},"policy":{"state":"disabled"},"pricing":{"prompt":"0.000001","completion":"0.000002"}}`
+	gateway := listRowsWith(t, nil, gatewayShaped)
+	if len(gateway) != 1 {
+		t.Fatalf("non-copilot rows = %+v, want the row kept without Copilot filtering", gateway)
+	}
+	row := gateway[0]
+	if row.Caps.Cost == nil || row.Caps.Cost.Input != 1 || row.Caps.Cost.Output != 2 {
+		t.Fatalf("non-copilot cost = %+v, want the gateway's dollar prices", row.Caps.Cost)
+	}
+	if !row.Caps.AcceptsModality("image") {
+		t.Fatalf("non-copilot vision = %+v, want the gateway's vision capability", row.Caps.InputModalities)
+	}
+	if row.Protocol != "" || row.Transport != nil {
+		t.Fatalf("non-copilot protocol = %q transport = %+v, want the gateway default with no routing", row.Protocol, row.Transport)
+	}
+
+	copilotShaped := listRowsWith(t, withCopilotAuth, gatewayShaped)
+	if len(copilotShaped) != 0 {
+		t.Fatalf("copilot rows = %+v, want the picker-hidden, policy-disabled row dropped", copilotShaped)
+	}
+}
+
+// TestListModelsDropsExplicitlyEmptySupportedEndpoints pins endpoint presence:
+// an absent supported_endpoints is absent metadata and falls back to Chat, an
+// explicitly empty list advertises no supported protocol and drops the row,
+// and a nonempty list with no Evener-supported path drops it too. A
+// non-Copilot endpoint keeps its rows whatever the field says.
+func TestListModelsDropsExplicitlyEmptySupportedEndpoints(t *testing.T) {
+	t.Parallel()
+	const (
+		empty       = `{"id":"empty-endpoints","supported_endpoints":[]}`
+		absent      = `{"id":"absent-endpoints"}`
+		unsupported = `{"id":"unsupported-endpoints","supported_endpoints":["/embeddings"]}`
+	)
+	if rows := listRowsWith(t, withCopilotAuth, empty); len(rows) != 0 {
+		t.Fatalf("copilot rows = %+v, want an explicitly empty endpoint list dropped", rows)
+	}
+	rows := listRowsWith(t, withCopilotAuth, absent)
+	if len(rows) != 1 || rows[0].Protocol != registry.ProtocolOpenAIChat {
+		t.Fatalf("copilot rows = %+v, want absent metadata to keep the Chat fallback", rows)
+	}
+	if rows := listRowsWith(t, withCopilotAuth, unsupported); len(rows) != 0 {
+		t.Fatalf("copilot rows = %+v, want a list with no supported path dropped", rows)
+	}
+	if rows := listRowsWith(t, nil, empty); len(rows) != 1 || rows[0].Protocol != "" {
+		t.Fatalf("non-copilot rows = %+v, want the row kept without Copilot routing", rows)
+	}
+}
+
+// listRowsWith runs the live /models reader against one-row bodies, applying
+// resMutate to the resolved transport when it is non-nil.
+func listRowsWith(t *testing.T, resMutate func(registry.Resolved) registry.Resolved, row string) []registry.Model {
+	t.Helper()
+	srv, _ := server(t, 200, `{"data":[`+row+`]}`)
+	res := liveRes(srv, nil)
+	if resMutate != nil {
+		res = resMutate(res)
+	}
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, copilotTestAuthenticator{})
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(ctx, res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// copilotTestAuthenticator stands in for a stored Copilot session: the listing
+// policy tests select the transport scheme, not the credential.
+type copilotTestAuthenticator struct{}
+
+func (copilotTestAuthenticator) Apply(context.Context, *http.Request, registry.Resolved) error {
+	return nil
+}
+
+// inklingModels is the /v1/models body a local OpenAI-compatible server
+// publishes for a reasoning model: the reasoning fact is a plain boolean,
+// the effort ladder and its default arrive in the Codex backend's
+// supported_reasoning_levels / default_reasoning_level spellings, and the
+// output cap lives under a limits object. Captured verbatim from the live
+// listing; the reader used to fail the whole refresh on the boolean
+// reasoning field.
+const inklingModels = `{"object":"list","data":[{"object":"model","id":"Inkling-2-Mini","created":1795417889,"owned_by":"local","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"input_modalities":["text"],"output_modalities":["text"],"reasoning":true,"supported_reasoning_levels":["none","minimal","low","medium","high","xhigh","max"],"default_reasoning_level":"high","context_length":262144,"limits":{"max_output_tokens":262144},"loom":{"kind":"text","endpoint":"/v1/chat/completions","tokenize":true,"input_tokens":true,"variants":{"selected":1,"count":1},"incarnation":1,"registration":"ready","device":"gpu","pool":"weights"}}]}`
+
+// TestListModelsLoadsInklingMiniRow pins the full decode of that listing:
+// a row whose every reasoning fact arrives in a spelling the
+// OpenRouter-shaped reader never modeled must load, with its ladder,
+// default effort, output cap and window intact.
+func TestListModelsLoadsInklingMiniRow(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, 200, inklingModels)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != "Inkling-2-Mini" {
+		t.Fatalf("rows = %+v", rows)
+	}
+	c := rows[0].Caps
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true from the boolean verdict", c.Reasoning)
+	}
+	if got, want := c.EffortValues, []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v", got, want)
+	}
+	if got := registry.StringValue(c.DefaultEffort); got != "high" {
+		t.Fatalf("DefaultEffort = %q, want high", got)
+	}
+	if c.ContextWindow == nil || *c.ContextWindow != 262144 {
+		t.Fatalf("ContextWindow = %v, want 262144 from context_length", c.ContextWindow)
+	}
+	if c.MaxOutputTokens == nil || *c.MaxOutputTokens != 262144 {
+		t.Fatalf("MaxOutputTokens = %v, want 262144 from limits.max_output_tokens", c.MaxOutputTokens)
+	}
+	if got, want := c.InputModalities, []string{"text"}; !slices.Equal(got, want) {
+		t.Fatalf("InputModalities = %v, want %v", got, want)
+	}
+}
+
+// TestListModelsReadsBoolReasoningVerdict pins the plain-boolean reasoning
+// spelling: a server states the verdict itself rather than through
+// OpenRouter's object, so `true` records a reasoning model and `false` a
+// non-reasoning one that carries no ladder, whatever levels it lists. Null
+// and shapes evener cannot read state nothing.
+func TestListModelsReadsBoolReasoningVerdict(t *testing.T) {
+	t.Parallel()
+	if c := listRow(t, `{"id":"verdict-true","reasoning":true}`); c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true", c.Reasoning)
+	}
+	if c := listRow(t, `{"id":"verdict-false","reasoning":false}`); c.Reasoning == nil || *c.Reasoning {
+		t.Fatalf("Reasoning = %v, want an explicit false", c.Reasoning)
+	}
+	if c := listRow(t, `{"id":"verdict-false-with-levels","reasoning":false,"supported_reasoning_levels":["low","high"]}`); c.Reasoning == nil || *c.Reasoning || c.EffortValues != nil {
+		t.Fatalf("a false verdict must clear the ladder: Reasoning = %v EffortValues = %v", c.Reasoning, c.EffortValues)
+	}
+	if c := listRow(t, `{"id":"verdict-null","reasoning":null}`); c.Reasoning != nil {
+		t.Fatalf("a null verdict must state nothing: %v", c.Reasoning)
+	}
+	if c := listRow(t, `{"id":"verdict-string","reasoning":"always"}`); c.Reasoning != nil {
+		t.Fatalf("an unreadable verdict shape must state nothing: %v", c.Reasoning)
+	}
+}
+
+// TestListModelsObjectSilentAboutEffortsKeepsLadder pins the mixed-spelling
+// row: a row may spell its ladder in supported_reasoning_levels while the
+// reasoning object states only mandatory or default facts. An
+// efforts-silent object must not wipe the ladder the levels spelled; only
+// an object that publishes its own supported_efforts replaces it.
+func TestListModelsObjectSilentAboutEffortsKeepsLadder(t *testing.T) {
+	t.Parallel()
+	c := listRow(t, `{"id":"levels-plus-object","supported_reasoning_levels":["low","high"],"reasoning":{"mandatory":false}}`)
+	if got, want := c.EffortValues, []string{"low", "high"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v from the levels", got, want)
+	}
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true", c.Reasoning)
+	}
+	if c.ThinkingAlwaysOn != nil {
+		t.Fatalf("ThinkingAlwaysOn = %v, want unset when mandatory is false", c.ThinkingAlwaysOn)
+	}
+	c = listRow(t, `{"id":"object-owns-efforts","supported_reasoning_levels":["low","high"],"reasoning":{"supported_efforts":["minimal"]}}`)
+	if got, want := c.EffortValues, []string{"minimal"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v: the object that publishes efforts is the later spelling", got, want)
+	}
+}
+
+// TestListModelsIsolatesUndecodableRows pins the listing's row isolation:
+// a row whose shape the reader cannot decode is dropped while its siblings
+// load, so one alien row cannot fail the whole live refresh the way the
+// boolean reasoning verdict once did. A row with no id stays silently
+// skipped as before.
+func TestListModelsIsolatesUndecodableRows(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, 200, `{"data":[
+	 {"id":"alien-row","pricing":{"prompt":5}},
+	 {"object":"model","created":1},
+	 {"id":"healthy-row","context_length":8192}
+	]}`)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != "healthy-row" || rows[0].Caps.ContextWindow == nil || *rows[0].Caps.ContextWindow != 8192 {
+		t.Fatalf("rows = %+v, want only healthy-row with its window", rows)
+	}
+}
+
+// TestListModelsFailsWhenNoRowDecodes keeps the tolerant decode honest: a
+// body whose rows are all undecodable is an alien server, and the refresh
+// must fail with the row's decode error rather than silently succeed with
+// no models.
+func TestListModelsFailsWhenNoRowDecodes(t *testing.T) {
+	t.Parallel()
+	srv, _ := server(t, 200, `{"data":[
+	 {"id":"a","pricing":{"prompt":5}},
+	 {"id":"b","context_length":"big"}
+	]}`)
+	_, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err == nil {
+		t.Fatal("a listing with no decodable row must fail")
+	}
+	if _, ok := errors.AsType[*json.UnmarshalTypeError](err); !ok {
+		t.Fatalf("err = %v, want it to wrap the row's decode error", err)
 	}
 }

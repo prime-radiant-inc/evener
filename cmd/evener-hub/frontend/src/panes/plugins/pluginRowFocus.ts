@@ -48,6 +48,15 @@ export function handleRowEscape(event: KeyboardEvent<HTMLElement>, expanded: boo
   }
 }
 
+/** The expanded detail body owns Escape: claim it so an ancestor overlay sees
+ * defaultPrevented and keeps itself open; a nested overlay claims it first. */
+export function handleDetailEscape(event: KeyboardEvent<HTMLElement>, onCollapse?: () => void): void {
+  if (event.key === "Escape" && !event.defaultPrevented) {
+    event.preventDefault();
+    onCollapse?.();
+  }
+}
+
 /** The settings lists address a row by the plugin@marketplace pair; one
  * comparison, so the accordion and the row lookup cannot drift apart. */
 export function samePluginTarget(

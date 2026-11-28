@@ -41,7 +41,7 @@
     min-height: var(--tap-min);
   }
 
-  .sessionTitle button.label {
+  .label.sessionTitleButton {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
   }
@@ -49,7 +49,7 @@
 }
 
 /* The right slot: ONE grid cell shared by the slot's occupant (the relative
- * timestamp, the needs-you Badge, or "Not started") and the row's
+ * timestamp or "Not started") and the row's
  * hover-revealed actions menu (a session row's "..." trigger, a project
  * row's "+"/"..." pair). Both children occupy the same grid area, so the
  * slot's width is the WIDER of the two - the menu borrows the timestamp's
@@ -82,6 +82,29 @@
   grid-area: 1 / 1;
 }
 
+/* The slot's occupant at rest: the age (or "Not started") and, when there are
+ * replies the person has not read, the unread marker beside it. Wrapping them
+ * keeps the marker in the same shared grid cell as the hover actions instead
+ * of claiming a slot of its own that would narrow the title column. */
+.meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The unread marker: the phone Board's blue dot for replies this browser has
+ * not read. Not a status glyph - needs-you owns the attention hues and their
+ * motion - so it stays a still accent dot with no accessible text of its own
+ * beyond the name the span carries. */
+.unreadDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--accent);
+}
+
 /* Row actions (RailRow's "+"/"..." trigger buttons; both a session row's
  * single "..." and a project row's "+" pair): quiet by default -
  * transparent, borderless, invisible - revealed on row hover/focus so the
@@ -91,9 +114,10 @@
  * actually receives roving-tabindex focus - so the row carries that focus as
  * data-row-focused (from Tree's row info) and the reveal keys on it, rather
  * than on :focus-within (a descendant-focus check would never match the
- * ANCESTOR treeitem being focused). `:has(button[aria-expanded="true"])` keeps a row
+ * ANCESTOR treeitem being focused). `:has([data-open="true"])` keys on the
+ * Menu trigger's public open-state hook (widgets/menu), keeping a row
  * revealed while ITS OWN menu is open (closing on blur/Escape already
- * reverts it via Menu's own isOpen state); an ancestor selector is scoped
+ * reverts it via Menu's own isOpen state); the ancestor selector is scoped
  * to `.actions` so an open menu on one row never reveals another's.
  *
  * The visibility timing: revealed flips visibility IMMEDIATELY (delay 0s)
@@ -112,7 +136,7 @@
 }
 
 .railRow[data-row-focused="true"] .actions,
-.actions:has(button[aria-expanded="true"]),
+.actions:has([data-open="true"]),
 .railRow:hover .actions {
   opacity: 1;
   visibility: visible;
@@ -133,7 +157,7 @@
   }
 
   .railRow[data-row-focused="true"] .rightSlot > :not(.actions),
-  .rightSlot:has(button[aria-expanded="true"]) > :not(.actions),
+  .rightSlot:has([data-open="true"]) > :not(.actions),
   .railRow:hover .rightSlot > :not(.actions) {
     opacity: 0;
     visibility: hidden;
@@ -159,6 +183,46 @@
     opacity: 1;
     visibility: visible;
   }
+}
+
+/* Desktop Compact two-line rows (a title row plus a full-width reason or
+ * quota line below): a two-column grid keeps .textCol (still the row's first
+ * child) and .rightSlot aligned on row 1, while .belowRow spans both columns
+ * underneath instead of truncating early against an empty right-slot column.
+ * align-content: center keeps coarse-pointer 44px touch rows vertically
+ * centered. Only rows whose .belowRow actually rendered content take two-line
+ * padding and line-1 height capping, so single-line rows whose RailWhy or
+ * RailQuotaWait returned null stay identical to plain single-line rows. */
+.stackedRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  align-items: center;
+  align-content: center;
+}
+
+.stackedRow:has(.belowRow:not(:empty)) {
+  padding-block: 4px;
+}
+
+.stackedRow:has(.belowRow:not(:empty)) .rightSlot {
+  height: 1lh;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  align-content: center;
+}
+
+.belowRow {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+
+.belowRow:empty {
+  display: none;
 }
 
 /* The negative margin offsets the indicator width and title gap, so quiet and
@@ -224,9 +288,7 @@
 }
 
 .label {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
   /* Same flex-shrink enabler as .textCol: the label sits inside .titleLine
    * beside the trailing chevron, and must give up its own overflow (not the
    * chevron's slot) when the row runs narrow. */
@@ -235,16 +297,10 @@
   font-size: var(--font-size-ui);
 }
 
-/* The HoverCard wrapper is an inline block, so this outer flex item owns
- * shrinking and forwards the available width to it. The title keeps the same
- * ellipsis contract it had before the rich hover surface replaced `title`. */
-.sessionTitle {
-  min-width: 0;
-  overflow: hidden;
-}
-
-.sessionTitle > span,
-.sessionTitle .label {
+/* The session title's trigger button: reset the browser's button chrome so it
+ * reads as the row's title, and own the width HoverCard's block wrapper gives
+ * it. The .label rule above supplies the ellipsis contract. */
+.sessionTitleButton {
   display: block;
   width: 100%;
   min-width: 0;
@@ -281,14 +337,6 @@
   overflow-wrap: anywhere;
 }
 
-.contextCard[data-state="needs-you"] .contextStatus {
-  color: var(--attention-ink);
-}
-
-.contextCard[data-state="failed"] .contextStatus {
-  color: var(--danger-ink);
-}
-
 .contextSummary {
   color: var(--ink-hi);
   overflow-wrap: anywhere;
@@ -310,9 +358,7 @@
  * semantic hue: the wait is not an error, the session resumes by itself. It
  * truncates rather than wrapping so the row stays two lines tall. */
 .quotaWait {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
@@ -322,17 +368,19 @@
  * same way so a row is never taller than two lines. Only the word naming a
  * Needs-you row's attention takes a hue, matching the row's own dot. */
 .why {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
 
+/* The one attention/danger ink pair: the row's why word and the session
+ * context status both name their hue on data-hue. */
+.contextStatus[data-hue="attention"],
 .whyReason[data-hue="attention"] {
   color: var(--attention-ink);
 }
 
+.contextStatus[data-hue="danger"],
 .whyReason[data-hue="danger"] {
   color: var(--danger-ink);
 }
@@ -345,20 +393,29 @@
   font-weight: var(--font-weight-medium);
 }
 
-/* A band's count sits where a row's right slot would, but it is not one: a
- * band has no actions to swap in on hover, so the count never hides. */
-.bandCount {
-  display: flex;
+/* Inline heading count (Live bands and project attention rollups): sits right
+ * beside the label before the trailing chevron so the count belongs to its
+ * heading and the right edge stays reserved for timestamps and actions. All
+ * counts stay uncolored in --ink-low so headings and status dots lead. */
+.railCount {
+  display: inline-flex;
   align-items: center;
+  gap: var(--space-1);
   flex: none;
-  margin-left: auto;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.countNum {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
- * cell (the Task-7 needs-you Badge and "Not started" are the other two;
- * RailRow.tsx renders at most one of the three, and the hover-revealed
- * .actions menu borrows the same cell). The slot owns the right alignment
- * and the occupant/menu visibility swap; this class is only the text. */
+ * cell ("Not started" is the other; RailRow.tsx renders at most one of the
+ * two, and the hover-revealed .actions menu borrows the same cell). The slot
+ * owns the right alignment and the occupant/menu visibility swap; this class
+ * is only the text. */
 .time {
   color: var(--ink-mid);
   font-family: var(--font-sans);
@@ -417,9 +474,90 @@
  * size and the lowest ink rather than sitting at row weight and competing
  * with the sessions above it. */
 .overflow {
+  composes: helpMuted from "../../styles/help.module.css";
   flex: 1;
   min-width: 0;
-  color: var(--ink-low);
+}
+
+.flatSession {
+  border-block-end: 1px solid color-mix(in oklab, var(--edge) 28%, transparent);
+}
+
+.flatSession .titleLine {
+  align-items: flex-start;
+}
+
+.flatSession :is(.signal, .chevronButton) {
+  margin-block-start: var(--space-3);
+  height: 1lh;
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+}
+
+.flatSession .sessionTitleButton {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: calc(var(--space-1) / 2);
+  padding-block: var(--space-3);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-ui);
+}
+
+.flatStatus,
+.flatMeta {
+  min-height: 1lh;
+  color: var(--ink-mid);
   font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-ui);
+}
+
+.flatStatus > span {
+  display: block;
+}
+
+.flatMeta {
+  margin-block-start: calc(var(--space-1) / 2);
+}
+
+.flatMeta,
+.flatMeta .time {
+  color: var(--ink-low);
+}
+
+.metaText {
+  composes: truncate from "../../styles/text.module.css";
+  min-width: 0;
+}
+
+.flatMeta > [data-host-online] {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Phone drawer and tablet board: the name leads even in an unselected row.
+ * Tree supplies the selected surface; its weight must not lift the age or
+ * the explanation to the same level as the name. */
+@media (max-width: 899px) {
+  .sessionTitleButton {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    font-weight: var(--font-weight-semibold);
+    line-height: var(--line-height-ui);
+  }
+
+  .bandLabel {
+    font-size: var(--font-size-caption);
+  }
+
+  .meta,
+  .why,
+  .quotaWait {
+    font-weight: var(--font-weight-regular);
+    line-height: var(--line-height-ui);
+  }
 }
 

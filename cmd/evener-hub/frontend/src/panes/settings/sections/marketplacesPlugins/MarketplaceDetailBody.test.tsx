@@ -334,7 +334,7 @@ test("Escape inside the marketplace body collapses it and marks the key handled"
   expect(parentKeys).toEqual([true]);
 });
 
-test("a plugin query filters the body's rows when the marketplace name does not match", async () => {
+test("a plugin query filters the body's rows by name or description when the marketplace name does not match", () => {
   const catalog = {
     status: "loaded" as const,
     plugins: [
@@ -342,9 +342,20 @@ test("a plugin query filters the body's rows when the marketplace name does not 
       { name: "formatter", description: "Formats", category: undefined },
     ],
   } as unknown as MarketplaceDetailBodyProps["catalog"];
-  renderBody({ catalog, query: "lint" });
+  const byName = renderBody({ catalog, query: "lint" });
   expect(screen.getByRole("button", { name: /linter/ })).toBeTruthy();
   expect(screen.queryByRole("button", { name: /formatter/ })).toBeNull();
+  byName.view.unmount();
+
+  const byDescription = renderBody({ catalog, query: "formats" });
+  expect(screen.queryByRole("button", { name: /linter/ })).toBeNull();
+  expect(screen.getByRole("button", { name: /formatter/ })).toBeTruthy();
+  byDescription.view.unmount();
+
+  // A query that names this marketplace keeps its whole catalog.
+  renderBody({ catalog, query: "acme" });
+  expect(screen.getByRole("button", { name: /linter/ })).toBeTruthy();
+  expect(screen.getByRole("button", { name: /formatter/ })).toBeTruthy();
 });
 
 test("cancelling the editor keeps the keyboard inside the marketplace body", async () => {

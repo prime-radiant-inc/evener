@@ -1,6 +1,6 @@
 /* Page scaffolding for /dev/plugins-mockups. Sheet panels are position:fixed,
  * so each .sheetFrame is the gallery's containing-block trick (see
- * dev/gallery-sections/sheet.module.css): position:relative + contain:layout
+ * dev/gallery-sections/gallery-frame.module.css): position:relative + contain:layout
  * scopes the fixed panel to the frame, overflow:hidden clips it, and the
  * frame's width matches the Sheet's own --sheet-inline-size (420px) so the
  * anchored right edge sits exactly on the frame edge. The frame's min-height
@@ -84,9 +84,8 @@
 }
 
 .frameNote {
+  composes: helpCaption from "../styles/help.module.css";
   margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
   max-width: 72ch;
 }
 
@@ -179,4 +178,41 @@
   color: var(--ink-mid);
   font-size: var(--font-size-ui);
   max-width: 100ch;
+}
+
+/* The launcher's plugin rows. Only this mockup draws them, so they live here
+ * rather than in the launcher's own sheet. */
+.launcherRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--edge);
+}
+
+.launcherMetadata {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-half);
+}
+
+.launcherSource,
+.launcherCounts {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.launcherSource {
+  color: var(--ink-mid);
+}
+
+.launcherDescription {
+  composes: helpMuted from "../styles/help.module.css";
+  min-width: 0;
 }

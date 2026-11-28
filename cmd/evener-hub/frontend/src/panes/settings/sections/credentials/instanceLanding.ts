@@ -37,7 +37,8 @@ const RENAME_IDENTITY_FIELDS = [
  * override), vars ({VAR} substitution), and the head record selected by
  * protocol/surface each feed. Editing any of them derives a new digest, so the
  * digest cannot be compared as an untouched identity field across such a save. */
-const ENDPOINT_AFFECTING_FIELDS = ["baseUrl", "vars", "protocol", "surface"] as const;
+const ENDPOINT_AFFECTING_FIELDS = ["base", "baseUrl", "vars", "protocol", "surface"] as const;
+const BASE_DERIVED_FIELDS = new Set(["providerId", "auth", "protocol", "surface"]);
 
 /** Every `clear*` flag InstanceEditParams carries, and the entry field each one
  * empties. An explicit map, not a derived "lowercase the first letter"
@@ -49,6 +50,7 @@ const ENDPOINT_AFFECTING_FIELDS = ["baseUrl", "vars", "protocol", "surface"] as 
  * InstanceEditParams fails to compile here until it is mapped. */
 type ClearFlagKey = Extract<keyof InstanceEditParams, `clear${string}`>;
 export const CLEAR_FIELD_NAMES: Record<ClearFlagKey, string> = {
+  clearBase: "base",
   clearBaseUrl: "baseUrl",
   clearProtocol: "protocol",
   clearSurface: "surface",
@@ -129,10 +131,12 @@ export function untouchedIdentityMatches(
 ): boolean {
   const changed = changedFields(params);
   const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
+  const baseChanged = changed.has("base");
   const untouched = RENAME_IDENTITY_FIELDS.filter(
     (field) =>
       field !== "vars" &&
       !changed.has(field) &&
+      !(baseChanged && BASE_DERIVED_FIELDS.has(field)) &&
       !(endpointChanged && (field === "endpointFingerprint" || field === "baseUrl")),
   );
   const matches = untouched.every((field) =>
@@ -201,7 +205,7 @@ function authoritativeLandingConfirmed(
   const authoritativeFingerprint = authoritative?.endpointFingerprint ?? "";
   if (authoritativeFingerprint === "") return false;
   if (listed.endpointFingerprint !== authoritativeFingerprint) return false;
-  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
+  if (params.clearBase || params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
   if (!authoritativeCredentialsMatch(authoritative, listed)) return false;
   if (!credentialValuesLanded(listed, params)) return false;
   return declaredVarsAndSurfaceLanded(listed, params);
@@ -213,6 +217,7 @@ function authoritativeLandingConfirmed(
  * so a matching fingerprint alone cannot confirm them; each declared value has
  * to match the listing directly. */
 function declaredVarsAndSurfaceLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
+  if (params.base !== undefined && (listed.base ?? "") !== params.base) return false;
   if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
   if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
   if (params.codexClientVersion !== undefined && (listed.codexClientVersion ?? "") !== params.codexClientVersion) {

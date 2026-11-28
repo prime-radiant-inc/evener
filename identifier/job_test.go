@@ -81,20 +81,6 @@ func TestJobOwnerSessionIDRejectsAnInvalidJobID(t *testing.T) {
 	}
 }
 
-func TestAbbreviateJobIDReturnsTheIDWhenNoPrefixSurvives(t *testing.T) {
-	const owner = "02wMz5TxvEMoJEDTDGOTil"
-	jobID := "job_" + owner + "_000000000001"
-	// The suffix alone is jobIDSuffixSize bytes plus an ellipsis, so any budget
-	// that cannot seat at least one prefix byte has nothing to abbreviate toward.
-	// Truncating anyway would emit a string that is neither the ID nor a usable
-	// abbreviation of it.
-	for _, maxLength := range []int{0, 1, jobIDSuffixSize, jobIDSuffixSize + 1} {
-		if got := AbbreviateJobID(jobID, maxLength); got != jobID {
-			t.Errorf("AbbreviateJobID(%q, %d) = %q, want the ID unchanged", jobID, maxLength, got)
-		}
-	}
-}
-
 func TestMustNewJobIDPanicsRatherThanReturnARejectedID(t *testing.T) {
 	const owner = "02wMz5TxvEMoJEDTDGOTil"
 	id := MustNewJobID(owner)
@@ -114,22 +100,4 @@ func TestMustNewJobIDPanicsRatherThanReturnARejectedID(t *testing.T) {
 		}
 	}()
 	MustNewJobID("not-a-session-id")
-}
-
-func TestAbbreviateJobIDPreservesCompleteRandomSuffix(t *testing.T) {
-	const owner = "02wMz5TxvEMoJEDTDGOTil"
-	first := "job_" + owner + "_000000000001"
-	second := "job_" + owner + "_000000000002"
-
-	if got := AbbreviateJobID("short", 26); got != "short" {
-		t.Fatalf("short abbreviation = %q, want unchanged", got)
-	}
-	for _, jobID := range []string{first, second} {
-		if got := AbbreviateJobID(jobID, 26); !bytes.Contains([]byte(got), []byte(jobID[len(jobID)-12:])) {
-			t.Fatalf("abbreviation %q omitted suffix from %q", got, jobID)
-		}
-	}
-	if AbbreviateJobID(first, 26) == AbbreviateJobID(second, 26) {
-		t.Fatal("same-owner job abbreviations must remain distinct")
-	}
 }

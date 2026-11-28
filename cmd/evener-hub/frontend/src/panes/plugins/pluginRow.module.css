@@ -12,26 +12,24 @@
   min-width: 0;
   flex-direction: column;
   gap: var(--space-half);
-}
-
-.source,
-.counts {
-  min-width: 0;
-  overflow: hidden;
   color: var(--ink-low);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .source {
+  composes: truncate from "../../styles/text.module.css";
+  min-width: 0;
   color: var(--ink-mid);
 }
 
-.description {
+.counts {
+  composes: truncate from "../../styles/text.module.css";
   min-width: 0;
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
+}
+
+.description {
+  composes: helpMuted from "../../styles/help.module.css";
+  min-width: 0;
 }
 
 .details {

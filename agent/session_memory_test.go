@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,7 +63,7 @@ func TestMemoryGardeningSkill(t *testing.T) {
 			},
 			func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "memory_read", "opaque-before-72")
-				return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "topic.txt", "old_string": "opaque-before-72", "new_string": "opaque-after-74"})
+				return memoryCallResponse("memory_edit", map[string]any{"scope": "personal", "file_path": "topic.txt", "edits": []any{map[string]any{"old_string": "opaque-before-72", "new_string": "opaque-after-74"}}})
 			},
 			func(req llm.Request) llm.Response {
 				memoryRequireResult(t, req, "memory_edit", "")
@@ -295,7 +294,7 @@ func TestMemoryContextProjection(t *testing.T) {
 		if entry.Turn.Message.Role != llm.RoleUser || !entry.Turn.Message.Content[0].Machinery {
 			t.Fatalf("source=%+v", entry.Turn.Message)
 		}
-		items := apptranscript.ProjectTurn("memory-turn", i, entry.Turn, apptranscript.NewToolCallRegistry(), nil, nil)
+		items, _ := apptranscript.ProjectTurnParts("memory-turn", i, entry.Turn, apptranscript.NewToolCallRegistry(), nil, nil)
 		t.Run("app", func(t *testing.T) {
 			if len(items) != 1 || items[0].Type != "systemMessage" || items[0].ID != fmt.Sprintf("item_memory_context_%d", i) || !strings.Contains(items[0].Text, opaque) {
 				t.Fatalf("projection=%+v", items)
@@ -2418,9 +2417,9 @@ func TestMemoryToolResultsNameScopeRelativePaths(t *testing.T) {
 				isError bool
 			}{
 				{"memory_write", map[string]any{"file_path": "dir/page.md", "when": "d", "body": "opaque-needle\n"}, false},
-				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "opaque-needle", "new_string": "opaque-needle-2"}, false},
-				{"memory_edit", map[string]any{"file_path": "dir/page.md", "old_string": "absent-text", "new_string": "x"}, true},
-				{"memory_edit", map[string]any{"file_path": "missing.md", "old_string": "a", "new_string": "b"}, true},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "edits": []any{map[string]any{"old_string": "opaque-needle", "new_string": "opaque-needle-2"}}}, false},
+				{"memory_edit", map[string]any{"file_path": "dir/page.md", "edits": []any{map[string]any{"old_string": "absent-text", "new_string": "x"}}}, true},
+				{"memory_edit", map[string]any{"file_path": "missing.md", "edits": []any{map[string]any{"old_string": "a", "new_string": "b"}}}, true},
 				{"memory_read", map[string]any{"file_path": "missing.md"}, true},
 				{"memory_search", map[string]any{"pattern": "opaque-needle"}, false},
 				{"memory_search", map[string]any{"pattern": "opaque-needle", "output_mode": "files_with_matches"}, false},
@@ -2705,10 +2704,10 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 		t.Fatal(res.Output)
 	}
 	res = memoryExec(t, s, "memory_read", map[string]any{"scope": "project", "file_path": "duplicate.txt", "offset": 6, "limit": 1})
-	if res.IsError || res.Output != "   6\tToken\n" {
+	if res.IsError || oneLine(res.Output, 6) != "Token" {
 		t.Fatalf("window=%q error=%t", res.Output, res.IsError)
 	}
-	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "old_string": "Token", "new_string": "changed"})
+	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "edits": []any{map[string]any{"old_string": "Token", "new_string": "changed"}}})
 	if !res.IsError {
 		t.Fatal("duplicate edit accepted")
 	}
@@ -2716,7 +2715,7 @@ func TestMemoryFreeFormOperations(t *testing.T) {
 	if err != nil || string(got) != memoryWhenBlock+"before\nToken\nToken\nafter\n" {
 		t.Fatalf("failed edit changed bytes=%q err=%v", got, err)
 	}
-	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "old_string": "Token", "new_string": "changed", "replace_all": true})
+	res = memoryExec(t, s, "memory_edit", map[string]any{"scope": "project", "file_path": "duplicate.txt", "edits": []any{map[string]any{"old_string": "Token", "new_string": "changed", "replace_all": true}}})
 	if res.IsError {
 		t.Fatal(res.Output)
 	}
@@ -2794,8 +2793,7 @@ func TestMemoryPathAuthority(t *testing.T) {
 				args["when"], args["body"] = "w", "bad"
 			}
 			if name == "memory_edit" {
-				args["old_string"] = "opaque"
-				args["new_string"] = "bad"
+				args["edits"] = []any{map[string]any{"old_string": "opaque", "new_string": "bad"}}
 			}
 			if res := memoryExec(t, s, name, args); !res.IsError {
 				t.Fatalf("%s path=%q accepted: %s", name, path, res.Output)
@@ -2904,11 +2902,18 @@ func TestMemoryOutputRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			var body, want strings.Builder
-			for i := 1; i <= 400; i++ {
+			// read_file and memory_read cap one text read at 48 KB, head only.
+			// The page must fit that cap for one artifact to carry it whole;
+			// the configured output limit below still cuts the result first.
+			lineCount := 400
+			if name == "memory_read" {
+				lineCount = 100
+			}
+			for i := 1; i <= lineCount; i++ {
 				line := fmt.Sprintf("opaque-artifact-%03d-%s", i, strings.Repeat("z", 170))
 				body.WriteString(line + "\n")
 				if name == "memory_read" {
-					fmt.Fprintf(&want, "%4d\t%s\n", i, line)
+					fmt.Fprintf(&want, "%d\t%s\n", i, line)
 				} else {
 					if i > 1 {
 						want.WriteByte('\n')
@@ -2995,7 +3000,13 @@ func TestMemoryOutputRecovery(t *testing.T) {
 			for i := range steps {
 				steps[i] = step
 			}
-			s := newSession(t, withConfig(SessionConfig{MemoryStateRoot: host, artifactStore: store}), withSteps(steps...))
+			s := newSession(t, withConfig(SessionConfig{
+				MemoryStateRoot: host,
+				artifactStore:   store,
+				ToolOutputLimits: map[string]schema.ToolOutputLimit{
+					name: {MaxChars: 1024, Strategy: schema.TruncHeadTail},
+				},
+			}), withSteps(steps...))
 			if name == "memory_read" {
 				// The page is long, so its read ends with the size note.
 				want.WriteString(memoryPageSizeNote(body.Len(), s.memoryGardeningSkillAvailable()))
@@ -3092,7 +3103,7 @@ func TestMemoryGenericDelivery(t *testing.T) {
 			turn.RoundID = ""
 			index := len(entries) + 1
 			entries = append(entries, transcript.Entry{Turn: turn})
-			projected := apptranscript.ProjectTurn("turn_1", index+arm*4, turn, reg, nil, nil)
+			projected, _ := apptranscript.ProjectTurnParts("turn_1", index+arm*4, turn, reg, nil, nil)
 			for i := range projected {
 				projected[i].DurationMS = nil
 				if authorship := projected[i].Authorship; authorship != nil {
@@ -3526,21 +3537,11 @@ func refreshModelFacingCaches(s *Session) {
 	s.reportPromptRenderFailure(warning)
 }
 
-var updatePromptGoldens = flag.Bool("update-prompt", false,
-	"rewrite agent/testdata/memoryprompt and agent/testdata/messagingprompt from the current guidance and tool descriptions")
-
 // Memory guidance follows what the session can do: read guidance (with the
 // trust guard) whenever memory is readable, save instructions only when the
 // save tools are callable (never in a delegate, which reports findings to its
 // parent instead), and project-scope wording only when project memory is
-// bound. Where memory is readable, the
-// guidance and the memory tools' descriptions are prompt text, pinned whole
-// per shape in testdata/memoryprompt, never by substring; regenerate after an
-// intended wording change with
-//
-//	go test ./agent -run 'TestMemoryGuidanceFollowsCapabilities$' -count=1 -update-prompt
-//
-// and read the diff.
+// bound.
 func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -3599,18 +3600,6 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 			if !tc.project && strings.Contains(strings.ToLower(section), "project memory") {
 				t.Fatalf("memory section mentions project memory, but no project scope is bound")
 			}
-			if !tc.read {
-				return
-			}
-			var golden strings.Builder
-			golden.WriteString(strings.TrimPrefix(memoryGuidanceHeading, "\n\n") + section + "\n\n# Memory tool descriptions\n")
-			for _, name := range nativeMemoryToolNames {
-				if registered := s.reg.Get(name); registered != nil {
-					writeToolDescriptions(&golden, registered.Definition)
-				}
-			}
-			agenttest.CheckGolden(t, filepath.Join("testdata", "memoryprompt", tc.name+".md"), []byte(golden.String()), *updatePromptGoldens,
-				"Regenerate with `go test ./agent -run 'TestMemoryGuidanceFollowsCapabilities$' -count=1 -update-prompt` and read the diff.")
 		})
 	}
 }

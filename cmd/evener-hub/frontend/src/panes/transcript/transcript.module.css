@@ -1,31 +1,17 @@
-/* The read-only transcript pane's body: a column that gives the windowed
+/* The job-log pane's stylesheet: .body is the column that gives the log's
  * VirtualList a bounded height to virtualize inside (VirtualList's own .root
  * is height:100% + overflow-y:auto - it fills whatever height it's given),
- * with the optional "load older" row pinned above it as a flow:none sibling.
- * Mirrors the session pane's own transcript height chain (session.module.css:
- * .transcript flexes inside .contentColumn, .transcriptBody fills it) minus
- * the live composer/chrome the read-only viewer deliberately omits. */
+ * with the command line, notes and read-failure notice pinned above it as
+ * flow:none siblings. The height chain mirrors the session transcript's
+ * (session.module.css: .transcript flexes inside .contentColumn,
+ * .transcriptBody fills it) minus the live composer/chrome that read-only
+ * viewer deliberately omits. */
 .body {
   height: 100%;
   min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
-}
-
-.list {
-  /* min-height:0 lets this flex child shrink and scroll instead of stretching
-   * the column to its content - the same requirement AppShell.module.css's
-   * .content and PaneScaffold's own .body already carry. */
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-}
-
-.scope {
-  flex: none;
-  min-width: 0;
-  margin-bottom: var(--space-2);
 }
 
 /* Job output uses VirtualList's scroll port within the bounded pane. */
@@ -48,9 +34,26 @@
 
 /* The job's command, pinned above the output in the same shell command block
  * the transcript's shell rows use; flex:none keeps it out of the log's own
- * scroll. */
+ * scroll. The command is unbounded by nature - a generated script wraps to
+ * dozens of lines in a narrow column - so the block is capped at a share of
+ * the column and scrolls inside itself. Uncapped, it takes the whole column:
+ * .joblog flexes into whatever is left, and a zero-height scroll port makes
+ * the virtual list render no rows at all. The output keeps the majority, and
+ * min-height:0 lets the cap bite without making .joblogCommand itself the
+ * scroll container: instead, CodeBlock shrinks and scrolls inside its own
+ * <pre> (via the --codeblock-* host seams) so the top-right Copy/language
+ * header stays pinned above the scrolled lines rather than scrolling out of
+ * view. */
 .joblogCommand {
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  max-height: 40%;
+  min-height: 0;
+  --codeblock-flex-shrink: 1;
+  --codeblock-overflow: clip;
+  --codeblock-overflow-y: auto;
+  --codeblock-overflow-x: clip;
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--edge);
 }

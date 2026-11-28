@@ -241,10 +241,11 @@ func contextWindowForRead(t *testing.T, dir, input string) (profile *provider.Pr
 	if standing <= 0 {
 		t.Fatalf("standingRequestTokens = %d, want a positive measurement", standing)
 	}
-	// read_file renders each line as "%4d\t" + content + newline: 21 bytes for
-	// the 16-byte fixture line, which the estimator prices at 5.25 tokens.
-	// Cap the body at 2,300 lines so the rendered result stays under the
-	// 50,000-character output limit instead of being truncated.
+	// read_file renders each line as "%d\t" + content + newline: about 20 bytes
+	// for the 16-byte fixture line (the 21-byte estimate also covers 4-digit
+	// line numbers), which the estimator prices at 5.25 tokens per 21 bytes.
+	// Cap the body at 2,300 lines so the rendered result stays under
+	// read_file's 48,000-byte head-only cap instead of being truncated.
 	lines := standing * 38 / 100 * 4 / 21
 	if maxLines := 2_300; lines > maxLines {
 		lines = maxLines
@@ -271,7 +272,7 @@ func TestBuildCompactionMeta_ExcludesTaskState(t *testing.T) {
 	if _, err := store.Append([]task.TaskInput{{Description: "Frobnicate the gizmo"}}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskInProgress}}); err != nil {
 		t.Fatalf("Update in_progress: %v", err)
 	}
 
@@ -279,10 +280,6 @@ func TestBuildCompactionMeta_ExcludesTaskState(t *testing.T) {
 	// SessionID should be exactly sess.id — task descriptions must not appear in it.
 	if meta.SessionID != sess.id {
 		t.Fatalf("expected SessionID %q, got %q", sess.id, meta.SessionID)
-	}
-	// ActivatedSkills is never populated by buildCompactionMeta; assert it remains nil.
-	if len(meta.ActivatedSkills) != 0 {
-		t.Fatalf("task state leaked into ActivatedSkills: %v", meta.ActivatedSkills)
 	}
 }
 

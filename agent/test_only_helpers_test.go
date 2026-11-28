@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 )
 
 // recordWatchSendPending retains the pure runtime-state transition used by the
@@ -25,26 +24,6 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 	record := jm.planWatchSendPending(state, d)
 	jm.commitWatchSendPendingRecord(record, d.allowAfterTerminalExpiry)
 	return record
-}
-
-func (m *subagentManager) beginReconstructionSideEffects(childID string, sub *subagent) (func(), error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closing {
-		if m.subs[childID] == sub {
-			delete(m.subs, childID)
-		}
-		return nil, errSubagentManagerClosing
-	}
-	m.activeRestoreSideEffects++
-	return func() {
-		m.mu.Lock()
-		m.activeRestoreSideEffects--
-		if m.activeRestoreSideEffects == 0 {
-			m.restoreSideEffectsCond.Broadcast()
-		}
-		m.mu.Unlock()
-	}, nil
 }
 
 func (jm *jobManager) noteJobActivity(jobID, phase string) {
@@ -221,16 +200,12 @@ func watchSendArg(args map[string]any) (*watchSendArgs, error) {
 		return nil, errors.New("invalid_request: send.to is required")
 	}
 	return &watchSendArgs{
-		To:             to,
-		Message:        stringArg(values, "message"),
-		IncludeExcerpt: shellBoolArg(values, "include_excerpt"),
+		To: to,
 	}, nil
 }
 
 func isEmptyWatchSend(values map[string]any) bool {
-	return strings.TrimSpace(stringArg(values, "to")) == "" &&
-		stringArg(values, "message") == "" &&
-		!shellBoolArg(values, "include_excerpt")
+	return len(values) == 0
 }
 
 func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
@@ -383,10 +358,6 @@ func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
 
 func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema.Turn) error {
 	return s.nameSessionFromCompactionTurnGated(ctx, turn, ungatedFoldRevision)
-}
-
-func appendColdAttentionResolution(path, expectedSessionID string, ids []string, disposition delegateAttentionResolution) (err error) {
-	return appendColdAttentionResolutionWithOpen(path, expectedSessionID, ids, disposition, transcript.OpenWriterForSession)
 }
 
 func (s *Session) readMemoryIndex(scope string) memoryProjection {

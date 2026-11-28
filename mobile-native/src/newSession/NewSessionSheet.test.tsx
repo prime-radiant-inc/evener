@@ -1,8 +1,11 @@
 // The New session sheet's own wiring: the creation store bound to the hub
 // only while the connection is ready, and the form placed once as it opens.
+import { createFrameworkFreeStore, type Source } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
+import { AlertCenter } from "../alerts/alertCenter";
+import { AlertsContext } from "../alerts/alertsContext";
 import { type CreationDraft, CreationDraftRepository } from "../creationDraftRepository";
 import { render, settle } from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
@@ -81,9 +84,6 @@ vi.mock("./MoreOptions", () => ({ MoreOptions: () => null }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
-// The sheet's share handoff reads the app group; this suite's sheet carries no
-// share, and the module cannot load under vitest.
-vi.mock("expo-file-system", () => ({ Paths: { appleSharedContainers: {} } }));
 
 async function mount() {
 	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom" } };
@@ -288,4 +288,49 @@ it("makes no store for a hub that has been removed (#3104)", async () => {
 	await mount();
 	expect(harness.context).toBeNull();
 	expect(reads).toBe(0);
+});
+
+it("syncs manifest sources from AlertsContext into the creation store", async () => {
+	const sourcesStore = createFrameworkFreeStore<{ sources: readonly Source[] | null }>(() => ({
+		sources: [{ id: "remote-a", label: "remote-a", kind: "appwire", online: true, threadStartIdempotency: false }],
+	}));
+	const center = new AlertCenter({
+		now: () => Date.now(),
+		setTimeout: (cb: () => void, ms: number) => setTimeout(cb, ms),
+		clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	});
+	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom" } };
+	const props = {
+		navigation: { goBack: vi.fn() } as unknown as NativeStackScreenProps<Routes, "NewSession">["navigation"],
+		route: route as NativeStackScreenProps<Routes, "NewSession">["route"],
+	};
+	(client as { initializeResult?: unknown }).initializeResult = {
+		userAgent: "evener-hub",
+		features: { threadStartIdempotency: true },
+	};
+	try {
+		render(
+			<AlertsContext.Provider
+				value={{ center, reportRoutes: () => {}, noticeFor: () => undefined, sources: sourcesStore }}
+			>
+				<NewSessionSheet {...props} />
+			</AlertsContext.Provider>,
+		);
+		await settle();
+		const ctx = harness.context as NewSessionContextValue;
+		await act(async () => {
+			await ctx.store.getState().changeHost("remote-a", "remote-a");
+		});
+		expect(ctx.store.getState().supportsStartIdempotency).toBe(false);
+
+		await act(async () => {
+			sourcesStore.setState({
+				sources: [{ id: "remote-a", label: "remote-a", kind: "appwire", online: true, threadStartIdempotency: true }],
+			});
+		});
+		await settle();
+		expect(ctx.store.getState().supportsStartIdempotency).toBe(true);
+	} finally {
+		delete (client as { initializeResult?: unknown }).initializeResult;
+	}
 });

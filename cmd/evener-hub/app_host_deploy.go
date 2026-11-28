@@ -414,7 +414,7 @@ func (m *hubHostManager) createOperationRecord(req operationRequest, entry hostr
 			Dedup:             &query,
 		})
 	case hostops.KindRestart:
-		outcome, err = m.opsStore().CreateOperation(hostops.OperationCreateRequest{
+		outcome, err = m.opsStore().Create(hostops.OperationCreateRequest{
 			ClientOperationID: req.clientOperationID,
 			Host:              entry.Name,
 			Kind:              hostops.KindRestart,
@@ -1305,7 +1305,7 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
 	if err != nil {
 		return nil, err
 	}
-	outcome, err := ops.CreateOperation(hostops.OperationCreateRequest{
+	outcome, err := ops.Create(hostops.OperationCreateRequest{
 		ClientOperationID: clientOperationID,
 		Host:              host.Name,
 		Kind:              hostops.KindDeploy,
@@ -1347,7 +1347,7 @@ func (m *hubHostManager) EnsureRestart(host hostreg.Host) (func(error), error) {
 	if err != nil {
 		return nil, err
 	}
-	outcome, err := ops.CreateOperation(hostops.OperationCreateRequest{
+	outcome, err := ops.Create(hostops.OperationCreateRequest{
 		ClientOperationID: clientOperationID,
 		Host:              host.Name,
 		Kind:              hostops.KindRestart,

@@ -10,18 +10,17 @@ package hostops
 // write that lands a new terminal state, the bounded store dedup tombstone
 // each compacted record leaves behind, the removed-host-first ordering past
 // the `tombstoneRetention` horizon, and the durable `compactSeq` every
-// compacting write advances (pagination's mid-compaction detector, §8).
+// compacting write advances.
 //
 // What this file deliberately does not own: the live `quarantineEpoch` (S8,
 // persisted outside the store file), the registry's own tombstones and
 // high-water pruning (the registry spec's §15 derivation, which consumes this
-// store's mirrored boundaries as "mirrored store generation" referrers), and
-// the cursor comparison itself (cursor.go's checkCursorCompactionLocked,
-// which reads what this file persists).
+// store's mirrored boundaries as "mirrored store generation" referrers). The
+// compaction ledger this file persists is the removal evidence the custody
+// quarantine's completeness accounting reads (custody.go).
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -103,9 +102,8 @@ func (p RetentionPolicy) withDefaults() RetentionPolicy {
 // with its (host, kind, generation, incarnation id) scope plus the full replay
 // fields (controller-assigned id, bounded progress, `createdAt`/`updatedAt`,
 // `hostRemoved`, terminal outcome and result, `compactedAt`)". CompactedSeq is
-// the durable `compactSeq` value of the compacting write that left it — the
-// value §8's `cursor-invalidated` refusal names — and is this store's own
-// bookkeeping, never replayed to the wire.
+// the durable `compactSeq` value of the compacting write that left it, and is
+// this store's own removal evidence, never replayed to the wire.
 type Tombstone struct {
 	ID                string          `json:"id"`
 	ClientOperationID string          `json:"clientOperationId"`
@@ -261,23 +259,21 @@ func validateTombstone(tombstone Tombstone, compactSeq uint64) error {
 
 // MaxCompactionMarks bounds the compaction ledger: one mark per compacting
 // write, oldest dropped first, with the highest dropped write's sequence
-// persisted as the dropped-marks floor (CompactionFloor) so §8's check can
-// tell exact coverage from lost evidence. The ledger is deliberately
-// independent of the dedup tombstones' own bound, because the refusal must not
-// lose its evidence when a tombstone is evicted; beyond this many later
-// compacting writes a cursor older than the whole ledger refuses coarsely
-// instead, which still restarts the client from the first page.
+// persisted as the dropped-marks floor (CompactionFloor) so the custody
+// quarantine can tell exact removal coverage from lost evidence. The ledger is
+// deliberately independent of the dedup tombstones' own bound, because a
+// quarantine must not lose its removal evidence when a tombstone is evicted;
+// beyond this many later compacting writes an id older than the whole ledger
+// has no fine-grained evidence, so the completeness check refuses rather than
+// declare the missing ids lost.
 const MaxCompactionMarks = 500
 
 // CompactionMark records, for one compacting write, every host whose rows it
-// removed and that host's smallest removed row id. A cursor pinned at `pos`
-// was invalidated by this write exactly when mark.Seq is above the cursor's
-// pinned compactSeq and some entry names a row at or before `pos` in the
-// cursor's window: that row sat at or before the cursor's position, which is
-// §8's condition, and the named host is the affected host whose stored bounds
-// entry the refusal carries. A single write routinely removes rows on several
-// hosts (age, removed-host horizon, byte bound), so the evidence is per host —
-// a cursor window on any affected host must see its own removal.
+// removed and that host's smallest removed row id. The custody quarantine reads
+// it as removal evidence: a missing controller-assigned id at or above a mark's
+// per-host minimum was removed by that compacting write, not lost from the
+// file. A single write routinely removes rows on several hosts (age,
+// removed-host horizon, byte bound), so the evidence is per host.
 type CompactionMark struct {
 	Seq   uint64            `json:"seq"`
 	Hosts map[string]string `json:"hosts"`
@@ -365,7 +361,7 @@ func (s *Store) Tombstones() []Tombstone {
 }
 
 // CompactSeq returns the durable compaction sequence: the value every
-// compacting write advances and every minted cursor pins (§4, §8).
+// compacting write advances (§4).
 func (s *Store) CompactSeq() uint64 {
 	if s == nil {
 		return 0
@@ -427,31 +423,6 @@ func validateMirror(mirror HostMirror) error {
 		if _, isLive := live[name]; isLive {
 			return fmt.Errorf("%w: host %q is both live and removed in one mirror write", ErrInvalidBoundary, name)
 		}
-	}
-	return nil
-}
-
-// MirrorHostState persists one mirror write's boundaries and removal markers
-// in one atomic store write, the same discipline MirrorBoundaries uses. It is
-// the hub's path for forwarding the registry's live names and removal
-// tombstones into the store §4's removed-host ordering reads.
-func (s *Store) MirrorHostState(mirror HostMirror) error {
-	if s == nil {
-		return errors.New("hostops: store is not configured")
-	}
-	if err := validateMirror(mirror); err != nil {
-		return err
-	}
-
-	s.cell.mu.Lock()
-	defer s.cell.mu.Unlock()
-
-	next := cloneSnapshot(s.cell.state)
-	if !s.applyMirrorLocked(&next, mirror) {
-		return nil
-	}
-	if _, err := s.commitLocked(next); err != nil {
-		return err
 	}
 	return nil
 }

@@ -22,6 +22,9 @@ func ResponsesEndpointFamilyFor(res registry.Resolved) ResponsesEndpointFamily {
 	if res.Transport.Auth == registry.AuthOAuthOpenAICodex {
 		return ResponsesEndpointFamilyOpenAICodex
 	}
+	if res.Transport.Auth == registry.AuthOAuthGitHubCopilot {
+		return ResponsesEndpointFamilyGitHubCopilot
+	}
 	return ResponsesEndpointFamilyOpenAIPublic
 }
 
@@ -76,6 +79,9 @@ func responsesStoragePolicy(family ResponsesEndpointFamily, body map[string]any)
 	if family == ResponsesEndpointFamilyOpenAICodex {
 		return ResponsesStoragePolicyCodexUnproven, false
 	}
+	if family == ResponsesEndpointFamilyGitHubCopilot {
+		return ResponsesStoragePolicyCopilotDisabled, false
+	}
 	if store, _ := body["store"].(bool); store {
 		return ResponsesStoragePolicyPublicOpenAIStore, true
 	}
@@ -107,6 +113,9 @@ func (c *Client) planContinuation(ctx context.Context, req Request, res registry
 	plan := ResponsesContinuationPlan{EndpointFamily: family}
 	if family == ResponsesEndpointFamilyOpenAICodex {
 		plan.StoragePolicyLabel = ResponsesStoragePolicyCodexUnproven
+	}
+	if family == ResponsesEndpointFamilyGitHubCopilot {
+		plan.StoragePolicyLabel = ResponsesStoragePolicyCopilotDisabled
 	}
 	if !continuationAvailable(res) {
 		return plan, nil

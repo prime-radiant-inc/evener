@@ -14,12 +14,13 @@ const (
 
 // Auth schemes (spec §4).
 const (
-	AuthBearer           = "bearer"
-	AuthOptionalBearer   = "optional-bearer"
-	AuthHeader           = "header"
-	AuthNone             = "none"
-	AuthGCPADC           = "gcp-adc"
-	AuthOAuthOpenAICodex = "oauth-openai-codex"
+	AuthBearer             = "bearer"
+	AuthOptionalBearer     = "optional-bearer"
+	AuthHeader             = "header"
+	AuthNone               = "none"
+	AuthGCPADC             = "gcp-adc"
+	AuthOAuthOpenAICodex   = "oauth-openai-codex"
+	AuthOAuthGitHubCopilot = "oauth-github-copilot"
 )
 
 // Surfaces (spec §3): the agent-facing vendor family a model was trained for.
@@ -163,6 +164,11 @@ type Caps struct {
 	// Protocol features.
 	MultimodalToolResults *bool `toml:"multimodal_tool_results" json:"multimodal_tool_results,omitempty"`
 	WebSearch             *bool `toml:"web_search" json:"web_search,omitempty"`
+	// CombinedSearchAndFunctions says the model family accepts a grounded
+	// search tool and function tools in one request. It is registry data
+	// rather than a hardcoded id prefix so the family judgement lives with
+	// the model rows that state it.
+	CombinedSearchAndFunctions *bool `toml:"combined_search_and_functions" json:"combined_search_and_functions,omitempty"`
 }
 
 // Cost is $ per million tokens (spec §4.1).

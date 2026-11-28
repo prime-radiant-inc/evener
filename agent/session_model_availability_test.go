@@ -42,7 +42,7 @@ func TestNewSessionReusesValidatedModelsAndBoundsDelegateSchema(t *testing.T) {
 	t.Parallel()
 	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
-		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
+		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 16))
 	}
 	adapter := &modelAvailabilityAdapter{models: models}
 	adapter.name = "openai"
@@ -362,7 +362,7 @@ func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T)
 	t.Parallel()
 	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
-		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
+		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 16))
 	}
 	adapter := &modelAvailabilityAdapter{models: models}
 	adapter.name = "openai"
@@ -418,7 +418,7 @@ func TestModelListContinuationWithoutBoundsReusesTheCursors(t *testing.T) {
 	// Enough models that the snapshot is listed by model_list, not inlined.
 	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
-		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
+		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 16))
 	}
 	adapter := &modelAvailabilityAdapter{models: models}
 	adapter.name = "openai"
@@ -464,7 +464,7 @@ func TestModelListContinuationWithChangedBoundsNamesTheCursors(t *testing.T) {
 	t.Parallel()
 	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
-		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
+		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 16))
 	}
 	adapter := &modelAvailabilityAdapter{models: models}
 	adapter.name = "openai"
@@ -492,7 +492,7 @@ func TestModelListContinuationWithChangedBoundsNamesTheCursors(t *testing.T) {
 
 func TestModelListToolPreservesJSONUnderConfiguredOutputLimit(t *testing.T) {
 	t.Parallel()
-	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
+	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount+1)
 	for i := range models {
 		models[i].ID = fmt.Sprintf("model-%02d-%s", i, strings.Repeat("x", 12))
 	}

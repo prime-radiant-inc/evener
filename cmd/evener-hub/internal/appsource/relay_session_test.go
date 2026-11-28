@@ -2249,7 +2249,7 @@ func decodeRelayDelta(t *testing.T, notification appwire.Notification) string {
 // no-active-turn announcement between two real turns mints a turn id that
 // never becomes a transcript entry (preTurnAnnouncementTurnID, kata 9ekv), and
 // a released turn reservation burns one too. The replacement daemon seeds its
-// projector from the transcript (PrepareAppIdentity -> SeedPersistedTurns), so
+// projector from the transcript (PrepareAppIdentityForRef -> SeedPersistedTurns), so
 // its first live turn can carry an id the DEAD generation already published.
 // A browser still holding the dead generation's model then takes turn/started
 // for a turn it already has, which is the turn-id-uniqueness invariant the

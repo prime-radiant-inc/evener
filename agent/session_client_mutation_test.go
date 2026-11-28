@@ -1174,12 +1174,10 @@ func TestClientMutation_IncorporationFailureCrashBoundariesRecoverWithoutDuplica
 }
 
 // TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery
-// pins the restore→serve handoff across the failure-recovery append: the
-// entries OnRestoredTranscript hands over must match what readTranscriptFull sees
-// in the same file, because serve projects exactly that retained list (the
-// daemon's turn snapshot and the projector's live-turn-id fence are seeded
-// from it). A restore that retained the pre-recovery list would seed serve one
-// turn behind the file the recovery just appended to.
+// pins restore-tail transcript visibility across the failure-recovery append:
+// the entries restore hands to rearmRootDelegateAttentionFromTranscript and the
+// TranscriptEntries count on SessionStart must match what readTranscriptFull
+// sees in the same file, rather than keeping the pre-recovery list.
 func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(t *testing.T) {
 	t.Parallel()
 	for _, boundary := range []string{"after_user", "after_failure"} {
@@ -1219,13 +1217,31 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 			}
 			sess.Close()
 
-			var captured restoredTranscriptCapture
-			restored := restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{OnRestoredTranscript: captured.record})
-			defer restored.Close()
-			if !captured.opened {
+			var entries []transcript.Entry
+			restored := restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{
+				testOnly: testConfig{
+					delegateAttentionFoldEntries: func(got []transcript.Entry) (delegateAttentionFold, error) {
+						entries = got
+						return foldDelegateAttention(got)
+					},
+				},
+			})
+			var sessionStartEntries int
+			var gotSessionStart bool
+			drained := make(chan struct{})
+			restored.ConsumeEventsLossless(func(ev events.SessionEvent) {
+				if ev.Kind == events.EventSessionStart {
+					if data, ok := ev.Data.(events.SessionStartData); ok {
+						sessionStartEntries = data.TranscriptEntries
+						gotSessionStart = true
+					}
+				}
+			}, func() { close(drained) })
+			restored.Close()
+			<-drained
+			if entries == nil {
 				t.Fatal("restore handed over no transcript entries")
 			}
-			entries := captured.entries
 			path := transcriptPath(restored.stateDir, restored.id)
 			onDisk, err := readTranscriptFull(context.Background(), path, "")
 			if err != nil {
@@ -1233,6 +1249,9 @@ func TestRestoreSession_RestoredTranscriptIncludesClientMutationFailureRecovery(
 			}
 			if len(entries) != len(onDisk.Entries) {
 				t.Fatalf("retained entries = %d, on-disk entries = %d; the recovery append must be visible to the retained list", len(entries), len(onDisk.Entries))
+			}
+			if !gotSessionStart || sessionStartEntries != len(onDisk.Entries) {
+				t.Fatalf("SessionStart TranscriptEntries = %d (seen=%t), want %d", sessionStartEntries, gotSessionStart, len(onDisk.Entries))
 			}
 			// Same count and same last turn: the retained list ends where the
 			// file ends, so serve's projection fence cannot lag the file. The

@@ -49,7 +49,7 @@ func TestTaskStore_RejectedMutationPreservesPublishedState(t *testing.T) {
 				t.Fatal(err)
 			}
 			store.SetFs(fault.FS(base, fault.FromBytes(taskFaultPlan(failAt))))
-			if err := store.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, Notes: "done"}}); err == nil {
+			if _, err := store.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, Notes: "done"}}); err == nil {
 				t.Fatalf("Update fault %d unexpectedly succeeded", failAt)
 			}
 			if got := store.View(); !reflect.DeepEqual(got, before) {
@@ -59,7 +59,7 @@ func TestTaskStore_RejectedMutationPreservesPublishedState(t *testing.T) {
 			assertReloadedTasks(t, base, store.path, before)
 
 			store.SetFs(base)
-			if err := store.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, Notes: "done"}}); err != nil {
+			if _, err := store.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, Notes: "done"}}); err != nil {
 				t.Fatalf("retry Update: %v", err)
 			}
 			got := store.View()
@@ -151,7 +151,8 @@ func TestTaskStore_LoadFailurePreservesOriginalBytesAndFencesMutation(t *testing
 			return err
 		},
 		"update": func() error {
-			return store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}})
+			_, err := store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}})
+			return err
 		},
 		"populate": func() error {
 			return store.PopulateFromTemplates([]TaskTemplate{{Title: "overwrite", Prompt: "prompt"}}, nil)

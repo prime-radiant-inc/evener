@@ -204,7 +204,7 @@ func TestCompactAt_UnknownWindowWithCompactionThresholdParity(t *testing.T) {
 			testOnly:       testConfig{skipGitSnapshot: true},
 		}),
 	)
-	if err := s.SetModel("gw/deepseek-4.1-flash"); err != nil {
+	if err := s.SetModel("", "gw/deepseek-4.1-flash"); err != nil {
 		t.Fatalf("SetModel: %v", err)
 	}
 
@@ -284,7 +284,7 @@ func TestCompactAt_SetModelEmitsThresholdContextAndMarkerWarning(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", (260_000-sysTokens)*4))),
 	}
 
-	if err := s.SetModel("work/model-1m-250k"); err != nil {
+	if err := s.SetModel("", "work/model-1m-250k"); err != nil {
 		t.Fatalf("SetModel to thresholded 1M: %v", err)
 	}
 
@@ -315,7 +315,7 @@ drain1:
 	s.history = []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", (260_000-sysTokens)*4))),
 	}
-	if err := s.SetModel("work/model-0w-250k"); err != nil {
+	if err := s.SetModel("", "work/model-0w-250k"); err != nil {
 		t.Fatalf("SetModel to unknown-window thresholded: %v", err)
 	}
 	markerUnknown := lastMarkerTurn(t, s).Message.Text()
@@ -326,7 +326,7 @@ drain1:
 		t.Fatalf("unknown-window threshold marker = %q, must not cite synthetic window 277778", markerUnknown)
 	}
 
-	if err := s.SetModel("work/model-1m-none"); err != nil {
+	if err := s.SetModel("", "work/model-1m-none"); err != nil {
 		t.Fatalf("SetModel back to unthresholded 1M: %v", err)
 	}
 	var switchedBack *events.ModelChangedData
@@ -361,7 +361,7 @@ func TestCompactAt_FallbackProfileGovernsNudgeAndNoteElicitation(t *testing.T) {
 	)
 	seedNumberedSessionHistory(t, s1, 12)
 	s1.contextMgr.SetProfile(thresholded)
-	s1.contextMgr.RecordInputTokensFor(thresholded, 200_000, len(currentHistory(t, s1)))
+	s1.contextMgr.RecordInputTokensFor(thresholded, 200_000, len(currentHistory(t, s1)), "")
 	if !s1.maybeNudgeSelfCompact(0) {
 		t.Fatal("expected nudge at 200,000 tokens when contextMgr holds thresholded fallback profile")
 	}
@@ -371,7 +371,7 @@ func TestCompactAt_FallbackProfileGovernsNudgeAndNoteElicitation(t *testing.T) {
 		elicited1++
 		return "fallback note", nil
 	}
-	s1.contextMgr.RecordInputTokensFor(thresholded, 250_000, len(currentHistory(t, s1)))
+	s1.contextMgr.RecordInputTokensFor(thresholded, 250_000, len(currentHistory(t, s1)), "")
 	s1.maybeElicitNoteBeforeCompaction(context.Background(), currentHistory(t, s1), 0)
 	if elicited1 != 1 {
 		t.Fatalf("elicited %d times at 250,000 tokens under thresholded fallback, want 1", elicited1)
@@ -384,7 +384,7 @@ func TestCompactAt_FallbackProfileGovernsNudgeAndNoteElicitation(t *testing.T) {
 	)
 	seedNumberedSessionHistory(t, s2, 12)
 	s2.contextMgr.SetProfile(unthresholded)
-	s2.contextMgr.RecordInputTokensFor(unthresholded, 260_000, len(currentHistory(t, s2)))
+	s2.contextMgr.RecordInputTokensFor(unthresholded, 260_000, len(currentHistory(t, s2)), "")
 	if s2.maybeNudgeSelfCompact(0) {
 		t.Fatal("unexpected premature nudge at 260,000 tokens when contextMgr holds unthresholded fallback profile")
 	}

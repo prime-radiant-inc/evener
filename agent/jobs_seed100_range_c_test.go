@@ -5,7 +5,6 @@ package agent
 import (
 	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -45,28 +44,9 @@ func seed100JobsRangeC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertStructured := func(name string, value, schema any, captureFailed bool, wantValue bool, wantValid *bool, wantReason string) {
-		t.Helper()
-		got, valid, reason := boundedStructuredResult(value, schema, captureFailed)
-		if (got != nil) != wantValue || reason != wantReason {
-			t.Fatalf("%s: value=%#v valid=%v reason=%q", name, got, valid, reason)
-		}
-		if wantValid == nil {
-			if valid != nil {
-				t.Fatalf("%s: valid=%v, want nil", name, *valid)
-			}
-		} else if valid == nil || *valid != *wantValid {
-			t.Fatalf("%s: valid=%v, want %v", name, valid, *wantValid)
-		}
+	if err := validateStructuredResult(map[string]any{"x": 1}, map[string]any{"type": "object"}); err != nil {
+		t.Fatalf("valid schema rejected: %v", err)
 	}
-	valid, invalid := true, false
-	assertStructured("capture failed", nil, nil, true, false, &invalid, structuredResultReasonSchemaCaptureFailed)
-	assertStructured("schema result missing", nil, map[string]any{"type": "object"}, false, false, &invalid, structuredResultReasonSchemaResultMissing)
-	assertStructured("no result requested", nil, nil, false, false, nil, "")
-	assertStructured("marshal failed", make(chan int), nil, false, false, &invalid, structuredResultReasonSchemaCaptureFailed)
-	assertStructured("too large", strings.Repeat("x", maxPersistedStructuredResultJSONBytes), nil, false, false, &invalid, structuredResultReasonSchemaResultTooLarge)
-	assertStructured("schema invalid", 1, map[string]any{"type": "string"}, false, false, &invalid, structuredResultReasonSchemaValidationFailed)
-	assertStructured("valid", map[string]any{"x": 1}, map[string]any{"type": "object"}, false, true, &valid, "")
 
 	foreign := &jobstore.JobRecord{OwnerSessionID: "other", Status: jobstore.StatusCompleted, TerminalGen: "tg"}
 	if rearm, appendEvent := rearmTerminalNotificationDecision(foreign, jm.sessionID); rearm || appendEvent {

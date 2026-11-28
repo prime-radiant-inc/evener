@@ -1,6 +1,6 @@
-// The Hub sheet's own navigation: what it does when the hub it was opened for
-// stops being the selected one (Review Focus 5).
-import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { BaseNavigationContainer, type NavigationContainerRef, type ParamListBase } from "@react-navigation/core";
+import type { NativeStackNavigationOptions, NativeStackScreenProps } from "@react-navigation/native-stack";
+import { createRef } from "react";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { HubProfile } from "../connection";
@@ -8,33 +8,16 @@ import { render } from "../renderNative.testkit";
 import type { Routes } from "../screens";
 import { HubSheet } from "./HubSheet";
 
-const connection = vi.hoisted(() => ({ activeProfile: null as HubProfile | null }));
-vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection }));
-vi.mock("../retainedScreen", () => ({
-	useRetainedScreenConnection: () => ({ state: "ready", canUseConnection: () => true, renderClient: null }),
+const connection = vi.hoisted(() => ({
+	profiles: [] as HubProfile[],
+	activeProfile: null as HubProfile | null,
+	state: "ready",
 }));
-vi.mock("./hubUpdates", () => ({ useHubUpdates: () => ({}) }));
-// The pages render inside the navigator, which isn't drawn here.
-vi.mock("./HubHome", () => ({ HubHome: () => null }));
-vi.mock("./HubsPage", () => ({ HubsPage: () => null }));
+vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection }));
 vi.mock("./HubDetailsPage", () => ({ HubDetailsPage: () => null }));
 vi.mock("./AddHubPage", () => ({ AddHubPage: () => null }));
-vi.mock("./ProvidersPage", () => ({ ProvidersPage: () => null }));
-vi.mock("./ProviderDetailPage", () => ({ ProviderDetailPage: () => null }));
-vi.mock("./HostsPage", () => ({ HostsPage: () => null }));
-vi.mock("./PluginsPage", () => ({ PluginsPage: () => null }));
-vi.mock("./MarketplacePage", () => ({ MarketplacePage: () => null }));
-vi.mock("./DisplayPage", () => ({ DisplayPage: () => null }));
-vi.mock("./DetailLevelPage", () => ({ DetailLevelPage: () => null }));
-vi.mock("./HostDetailPage", () => ({ HostDetailPage: () => null }));
-vi.mock("./HostEditPage", () => ({ HostEditPage: () => null }));
-vi.mock("./OwnHostPage", () => ({ OwnHostPage: () => null }));
-vi.mock("../KeybindingPreferencesScreen", () => ({ KeybindingPreferencesScreen: () => null }));
-vi.mock("../LaunchSettingsScreen", () => ({ LaunchSettingsScreen: () => null }));
-vi.mock("../HubSettingsScreen", () => ({ HubSettingsScreen: () => null }));
-vi.mock("../hosts/useHubFleet", () => ({ useHubFleet: () => ({}) }));
-vi.mock("@react-navigation/native-stack", () => ({
-	createNativeStackNavigator: () => ({ Navigator: () => null, Screen: () => null }),
+vi.mock("@react-navigation/native-stack", async () => ({
+	createNativeStackNavigator: (await import("../navigationTestStack.testkit")).createTestStack,
 }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -50,22 +33,36 @@ function mount() {
 		navigation: navigation as unknown as NativeStackScreenProps<Routes, "Hub">["navigation"],
 		route: route as unknown as NativeStackScreenProps<Routes, "Hub">["route"],
 	};
-	const tree = render(<HubSheet {...props} />);
+	const stack = createRef<NavigationContainerRef<ParamListBase>>();
+	const sheet = () => (
+		<BaseNavigationContainer ref={stack}>
+			<HubSheet {...props} />
+		</BaseNavigationContainer>
+	);
+	const tree = render(sheet());
 	const rerender = () =>
 		act(() => {
-			tree.update(<HubSheet {...props} />);
+			tree.update(sheet());
 		});
-	return { navigation, rerender };
+	return { navigation, rerender, stack };
 }
 
 beforeEach(() => {
+	connection.profiles = [MAGIC, PARADISE];
 	connection.activeProfile = MAGIC;
 });
 
-it("leaves the Board behind for the first-run screen when the selected hub is removed", () => {
-	// React Navigation 7's navigate pushes a screen that's already in the
-	// stack, so a navigate("Hubs") showed first run inside this sheet, over a
-	// stale Board (seen on the simulator). The root stack is reset instead.
+it("opens the saved Hubs list with pairing and profile details as its only destinations", () => {
+	const { stack, navigation } = mount();
+	expect(stack.current?.getCurrentRoute()?.name).toBe("Hubs");
+	expect(new Set(stack.current?.getRootState()?.routeNames)).toEqual(new Set(["Hubs", "AddHub", "HubDetails"]));
+	const options = stack.current?.getCurrentOptions() as NativeStackNavigationOptions;
+	const done = render(<>{options.headerRight?.({ canGoBack: false })}</>);
+	act(() => done.root.findByProps({ accessibilityRole: "button" }).props.onPress());
+	expect(navigation.goBack).toHaveBeenCalledOnce();
+});
+
+it("leaves the workspace for the first-run screen when the selected hub is removed", () => {
 	const { navigation, rerender } = mount();
 	connection.activeProfile = null;
 	rerender();
@@ -74,7 +71,7 @@ it("leaves the Board behind for the first-run screen when the selected hub is re
 	expect(navigation.goBack).not.toHaveBeenCalled();
 });
 
-it("closes onto the Board when another hub is selected", () => {
+it("closes onto the workspace when another hub is selected", () => {
 	const { navigation, rerender } = mount();
 	connection.activeProfile = PARADISE;
 	rerender();

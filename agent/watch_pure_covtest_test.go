@@ -180,9 +180,9 @@ func TestCovCloneWatchSendArgs(t *testing.T) {
 		t.Fatal("nil should return nil")
 	}
 
-	orig := &watchSendArgs{To: "caller", Message: "hello", IncludeExcerpt: true}
+	orig := &watchSendArgs{To: "caller"}
 	clone := cloneWatchSendArgs(orig)
-	if clone.To != "caller" || clone.Message != "hello" || !clone.IncludeExcerpt {
+	if clone.To != "caller" {
 		t.Fatalf("clone = %+v", clone)
 	}
 	clone.To = "modified"

@@ -3,10 +3,15 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import {
+  clampOverviewWidth,
   clampSidebarWidth,
   hasTranscriptDisplayLocal,
   initPrefs,
   migrateLegacyTranscriptDisplay,
+  OVERVIEW_WIDTH_DEFAULT,
+  OVERVIEW_WIDTH_MAX,
+  OVERVIEW_WIDTH_MIN,
+  overviewWidthMax,
   prefsStore,
   readLegacyPreference,
   readTranscriptDisplayLocal,
@@ -58,6 +63,11 @@ describe("defaults (empty localStorage)", () => {
   });
   test("enterToSend defaults to false", () => {
     expect(prefsStore.getState().enterToSend).toBe(false);
+  });
+  // #4845's ruling: landing at unread replies is opt-in on the web, so the
+  // absent-key default is off even though the phone defaults it on.
+  test("openAtUnreadReplies defaults to false (opt-in, as the phone's is not)", () => {
+    expect(prefsStore.getState().openAtUnreadReplies).toBe(false);
   });
   // 2026-08-14 reversal (docs/web-ui/decisions.md): title-count is now the
   // one channel that defaults ON - the attention system was otherwise
@@ -114,6 +124,12 @@ describe("hydration from existing localStorage", () => {
     localStorage.setItem(KEY("enterToSend"), "0");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().enterToSend).toBe(false);
+  });
+
+  test("reads a previously stored openAtUnreadReplies", () => {
+    localStorage.setItem(KEY("openAtUnreadReplies"), "1");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().openAtUnreadReplies).toBe(true);
   });
 
   test("reads previously stored notification toggles and loud scope", () => {
@@ -225,6 +241,17 @@ describe("pinned key contract: evener.prefs.enterToSend", () => {
     localStorage.setItem("evener.prefs.enterToSend", "0");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().enterToSend).toBe(false);
+  });
+});
+
+describe("openAtUnreadReplies (Settings -> Conversation display)", () => {
+  test("persists under evener.prefs.openAtUnreadReplies with the shared '1'/'0' encoding", () => {
+    prefsStore.getState().setOpenAtUnreadReplies(true);
+    expect(localStorage.getItem("evener.prefs.openAtUnreadReplies")).toBe("1");
+    expect(prefsStore.getState().openAtUnreadReplies).toBe(true);
+    prefsStore.getState().setOpenAtUnreadReplies(false);
+    expect(localStorage.getItem("evener.prefs.openAtUnreadReplies")).toBe("0");
+    expect(prefsStore.getState().openAtUnreadReplies).toBe(false);
   });
 });
 
@@ -479,6 +506,71 @@ describe("sidebarWidth", () => {
     resetPrefsStoreForTests();
     expect(prefsStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_MIN_TOUCH);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("overviewWidth", () => {
+  test("defaults to OVERVIEW_WIDTH_DEFAULT with nothing persisted", () => {
+    expect(OVERVIEW_WIDTH_DEFAULT).toBe(320);
+    expect(OVERVIEW_WIDTH_MIN).toBe(280);
+    expect(OVERVIEW_WIDTH_MAX).toBe(640);
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_DEFAULT);
+  });
+
+  test("setOverviewWidth persists as a plain number string and updates state", () => {
+    prefsStore.getState().setOverviewWidth(420);
+    expect(localStorage.getItem(KEY("overviewWidth"))).toBe("420");
+    expect(prefsStore.getState().overviewWidth).toBe(420);
+  });
+
+  test("round-trips a persisted width across a fresh load", () => {
+    prefsStore.getState().setOverviewWidth(480);
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().overviewWidth).toBe(480);
+  });
+
+  test("setOverviewWidth clamps below the minimum and above the maximum and rounds fractional pixels", () => {
+    prefsStore.getState().setOverviewWidth(100);
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_MIN);
+    prefsStore.getState().setOverviewWidth(2000);
+    expect(prefsStore.getState().overviewWidth).toBe(OVERVIEW_WIDTH_MAX);
+    prefsStore.getState().setOverviewWidth(355.6);
+    expect(prefsStore.getState().overviewWidth).toBe(356);
+    expect(localStorage.getItem(KEY("overviewWidth"))).toBe("356");
+  });
+
+  test.each([
+    ["a huge value", "99999", OVERVIEW_WIDTH_MAX],
+    ["a negative value", "-200", OVERVIEW_WIDTH_MIN],
+    ["zero", "0", OVERVIEW_WIDTH_MIN],
+    ["non-numeric garbage", "huge", OVERVIEW_WIDTH_DEFAULT],
+    ["an empty string", "", OVERVIEW_WIDTH_DEFAULT],
+    ["NaN", "NaN", OVERVIEW_WIDTH_DEFAULT],
+    ["Infinity", "Infinity", OVERVIEW_WIDTH_DEFAULT],
+  ])("clamps %s on read (%s -> %i)", (_label, stored, expected) => {
+    localStorage.setItem(KEY("overviewWidth"), stored);
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().overviewWidth).toBe(expected);
+  });
+
+  test("clampOverviewWidth caps narrow desktop viewports to protect the workspace column", () => {
+    // Wide desktop permits the full OVERVIEW_WIDTH_MAX.
+    expect(overviewWidthMax(1400)).toBe(OVERVIEW_WIDTH_MAX);
+    expect(clampOverviewWidth(640, 1400)).toBe(OVERVIEW_WIDTH_MAX);
+    expect(clampOverviewWidth(400)).toBe(400);
+    // Narrow desktop (900-1200px) caps below OVERVIEW_WIDTH_MAX while staying >= OVERVIEW_WIDTH_MIN
+    // and still allowing the default width at 900px.
+    const maxAt900 = overviewWidthMax(900);
+    expect(maxAt900).toBeGreaterThanOrEqual(OVERVIEW_WIDTH_DEFAULT);
+    expect(maxAt900).toBeLessThan(OVERVIEW_WIDTH_MAX);
+    expect(clampOverviewWidth(600, 900)).toBe(maxAt900);
+    const maxAt1024 = overviewWidthMax(1024);
+    expect(maxAt1024).toBeGreaterThan(maxAt900);
+    expect(maxAt1024).toBeLessThan(OVERVIEW_WIDTH_MAX);
+    expect(clampOverviewWidth(600, 1024)).toBe(maxAt1024);
+    // Even a very narrow viewport never pushes max below min.
+    expect(overviewWidthMax(600)).toBe(OVERVIEW_WIDTH_MIN);
+    expect(clampOverviewWidth(500, 600)).toBe(OVERVIEW_WIDTH_MIN);
   });
 });
 

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "vitest";
-import { isConfirmedCrashedSession } from "./sessionKind";
+import { isConfirmedCrashedSession, isTopLevelSession } from "./sessionKind";
+
+describe("nested session kinds", () => {
+  test("names exactly the two kinds that are never top-level", () => {
+    expect(isTopLevelSession({ kind: "subagent" })).toBe(false);
+    expect(isTopLevelSession({ kind: "fork" })).toBe(false);
+    expect(isTopLevelSession({ kind: "session" })).toBe(true);
+  });
+});
 
 describe("isConfirmedCrashedSession", () => {
   test("recognizes an errored session with the crashed navigation cause", () => {

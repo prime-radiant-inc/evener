@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
@@ -441,7 +442,7 @@ func TestLiveRenameRejectsRecoveryAdmission(t *testing.T) {
 				ctx = admitSessionRecovery(ctx, cfg, message)
 			}
 			finish := cfg.ResumeLocks.BeginForceStop([]string{"owner"})
-			if err := cfg.ResumeLocks.PersistForceStop([]string{"owner"}, "owner"); err != nil {
+			if _, err := cfg.ResumeLocks.PersistForceStop([]string{"owner"}, "owner", daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -476,7 +477,7 @@ func TestSavedRenameRemainsAvailableAfterRecovery(t *testing.T) {
 	cfg := hubcore.WebConfig{Past: past, ResumeLocks: hubcore.NewResumeLocks()}
 	ctx := admitSessionConnection(t.Context(), cfg)
 	finish := cfg.ResumeLocks.BeginForceStop([]string{"02wMz5Txv1C3Hut0M8GCeB"})
-	if err := cfg.ResumeLocks.PersistForceStop([]string{"02wMz5Txv1C3Hut0M8GCeB"}, "02wMz5Txv1C3Hut0M8GCeB"); err != nil {
+	if _, err := cfg.ResumeLocks.PersistForceStop([]string{"02wMz5Txv1C3Hut0M8GCeB"}, "02wMz5Txv1C3Hut0M8GCeB", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)

@@ -47,6 +47,8 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 			Kind:                 t.Kind,
 			Authorship:           inheritedTranscriptAuthorship(t.Authorship),
 			Message:              t.Message,
+			QuietYield:           t.QuietYield,
+			QuietCompanion:       t.QuietCompanion,
 			Timestamp:            t.Timestamp,
 			SteeringSource:       t.SteeringSource,
 			SteeringKind:         t.SteeringKind,

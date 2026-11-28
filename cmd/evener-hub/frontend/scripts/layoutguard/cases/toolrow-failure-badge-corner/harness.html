@@ -18,7 +18,7 @@
      (class names unhashed):
 
        <div class="row" data-intent="true">
-         <span class="rowIconSlot fieldSeatBehind">
+         <span class="rowIconSlot">
            <span class="rowIcon" aria-hidden="true"><svg/></span>
            <span class="failureBadge">
              <span role="img" aria-label="Failed"><svg/></span>
@@ -53,7 +53,7 @@ const INTENT = "Checking whether the hub already serves session artifacts over H
 function rowHtml(id, failed) {
   return `
     <div class="call" id="call-${id}"><div class="row" id="row-${id}" data-intent="true">
-      <span class="rowIconSlot fieldSeatBehind" id="slot-${id}">
+      <span class="rowIconSlot" id="slot-${id}">
         <span class="rowIcon" id="seat-${id}" aria-hidden="true">${ICON_SVG}</span>
         ${failed ? `<span class="failureBadge" id="badge-${id}">${FAILURE_SVG}</span>` : ""}
       </span>
@@ -70,9 +70,8 @@ function frameDocument(width) {
       html, body { margin: 0; background: var(--surface-0); color: var(--ink-hi); }
       body { padding: 16px; font-family: var(--font-sans); font-size: var(--font-size-body); line-height: var(--line-height-body); }
       /* Production indents run rows by the rail gutter at/above 700px
-       * (turnblock.module.css .runContent). The tool row (.call) reserves its
-       * own seat column inside that, at every width, and the slot's pull
-       * lands in it. */
+       * (turnblock.module.css .runContent). The tool row's slot pulls into
+       * that shared gutter on desktop and leads inline on phones. */
       .railBox { box-sizing: border-box; }
       @media (min-width: 700px) {
         .railBox { padding-left: var(--speaker-gutter); }
@@ -128,7 +127,7 @@ window.measure = async () => {
       badgePosition: style.position,
       intentLeft: box(doc.getElementById("intent-failed")).left,
       cleanIntentLeft: box(doc.getElementById("intent-clean")).left,
-      callLeft: box(doc.getElementById("call-failed")).left,
+      railBoxLeft: box(doc.querySelector(".railBox")).left,
       rowLeft: box(doc.getElementById("row-failed")).left,
       cleanRowLeft: box(doc.getElementById("row-clean")).left,
     };

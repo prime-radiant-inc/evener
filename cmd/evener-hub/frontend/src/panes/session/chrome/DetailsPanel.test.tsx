@@ -1,15 +1,20 @@
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { effectiveContextStatus, tokenUnitLabel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
+import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
+import { Toast } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import rawMeterStyles from "../../../widgets/meter/meter.module.css";
-import { DetailsPanel, DetailsPanelBody } from "./DetailsPanel";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
+import { DetailsPanelBody } from "./DetailsPanel";
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
@@ -54,13 +59,12 @@ function usageTurn(id: string, inputTokens: number, outputTokens: number): TurnM
   return { id, status: "completed", items: [], usage: { inputTokens, outputTokens } };
 }
 
-async function openPanel(model: ThreadModel) {
-  render(<DetailsPanel model={model} now={0} />);
-  await userEvent.click(screen.getByRole("button", { name: "Details" }));
+function openPanel(model: ThreadModel, now = 0) {
+  return render(<DetailsPanelBody model={model} now={now} />);
 }
 
 function panelText(): string {
-  return screen.getByRole("dialog", { name: "Session details" }).textContent ?? "";
+  return document.body.textContent ?? "";
 }
 
 // The term a row's value is listed under: the testid sits on the value, inside
@@ -72,6 +76,8 @@ function rowTerm(value: HTMLElement): string | null | undefined {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  resetToastStoreForTests();
+  resetThreadsStoreForTests();
   resetNavigationStoreForTests();
   resetConnectionStoreForTests();
 });
@@ -98,8 +104,8 @@ function seedHosts(sources: { id: string; label: string; kind: string; online: b
   connectionStore.setState({ state: hubReady ? "ready" : "reconnecting" });
 }
 
-test.each([true, false, undefined])("Manager projection %s is read-only in session details", async (manager) => {
-  await openPanel(testModel({ manager }));
+test.each([true, false, undefined])("Manager projection %s is read-only in session details", (manager) => {
+  openPanel(testModel({ manager }));
   expect(screen.queryByRole("switch")).toBeNull();
   const indication = screen.queryByTestId("session-details-manager");
   if (manager) {
@@ -120,6 +126,38 @@ test("details body shows a locally resolved branch when the wire carries none", 
   expect(screen.getByTestId("session-details-branch").textContent).toContain("trunk");
 });
 
+// The overview sheet's Session facts include the reasoning effort
+// (design-system.md section 12): the same readout the status row shows,
+// display-only. Setting effort stays on the settings surface, so the row
+// never renders a control.
+test("the details body lists the session's reasoning effort when its ladder exists", () => {
+  render(
+    <DetailsPanelBody
+      model={testModel({ reasoningEffortLevels: ["low", "high"], supportsReasoning: true, reasoningEffort: "high" })}
+      now={0}
+    />,
+  );
+  const row = screen.getByTestId("session-details-effort");
+  expect(row.textContent?.toLowerCase()).toContain("high");
+  expect(row.closest("button")).toBeNull();
+});
+
+test("the details body omits the effort row when the model has no ladder", () => {
+  render(<DetailsPanelBody model={testModel({ reasoningEffortLevels: [], supportsReasoning: false })} now={0} />);
+  expect(screen.queryByTestId("session-details-effort")).toBeNull();
+});
+
+// Queue depth rides the usage group beside work time, absent at zero like
+// the status row's own figure: an empty queue is the normal case and a "0
+// queued" row would be noise on every session.
+test("the details body lists queue depth only while a queue holds work", () => {
+  render(<DetailsPanelBody model={testModel({ queue: { revision: 1, depth: 2 } })} now={0} />);
+  expect(screen.getByTestId("session-details-queue").textContent).toContain("2");
+  cleanup();
+  render(<DetailsPanelBody model={testModel()} now={0} />);
+  expect(screen.queryByTestId("session-details-queue")).toBeNull();
+});
+
 test("details body keeps the wire's branch over a locally resolved one", () => {
   render(<DetailsPanelBody model={testModel({ gitBranch: "feature/wire" })} now={0} resolvedBranch="trunk" />);
   expect(screen.getByTestId("session-details-branch").textContent).toContain("feature/wire");
@@ -130,25 +168,21 @@ test("details body omits the branch row when neither wire nor lookup has one", (
   expect(screen.queryByTestId("session-details-branch")).toBeNull();
 });
 
-test("the trigger opens the details sheet", async () => {
-  await openPanel(testModel());
-  expect(screen.getByRole("dialog", { name: "Session details" })).toBeTruthy();
-});
-
 // --- context ----------------------------------------------------------------
 
 // The exact figures are the panel's whole reason to exist: the status row
 // shows the context meter, this shows what the meter is made of.
-test("a live session's context row shows percent used, used / window, and how much is left", async () => {
-  await openPanel(testModel());
+test("a live session's context row shows percent used, used / window, and how much is left", () => {
+  openPanel(testModel());
   const row = screen.getByTestId("session-details-context");
   // The figures, not the words around them: 42% of a 100K window, 42K used, 58K left.
   for (const figure of ["42%", "42K", "100K", "58K"]) expect(row.textContent).toContain(figure);
 });
 
-test("the context row carries a meter at the session's pressure", async () => {
-  await openPanel(testModel());
+test("the context row carries a circular ring meter at the session's pressure", () => {
+  openPanel(testModel());
   const meter = screen.getByRole("meter", { name: /Context/ });
+  expect(meter.dataset.variant).toBe("ring");
   expect(meter.getAttribute("aria-valuenow")).toBe("42000");
   expect(meter.getAttribute("aria-valuemax")).toBe("100000");
 });
@@ -160,8 +194,8 @@ test("the context row carries a meter at the session's pressure", async () => {
 // presence/absence - so wording tweaks don't break this while the estimate
 // indicator stays pinned, including its absence once a window something
 // vouches for arrives.
-test("an assumed context window marks only the capacity figures as estimates", async () => {
-  await openPanel(testModel({ contextAssumed: true }));
+test("an assumed context window marks only the capacity figures as estimates", () => {
+  openPanel(testModel({ contextAssumed: true }));
   const row = screen.getByTestId("session-details-context");
   const text = row.textContent ?? "";
   expect(text).toContain("~100K");
@@ -172,7 +206,7 @@ test("an assumed context window marks only the capacity figures as estimates", a
   expect(meter.getAttribute("aria-valuemax")).toBe("100000");
   expect(meter.getAttribute("aria-label") ?? "").toContain("~100K");
   cleanup();
-  await openPanel(testModel({ contextAssumed: false }));
+  openPanel(testModel({ contextAssumed: false }));
   expect(screen.getByTestId("session-details-context").textContent ?? "").not.toContain("~");
 });
 
@@ -191,22 +225,22 @@ test.each([
   { pressure: 0.42, tone: "neutral" as const },
   { pressure: 0.8, tone: "attention" as const },
   { pressure: 0.95, tone: "danger" as const },
-])("the context meter renders the $tone tone at pressure $pressure", async ({ pressure, tone }) => {
-  await openPanel(testModel({ contextUsed: pressure * 100_000, contextPressure: pressure }));
+])("the context meter renders the $tone tone at pressure $pressure", ({ pressure, tone }) => {
+  openPanel(testModel({ contextUsed: pressure * 100_000, contextPressure: pressure }));
   expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass[tone])).toBe(true);
 });
 
-test("a closed session gets the same no-context treatment as an ended one", async () => {
-  await openPanel(testModel({ status: { type: "closed" } }));
+test("a closed session gets the same no-context treatment as an ended one", () => {
+  openPanel(testModel({ status: { type: "closed" } }));
   expect(screen.queryByTestId("session-details-context")).toBeNull();
 });
 
-test("a live session whose daemon reports no context window shows no context row", async () => {
-  await openPanel(testModel({ contextWindow: 0, contextUsed: 0, contextPressure: 0 }));
+test("a live session whose daemon reports no context window shows no context row", () => {
+  openPanel(testModel({ contextWindow: 0, contextUsed: 0, contextPressure: 0 }));
   expect(screen.queryByTestId("session-details-context")).toBeNull();
 });
 
-test("uses compactionThreshold for the context meter and readout, showing window parenthetical or unknown window", async () => {
+test("uses compactionThreshold for the context meter and readout, showing window parenthetical or unknown window", () => {
   const knownModel = testModel({
     contextUsed: 200_000,
     contextWindow: 1_000_000,
@@ -220,7 +254,7 @@ test("uses compactionThreshold for the context meter and readout, showing window
     remaining: 50_000,
     hasCustomThreshold: true,
   });
-  await openPanel(knownModel);
+  openPanel(knownModel);
   const text = screen.getByTestId("session-details-context").textContent ?? "";
   expect(text).toContain("80%");
   expect(text).toContain("1M");
@@ -243,7 +277,7 @@ test("uses compactionThreshold for the context meter and readout, showing window
     remaining: 50_000,
     hasCustomThreshold: true,
   });
-  await openPanel(unknownWindowModel);
+  openPanel(unknownWindowModel);
   const unknownMeter = screen.getByRole("meter", { name: /Context/ });
   expect(unknownMeter.getAttribute("aria-valuenow")).toBe("200000");
   expect(unknownMeter.getAttribute("aria-valuemax")).toBe("250000");
@@ -255,19 +289,18 @@ test("uses compactionThreshold for the context meter and readout, showing window
 
 // --- work time --------------------------------------------------------------
 
-test("work time is formatted with the daemon's own duration convention", async () => {
-  await openPanel(testModel({ workMillis: 4200 }));
+test("work time is formatted with the daemon's own duration convention", () => {
+  openPanel(testModel({ workMillis: 4200 }));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("4s");
 });
 
-test("the live in-flight turn's elapsed time is added to the banked work time", async () => {
+test("the live in-flight turn's elapsed time is added to the banked work time", () => {
   render(
-    <DetailsPanel
+    <DetailsPanelBody
       model={testModel({ workMillis: 60_000, activeTurnStartedAt: "1970-01-01T00:01:00.000Z" })}
       now={180_000}
     />,
   );
-  await userEvent.click(screen.getByRole("button", { name: "Details" }));
   // 60s banked + (180s now - 60s start) = 180s.
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("3m");
 });
@@ -276,31 +309,33 @@ test("the live in-flight turn's elapsed time is added to the banked work time", 
 // row that still rendered, reading a fabricated "1s" (formatWorkDuration
 // clamps its minimum up so a real sub-second duration never prints "0s" - but
 // an unmeasured session has no duration to round at all).
-test("no work-time row at all when the session has no measured work time", async () => {
-  await openPanel(testModel({ workMillis: 0 }));
+test("no work-time row at all when the session has no measured work time", () => {
+  openPanel(testModel({ workMillis: 0 }));
   expect(screen.queryByTestId("session-details-work-time")).toBeNull();
   expect(panelText()).not.toContain("1s");
 });
 
-test("an active turn's elapsed time alone is enough to show work time on a session with nothing banked", async () => {
+test("an active turn's elapsed time alone is enough to show work time on a session with nothing banked", () => {
   render(
-    <DetailsPanel model={testModel({ workMillis: 0, activeTurnStartedAt: "1970-01-01T00:00:00.500Z" })} now={9_500} />,
+    <DetailsPanelBody
+      model={testModel({ workMillis: 0, activeTurnStartedAt: "1970-01-01T00:00:00.500Z" })}
+      now={9_500}
+    />,
   );
-  await userEvent.click(screen.getByRole("button", { name: "Details" }));
   expect(screen.getByTestId("session-details-work-time").textContent).toContain("9s");
 });
 
 // --- tokens -----------------------------------------------------------------
 
-test("tokens read as up/down arrows over the session's cumulative usage", async () => {
-  await openPanel(testModel());
+test("tokens read as up/down arrows over the session's cumulative usage", () => {
+  openPanel(testModel());
   const row = screen.getByTestId("session-details-tokens");
   expect(row.textContent).toContain("↑100K");
   expect(row.textContent).toContain("↓20K");
 });
 
-test("no tokens row at all when neither the thread nor any loaded turn has token data", async () => {
-  await openPanel(testModel({ usage: null, turns: [] }));
+test("no tokens row at all when neither the thread nor any loaded turn has token data", () => {
+  openPanel(testModel({ usage: null, turns: [] }));
   expect(screen.queryByTestId("session-details-tokens")).toBeNull();
 });
 
@@ -309,8 +344,8 @@ test("no tokens row at all when neither the thread nor any loaded turn has token
 // thread-level total is absent even though every loaded turn has real usage -
 // which is why the transcript's per-turn stamps rendered right beside a panel
 // that showed nothing.
-test("a session with no thread-level total falls back to summing the loaded turns", async () => {
-  await openPanel(
+test("a session with no thread-level total falls back to summing the loaded turns", () => {
+  openPanel(
     testModel({ usage: null, turns: [usageTurn("t1", 6961, 73), usageTurn("t2", 1276, 47)], olderCursor: undefined }),
   );
   const row = screen.getByTestId("session-details-tokens");
@@ -321,16 +356,16 @@ test("a session with no thread-level total falls back to summing the loaded turn
 // thread/read windows items via itemLimit and reports the truncation through
 // olderCursor. A sum over that window is NOT the session total, so the label
 // must say what it actually counts instead of overstating its scope.
-test("a derived total over a truncated turn window is labelled as covering only the loaded turns", async () => {
-  await openPanel(testModel({ usage: null, turns: [usageTurn("t1", 500, 20)], olderCursor: "cursor_1" }));
+test("a derived total over a truncated turn window is labelled as covering only the loaded turns", () => {
+  openPanel(testModel({ usage: null, turns: [usageTurn("t1", 500, 20)], olderCursor: "cursor_1" }));
   const row = screen.getByTestId("session-details-tokens");
   expect(row.textContent).toContain("↑500");
   expect(row.getAttribute("data-scope")).toBe("loaded");
   expect(rowTerm(row)).toBe(tokenUnitLabel("loaded"));
 });
 
-test("the thread's own cumulative total is labelled plainly as the session's tokens", async () => {
-  await openPanel(testModel({ olderCursor: "cursor_1" }));
+test("the thread's own cumulative total is labelled plainly as the session's tokens", () => {
+  openPanel(testModel({ olderCursor: "cursor_1" }));
   const row = screen.getByTestId("session-details-tokens");
   expect(row.getAttribute("data-scope")).toBe("session");
   expect(rowTerm(row)).toBe(tokenUnitLabel("session"));
@@ -340,13 +375,13 @@ test("the thread's own cumulative total is labelled plainly as the session's tok
 
 // Cost is a server-formatted string (appwire.EstimateCost) - shown verbatim,
 // because the pricing table it came from never crosses the wire.
-test("cost is rendered exactly as the server formatted it", async () => {
-  await openPanel(testModel({ cost: "~$1.00" }));
+test("cost is rendered exactly as the server formatted it", () => {
+  openPanel(testModel({ cost: "~$1.00" }));
   expect(screen.getByTestId("session-details-cost").textContent).toContain("~$1.00");
 });
 
-test("no cost row when the daemon omits cost, rather than a bogus zero", async () => {
-  await openPanel(testModel({ cost: null }));
+test("no cost row when the daemon omits cost, rather than a bogus zero", () => {
+  openPanel(testModel({ cost: null }));
   expect(screen.queryByTestId("session-details-cost")).toBeNull();
   expect(panelText()).not.toContain("$");
 });
@@ -355,8 +390,8 @@ test("no cost row when the daemon omits cost, rather than a bogus zero", async (
 // deliberately returns empty for an uncataloged model, and the pricing table
 // never crosses the wire, so there is nothing to multiply by. A derived token
 // sum must not grow a cost row out of thin air.
-test("a derived token total never invents a cost the server did not send", async () => {
-  await openPanel(testModel({ usage: null, cost: null, turns: [usageTurn("t1", 6961, 73)] }));
+test("a derived token total never invents a cost the server did not send", () => {
+  openPanel(testModel({ usage: null, cost: null, turns: [usageTurn("t1", 6961, 73)] }));
   expect(screen.getByTestId("session-details-tokens")).toBeTruthy();
   expect(screen.queryByTestId("session-details-cost")).toBeNull();
   expect(panelText()).not.toContain("$");
@@ -364,51 +399,49 @@ test("a derived token total never invents a cost the server did not send", async
 
 // --- identity and location --------------------------------------------------
 
-test("the model row shows the provider/model label the status row's switch shows", async () => {
-  await openPanel(testModel({ modelProvider: "openai", model: "gpt-5.6-luna" }));
+test("the model row shows the provider/model label the status row's switch shows", () => {
+  openPanel(testModel({ modelProvider: "openai", model: "gpt-5.6-luna" }));
   expect(screen.getByTestId("session-details-model").textContent).toContain("openai/gpt-5.6-luna");
 });
 
-test("the status row names the session's current state", async () => {
-  await openPanel(testModel({ status: { type: "active" } }));
+test("the status row names the session's current state", () => {
+  openPanel(testModel({ status: { type: "active" } }));
   expect(screen.getByTestId("session-details-state").textContent).toContain("active");
 });
 
-test("session id, cwd, and branch each render when the wire carried them", async () => {
-  await openPanel(
-    testModel({ threadId: "033uaztQj6XPP6eF7pS0OW", cwd: "/Users/jesse/evener", gitBranch: "details-empty" }),
-  );
+test("session id, cwd, and branch each render when the wire carried them", () => {
+  openPanel(testModel({ threadId: "033uaztQj6XPP6eF7pS0OW", cwd: "/Users/jesse/evener", gitBranch: "details-empty" }));
   expect(screen.getByTestId("session-details-id").textContent).toContain("033uaztQj6XPP6eF7pS0OW");
   expect(screen.getByTestId("session-details-cwd").textContent).toContain("/Users/jesse/evener");
   expect(screen.getByTestId("session-details-branch").textContent).toContain("details-empty");
 });
 
-test("a project path distinct from the cwd gets its own row (a linked worktree)", async () => {
-  await openPanel(testModel({ cwd: "/Users/jesse/evener/.claude/worktrees/x", projectPath: "/Users/jesse/evener" }));
+test("a project path distinct from the cwd gets its own row (a linked worktree)", () => {
+  openPanel(testModel({ cwd: "/Users/jesse/evener/.claude/worktrees/x", projectPath: "/Users/jesse/evener" }));
   expect(screen.getByTestId("session-details-project").textContent).toContain("/Users/jesse/evener");
 });
 
 // Repeating the cwd verbatim under a second label teaches a reader nothing.
-test("no project row when the project path is just the cwd again", async () => {
-  await openPanel(testModel({ cwd: "/Users/jesse/evener", projectPath: "/Users/jesse/evener" }));
+test("no project row when the project path is just the cwd again", () => {
+  openPanel(testModel({ cwd: "/Users/jesse/evener", projectPath: "/Users/jesse/evener" }));
   expect(screen.queryByTestId("session-details-project")).toBeNull();
 });
 
-test("location rows the wire did not carry are omitted rather than shown blank", async () => {
-  await openPanel(testModel({ gitBranch: undefined, projectPath: undefined }));
+test("location rows the wire did not carry are omitted rather than shown blank", () => {
+  openPanel(testModel({ gitBranch: undefined, projectPath: undefined }));
   expect(screen.queryByTestId("session-details-branch")).toBeNull();
   expect(screen.queryByTestId("session-details-project")).toBeNull();
 });
 
-test("created and updated instants render when the wire carried them", async () => {
+test("created and updated instants render when the wire carried them", () => {
   const created = "2026-07-23T18:02:46.000Z";
-  await openPanel(testModel({ createdAt: created, updatedAt: "2026-07-24T06:01:17.000Z" }));
+  openPanel(testModel({ createdAt: created, updatedAt: "2026-07-24T06:01:17.000Z" }));
   expect(screen.getByTestId("session-details-created").textContent).toContain(new Date(created).toLocaleString());
   expect(screen.getByTestId("session-details-updated")).toBeTruthy();
 });
 
-test("no created/updated rows when the source did not know the instants", async () => {
-  await openPanel(testModel({ createdAt: undefined, updatedAt: undefined }));
+test("no created/updated rows when the source did not know the instants", () => {
+  openPanel(testModel({ createdAt: undefined, updatedAt: undefined }));
   expect(screen.queryByTestId("session-details-created")).toBeNull();
   expect(screen.queryByTestId("session-details-updated")).toBeNull();
 });
@@ -417,17 +450,16 @@ test("no created/updated rows when the source did not know the instants", async 
 
 // The legacy panel grouped its rows under titled sections (Session / Usage /
 // Runtime), which is what keeps a dozen rows scannable.
-test("rows are grouped under titled sections", async () => {
-  await openPanel(testModel());
-  expect(screen.getByRole("heading", { name: "Session" })).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Location" })).toBeTruthy();
+test("rows are grouped into semantic regions", () => {
+  openPanel(testModel());
+  expect(screen.getByRole("region", { name: "Session" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Usage" })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Workspace" })).toBeTruthy();
 });
 
-// A section whose every row was omitted for want of data must not leave a bare
-// heading behind.
-test("a section with no rows to show is dropped, heading included", async () => {
-  await openPanel(
+// A section whose every row was omitted for want of data is dropped completely.
+test("a section with no rows to show is dropped", () => {
+  openPanel(
     testModel({
       status: { type: "ended" },
       contextWindow: 0,
@@ -437,14 +469,14 @@ test("a section with no rows to show is dropped, heading included", async () => 
       turns: [],
     }),
   );
-  expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
 });
 
 // The whole failure this panel is being fixed for: a session with no accounting
 // to report must drop that section rather than present one fabricated number as
 // if it were the session's whole accounting.
-test("a session with no accounting data at all keeps its identity rows and drops the usage section", async () => {
-  await openPanel(
+test("a session with no accounting data at all keeps its identity rows and drops the usage section", () => {
+  openPanel(
     testModel({
       status: { type: "ended" },
       contextWindow: 0,
@@ -459,13 +491,13 @@ test("a session with no accounting data at all keeps its identity rows and drops
     }),
   );
   expect(screen.getByTestId("session-details-model").textContent).toBeTruthy();
-  expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
 });
 
 // An ended session has no live context pressure - work time, tokens, and cost
 // are all still real (persisted), so the panel opens and shows them.
-test("an ended session shows work time, tokens, and cost but no context row", async () => {
-  await openPanel(testModel({ status: { type: "ended" }, contextUsed: 42_000, contextWindow: 100_000 }));
+test("an ended session shows work time, tokens, and cost but no context row", () => {
+  openPanel(testModel({ status: { type: "ended" }, contextUsed: 42_000, contextWindow: 100_000 }));
   expect(screen.queryByTestId("session-details-context")).toBeNull();
   expect(screen.getByTestId("session-details-work-time")).toBeTruthy();
   expect(screen.getByTestId("session-details-tokens")).toBeTruthy();
@@ -480,11 +512,113 @@ test("no host row on a hub whose only host is its own", () => {
   expect(screen.queryByTestId("session-details-host")).toBeNull();
 });
 
-test("a session on a remote host names that host by its manifest label and says it is online", () => {
+test("a session on a remote host names that host by its manifest label without duplicating an online indicator", () => {
   seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }]);
-  render(<DetailsPanelBody model={testModel({ ref: "studio:abc" })} now={0} />);
+  render(
+    <DetailsPanelBody
+      model={testModel({
+        ref: "studio:abc",
+        status: { type: "active" },
+        goal: { objective: "Verify deployment", status: "blocked", iterations: 1 },
+      })}
+      now={0}
+    />,
+  );
   expect(screen.getByTestId("session-details-host").textContent).toContain("Studio Mac");
-  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("true");
+  expect(screen.queryByTestId("session-details-host-state")).toBeNull();
+  expect(screen.getByTestId("session-details-goal-status").dataset.state).toBe("blocked");
+  expect(screen.getByTestId("session-details-state").querySelector('[data-state="working"]')).toBeTruthy();
+});
+
+test("an active goal does not duplicate the session's active status indicator", () => {
+  render(
+    <DetailsPanelBody
+      model={testModel({
+        status: { type: "active" },
+        goal: { objective: "Ship overview", status: "active", iterations: 1 },
+      })}
+      now={0}
+    />,
+  );
+  expect(screen.queryByTestId("session-details-goal-status")).toBeNull();
+  expect(screen.getByTestId("session-details-state").querySelector('[data-state="working"]')).toBeTruthy();
+});
+
+test("goal is inline-editable through goal/set with explicit Save, Clear, Cancel, and error preservation", async () => {
+  const user = userEvent.setup();
+  const fake = new FakeClient();
+  let failNext = false;
+  fake.on("goal/set", () => {
+    if (failNext) throw new Error("daemon offline");
+    return { started: false };
+  });
+  connectionStore.getState().connect(fake);
+
+  const model = testModel({ goal: null });
+  const view = render(
+    <>
+      <DetailsPanelBody model={model} now={0} />
+      <Toast />
+    </>,
+  );
+
+  const field = screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement;
+  expect(field.value).toBe("");
+  await user.click(field);
+  const setButton = screen.getByRole("button", { name: "Set goal" });
+  expect(setButton.hasAttribute("disabled")).toBe(true);
+
+  await user.type(field, "Ship 6-tab Overview");
+  expect(setButton.hasAttribute("disabled")).toBe(false);
+  await user.click(setButton);
+  expect(fake.calls.filter((call) => call.method === "goal/set").map((call) => call.params)).toEqual([
+    { ref: model.ref, objective: "Ship 6-tab Overview" },
+  ]);
+
+  // Unchanged active goal keeps Save disabled, Escape cancels without calling goal/set,
+  // and Clear sends an empty objective.
+  view.rerender(
+    <>
+      <DetailsPanelBody
+        model={testModel({ goal: { objective: "Ship 6-tab Overview", status: "active", iterations: 1 } })}
+        now={0}
+      />
+      <Toast />
+    </>,
+  );
+  const editField = screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement;
+  expect(editField.value).toBe("Ship 6-tab Overview");
+  await user.click(editField);
+  expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true);
+  await user.type(editField, " extra");
+  await user.keyboard("{Escape}");
+  expect(fake.calls.filter((call) => call.method === "goal/set")).toHaveLength(1);
+  expect(editField.value).toBe("Ship 6-tab Overview");
+
+  await user.click(editField);
+  await user.click(screen.getByRole("button", { name: "Clear" }));
+  expect(fake.calls.filter((call) => call.method === "goal/set").map((call) => call.params)).toEqual([
+    { ref: model.ref, objective: "Ship 6-tab Overview" },
+    { ref: model.ref, objective: "" },
+  ]);
+
+  // A failing goal/set surfaces an error toast and keeps the editor open with the user's draft intact.
+  failNext = true;
+  await user.click(editField);
+  await user.clear(editField);
+  await user.type(editField, "Keep my unsaved draft");
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
+  expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: /goal/i }) as HTMLTextAreaElement).value).toBe("Keep my unsaved draft");
+});
+
+test("working directory and session id each carry a click-to-copy control", () => {
+  render(
+    <DetailsPanelBody model={testModel({ cwd: "/Users/jesse/evener", threadId: "033uaztQj6XPP6eF7pS0OW" })} now={0} />,
+  );
+  expect(screen.getByRole("button", { name: "Copy working directory" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy session ID" })).toBeTruthy();
 });
 
 test("a session whose host has dropped reads offline", () => {
@@ -503,7 +637,7 @@ test("a local session on a hub with other hosts gets a host row too", () => {
   seedHosts([LOCAL_SOURCE, { id: "studio", label: "Studio Mac", kind: "appwire", online: true }]);
   render(<DetailsPanelBody model={testModel()} now={0} />);
   expect(screen.getByTestId("session-details-host").textContent).toContain(LOCAL_SOURCE.label);
-  expect(screen.getByTestId("session-details-host-state").dataset.online).toBe("true");
+  expect(screen.queryByTestId("session-details-host-state")).toBeNull();
 });
 
 test("a host the manifest does not list is named by its id, with no claim about its connection", () => {
@@ -513,46 +647,55 @@ test("a host the manifest does not list is named by its id, with no claim about 
   expect(screen.queryByTestId("session-details-host-state")).toBeNull();
 });
 
-test("the sandbox and network a session was started with each get a row", () => {
+test("the sandbox and network a session was started with sit inside Launch settings", async () => {
+  const user = userEvent.setup();
   render(<DetailsPanelBody model={testModel({ access: { sandbox: "workspace-write", network: false } })} now={0} />);
+  expect(screen.queryByTestId("session-details-sandbox")).toBeNull();
+  await user.click(screen.getByText("Launch settings"));
   const sandbox = screen.getByTestId("session-details-sandbox").textContent;
   const network = screen.getByTestId("session-details-network").textContent;
   cleanup();
   render(<DetailsPanelBody model={testModel({ access: { sandbox: "read-only", network: true } })} now={0} />);
+  await user.click(screen.getByText("Launch settings"));
   expect(sandbox).toBeTruthy();
   expect(screen.getByTestId("session-details-sandbox").textContent).not.toBe(sandbox);
   expect(network).toBeTruthy();
   expect(screen.getByTestId("session-details-network").textContent).not.toBe(network);
 });
 
-test("the plugins a session loaded are listed by name", () => {
+test("the plugins a session loaded are listed by name inside Launch settings", async () => {
+  const user = userEvent.setup();
   render(
     <DetailsPanelBody
       model={testModel({ diagnostics: { plugins: [{ name: "superpowers" }, { name: "go" }] } })}
       now={0}
     />,
   );
+  await user.click(screen.getByText("Launch settings"));
   const text = screen.getByTestId("session-details-plugins").textContent ?? "";
   expect(text).toContain("superpowers");
   expect(text).toContain("go");
 });
 
-test("a session that loaded no plugins says so, and one whose inventory is unknown says nothing", () => {
+test("a session that loaded no plugins says so, and one whose inventory is unknown says nothing", async () => {
+  const user = userEvent.setup();
   render(<DetailsPanelBody model={testModel({ diagnostics: { plugins: [] } })} now={0} />);
+  await user.click(screen.getByText("Launch settings"));
   expect(screen.getByTestId("session-details-plugins").textContent).toBeTruthy();
   cleanup();
   render(<DetailsPanelBody model={testModel({ diagnostics: {} })} now={0} />);
+  expect(screen.queryByText("Launch settings")).toBeNull();
   expect(screen.queryByTestId("session-details-plugins")).toBeNull();
 });
 
-// A daemon that predates access and plugin reporting sends neither; the group
-// they would sit in must not leave a bare heading.
-test("a session that reports neither access nor plugins has no launch group", () => {
+// A daemon that predates access and plugin reporting sends neither; the launch
+// disclosure is omitted rather than rendered empty.
+test("a session that reports neither access nor plugins has no launch disclosure", () => {
   render(<DetailsPanelBody model={testModel()} now={0} />);
-  expect(screen.getAllByRole("heading")).toHaveLength(3);
+  expect(screen.queryByText("Launch settings")).toBeNull();
   cleanup();
   render(<DetailsPanelBody model={testModel({ access: { sandbox: "off", network: true } })} now={0} />);
-  expect(screen.getAllByRole("heading")).toHaveLength(4);
+  expect(screen.getByText("Launch settings")).toBeTruthy();
 });
 
 test("failed tool calls are counted in the usage group once there are any", () => {

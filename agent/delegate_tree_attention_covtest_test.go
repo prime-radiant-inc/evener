@@ -2,6 +2,8 @@ package agent
 
 import (
 	"testing"
+
+	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
 // TestReconcileDelegateAttentionFromTranscripts_NilController covers the
@@ -32,11 +34,11 @@ func TestDelegateAttentionProjectionEligible(t *testing.T) {
 	durable := c.durable
 	c.mu.Unlock()
 	// An idle delegate should be eligible.
-	if !delegateAttentionProjectionEligible(durable, "dlg_idle") {
+	if !delegatestore.AttentionProjectionEligible(durable, "dlg_idle") {
 		t.Fatal("expected idle delegate to be eligible")
 	}
 	// Nonexistent delegate: not eligible.
-	if delegateAttentionProjectionEligible(durable, "nonexistent") {
+	if delegatestore.AttentionProjectionEligible(durable, "nonexistent") {
 		t.Fatal("expected nonexistent delegate to NOT be eligible")
 	}
 }
@@ -70,16 +72,5 @@ func TestPermanentlyFencedDelegateAttention(t *testing.T) {
 	plans := c.permanentlyFencedDelegateAttention()
 	if len(plans) != 0 {
 		t.Fatalf("expected 0 fenced plans, got %d", len(plans))
-	}
-}
-
-// TestReservedAttentionID covers the reservedAttentionID method with no
-// reserved attention.
-func TestReservedAttentionID(t *testing.T) {
-	c, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	s := &Session{}
-	if got := c.reservedAttentionID(s); got != "" {
-		t.Fatalf("expected empty reserved attention ID, got %q", got)
 	}
 }

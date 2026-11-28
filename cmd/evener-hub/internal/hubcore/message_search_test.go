@@ -106,7 +106,7 @@ func writeRawTestTranscript(t *testing.T, path, sessionID string, turns ...schem
 		t.Fatal(err)
 	}
 	for _, turn := range turns {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -123,7 +123,7 @@ func appendTestTranscript(t *testing.T, path string, turns ...schema.Turn) {
 		t.Fatal(err)
 	}
 	for _, turn := range turns {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}

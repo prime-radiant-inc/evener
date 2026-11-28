@@ -1,54 +1,225 @@
-/* Titled groups (Session / Usage / Location) separated by a rule, so a dozen
- * rows read as three short lists instead of one long one. The last group needs
- * no trailing rule - there is nothing below it to divide from. */
-.section {
-  padding-block-end: var(--space-4);
-  border-block-end: 1px solid var(--edge);
+.root {
+  display: flex;
+  flex-direction: column;
 }
 
-.section:last-child {
-  padding-block-end: 0;
-  border-block-end: none;
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
 }
 
-.section + .section {
-  padding-block-start: var(--space-4);
+.group:first-child {
+  padding-top: var(--space-1);
 }
 
-/* The group's own name sits above its rows, quieter than the values it covers:
- * it is a wayfinding label, not a fact to read. */
-.sectionTitle {
-  margin: 0 0 var(--space-3);
-  font-family: var(--font-sans);
+.group + .group {
+  border-top: 1px solid var(--edge);
+}
+
+/* --- Goal --------------------------------------------------------------- */
+
+.goalHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.goalLabel {
   font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--line-height-ui);
-  color: var(--ink-mid);
+  color: var(--ink-low);
 }
 
-/* A value's parts (the meter, the percentage, the used / window and left
- * figures; the up and down token counts) share one wrapping line, the meter
- * claiming a line of its own above the figures. */
-.value {
+.goalBlocked {
+  composes: toneAttention from "../../../styles/tone.module.css";
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--tone-ink);
+  text-transform: capitalize;
+}
+
+.goalNote {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-mid);
+  text-transform: capitalize;
+}
+
+.goalBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: calc(var(--space-1) * -1) calc(var(--space-3) * -1);
+  padding: var(--space-1);
+}
+
+/* One stable border/padding frame around the seamless Textarea so read and edit
+ * states place every glyph at the exact same pixel with zero shift. Only color,
+ * border, and focus halo respond on entry. */
+.goalField {
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.goalField:hover {
+  background: var(--hover-1);
+}
+
+.goalField[data-editing="true"] {
+  border-color: var(--accent);
+  background: var(--surface-1);
+  box-shadow: var(--focus-halo);
+}
+
+.goalReadOnly {
+  margin: 0;
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color: var(--ink-hi);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.goalActions {
+  composes: bodyReveal from "../../../styles/motion.module.css";
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  min-inline-size: 0;
+  justify-content: space-between;
   gap: var(--space-2);
+}
+
+.goalActionEnd {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+/* --- Usage -------------------------------------------------------------- */
+
+.contextRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  font-size: var(--font-size-ui);
   font-variant-numeric: tabular-nums;
 }
 
-/* The meter takes a line of its own above the figures it summarizes, at the
- * row's full width - it is a primary readout here, not the status row's 64px
- * thumbnail gauge. flex-basis (not width) is what makes it claim the whole
- * line: as a flex item in the wrapping value row, `width: 100%` alone would
- * still be shrunk back to its content by flex sizing. */
-.meter {
-  flex: 0 0 100%;
+.contextLead {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-inline-size: 0;
 }
 
-/* The secondary halves of the context readout (used / window, and what is
- * left) recede behind the percentage a reader scans for first. */
+.contextGauge {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.contextPercent {
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-hi);
+}
+
+.contextRemaining {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  margin-left: auto;
+}
+
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+}
+
+.metricCell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-half);
+  min-inline-size: 0;
+}
+
+.metricLabel {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.metricLabelCapitalize {
+  composes: metricLabel;
+  text-transform: capitalize;
+}
+
+.metricValue {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Rows --------------------------------------------------------------- */
+
+.value {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  min-inline-size: 0;
+  gap: var(--space-1) var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.wrapValue {
+  display: block;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.copyableValue {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-inline-size: 0;
+  width: 100%;
+}
+
 .dim {
+  color: var(--ink-mid);
+}
+
+.effortInline {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.hostOffline {
+  composes: toneDanger from "../../../styles/tone.module.css";
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--tone-ink);
+}
+
+.launchTitle {
+  font-size: var(--font-size-ui);
   color: var(--ink-mid);
 }

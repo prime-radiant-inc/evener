@@ -1,3 +1,4 @@
+import { hostIdOf, LOCAL_HOST } from "@evener/appwire-client";
 import {
   bindArtifactPath,
   bindFilePath,
@@ -10,17 +11,20 @@ import {
   rebindFileReference,
 } from "@evener/appwire-client/docContent";
 import { type ReactNode, useLayoutEffect, useState } from "react";
+import { iPhoneHost, tellIPhoneHost } from "../../shell/iPhoneHost";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore } from "../../shell/workspace";
 import { useThreadsStore } from "../../stores/threads";
 import { useThreadClaim } from "../../stores/useThreadModel";
+import symbolStyles from "../../styles/actionSymbol.module.css";
 import {
   Button,
   Chip,
   CodeBlock,
   Dialog,
   EmptyState,
+  InlineNotice,
   Markdown,
   PaneScaffold,
   Skeleton,
@@ -107,6 +111,9 @@ function BoundDocument({
 }: PaneProps<DocParams> & { reference: FileReference; reopen: number; visible: boolean }) {
   const read = useDocumentRead(params.session, reference, reopen, visible);
   const hasContent = read.content !== undefined || read.imageGeneration !== undefined;
+  // Cross-host file reads provide a capped preview. The image route delivers
+  // its complete bytes, and the hub can download any local file in full.
+  const canShare = hasContent && (hostIdOf(params.session) === LOCAL_HOST || read.imageGeneration !== undefined);
   let body: ReactNode;
   if (params.kind === "image" && read.imageGeneration) {
     body = (
@@ -131,17 +138,45 @@ function BoundDocument({
       title={filenameOf(reference.path)}
       paneId={paneId}
       focused={focused}
+      footer={
+        canShare && iPhoneHost() ? (
+          <Button
+            block
+            variant="secondary"
+            icon={
+              <svg
+                className={symbolStyles.symbol}
+                viewBox="0 0 16 16"
+                aria-hidden="true"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M8 9V1.7 M5.5 4.2 8 1.7l2.5 2.5 M5.3 6.3H3v7.8H13V6.3h-2.3" />
+              </svg>
+            }
+            onClick={() =>
+              tellIPhoneHost({
+                type: "shareDocument",
+                ref: params.session,
+                path: reference.readTarget,
+                namePath: reference.path,
+              })
+            }
+          >
+            Open in…
+          </Button>
+        ) : undefined
+      }
       actions={
         <Button size="sm" variant="quiet" onClick={read.reload}>
           Reload
         </Button>
       }
     >
-      {hasContent && read.notice && (
-        <div className={CLASS.notice} role="status">
-          <span className={CLASS.noticeText}>{read.notice}</span>
-        </div>
-      )}
+      {hasContent && read.notice && <InlineNotice>{read.notice}</InlineNotice>}
       {body}
     </PaneScaffold>
   );
@@ -149,6 +184,11 @@ function BoundDocument({
 
 export default function DocPane({ params, paneId, focused }: PaneProps<DocParams>) {
   const visible = usePaneVisible();
+  useLayoutEffect(() => {
+    if (!visible || !focused || !iPhoneHost()) return;
+    tellIPhoneHost({ type: "readingDocument", active: true });
+    return () => tellIPhoneHost({ type: "readingDocument", active: false });
+  }, [visible, focused]);
   const panes = useWorkspaceStore((state) => state.panes);
   const pane = panes.find((candidate) => candidate.id === paneId);
   const retained = pane && documentPaneState(pane);

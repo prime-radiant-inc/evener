@@ -111,7 +111,7 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 	events := []Event{
 		started,
 		{Kind: EventWatchRegistered, TS: jcpTime(r.next()), WatchID: "watch-primary", Watch: &WatchEvent{Generation: "wg-primary", OwnerSessionID: "owner", VisibleSessionID: "visible", Target: started.JobID, SendTo: "visible", ConfigHash: "cfg", Condition: "output", Deliveries: 1}},
-		{Kind: EventWatchSendPending, TS: jcpTime(r.next()), JobID: started.JobID, WatchSend: &WatchSendState{Key: WatchSendKey{VisibleSessionID: "visible", WatchID: "watch-primary", WatchTarget: started.JobID, ResolvedWatchedIdentity: started.JobID, ResolvedSendTo: "visible", WatchGeneration: "wg-primary"}, DeliveryID: "wd-primary", UpdateSeq: 1, Message: "ready", CreatedAt: jcpTime(r.next()), Provenance: provenance.WithWatch(nil, "watch-primary", "wg-primary", "wd-primary", "visible", started.JobID)}},
+		{Kind: EventWatchSendPending, TS: jcpTime(r.next()), JobID: started.JobID, WatchSend: &WatchSendState{Key: WatchSendKey{VisibleSessionID: "visible", WatchID: "watch-primary", WatchTarget: started.JobID, ResolvedWatchedIdentity: started.JobID, ResolvedSendTo: "visible", WatchGeneration: "wg-primary"}, DeliveryID: "wd-primary", UpdateSeq: 1, Frame: "ready", CreatedAt: jcpTime(r.next()), Provenance: provenance.WithWatch(nil, "watch-primary", "wg-primary", "wd-primary", "visible", started.JobID)}},
 		{Kind: EventJobFinished, TS: jcpTime(r.next()), JobID: started.JobID, Status: StatusCompleted, Reason: "done", EndedAt: &finishedAt, OutputBytes: 23, TerminalGen: "terminal-primary", StructuredResult: map[string]any{"byte": int(r.next())}, StructuredResultValid: &valid},
 		{Kind: EventJobNotificationPending, TS: jcpTime(r.next()), JobID: started.JobID, TerminalGen: "terminal-primary", Provenance: provenance.WithWatch(nil, "watch-primary", "wg-primary", "wd-primary", "visible", started.JobID)},
 		{Kind: EventJobNotificationDelivered, TS: jcpTime(r.next()), JobID: started.JobID, TerminalGen: "terminal-primary"},
@@ -402,7 +402,7 @@ func jcpFoldEdgePaths(t *testing.T, r *jcpReader) {
 	records := Fold([]Event{
 		{Kind: EventJobStarted, Seq: 1, JobID: "job-edge"},
 		{Kind: EventJobFinished, Seq: 2, JobID: "job-edge", Status: StatusCompleted, TerminalGen: "terminal-edge", StructuredResultValid: new(bool), StructuredResultReason: "invalid"},
-		{Kind: EventJobMessageSent, Seq: 3, JobID: "job-edge"},
+		{Kind: EventKind("unknown_legacy"), Seq: 3, JobID: "job-edge"},
 		{Kind: EventJobNotificationPending, Seq: 4, JobID: "job-edge", TerminalGen: "wrong"},
 		{Kind: EventJobNotificationDelivered, Seq: 5, JobID: "job-edge", TerminalGen: "wrong"},
 		{Kind: EventJobFinished, Seq: 6, JobID: "job-edge", Status: StatusFailed, TerminalGen: "later"},

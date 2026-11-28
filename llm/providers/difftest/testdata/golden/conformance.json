@@ -41,10 +41,10 @@
   {
     "name": "google_text_finish",
     "provider": "google",
-    "source": "llm/providers/google/adapter_test.go TestAdapter_Stream_YieldsTextDeltasAndFinish",
+    "source": "llm/providers/google/protocol_transport_test.go interactionsSSE",
     "text": "Hello",
     "finish": "stop",
-    "finish_raw": "STOP",
+    "finish_raw": "completed",
     "input_tokens": 1,
     "output_tokens": 2,
     "total_tokens": 3
@@ -52,10 +52,10 @@
   {
     "name": "google_functioncall",
     "provider": "google",
-    "source": "llm/providers/google/adapter_test.go TestAdapter_Stream_TranslatesFunctionCalls",
+    "source": "llm/providers/google/interactions_settlement_test.go function_call",
     "text": "ok",
     "finish": "tool_calls",
-    "finish_raw": "STOP",
+    "finish_raw": "completed",
     "input_tokens": 1,
     "output_tokens": 2,
     "total_tokens": 3,
@@ -69,10 +69,10 @@
   {
     "name": "google_usage_on_finish_chunk",
     "provider": "google",
-    "source": "llm/providers/google/usage_finish_chunk_test.go TestStream_UsageOnFinishChunk",
+    "source": "llm/providers/google/usage_finish_chunk_test.go TestStream_UsageOnInteractionCompleted",
     "text": "hi",
     "finish": "stop",
-    "finish_raw": "STOP",
+    "finish_raw": "completed",
     "input_tokens": 11,
     "output_tokens": 22,
     "total_tokens": 33

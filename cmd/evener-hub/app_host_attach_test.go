@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -603,5 +604,32 @@ func TestHostAttachRefusesFactsLivenessError(t *testing.T) {
 	}
 	if !strings.Contains(wire.Message, "alpha") {
 		t.Fatalf("liveness-error attach message %q does not name host alpha", wire.Message)
+	}
+}
+
+// A successful attach must tell navigation readers the source set changed,
+// even when Ensure returns an already-live channel and emits no attach event.
+func TestHostAttachInvalidatesNavigationSources(t *testing.T) {
+	live := &appwire.Client{}
+	cfg := hubcore.WebConfig{
+		RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			return live, nil
+		},
+	}
+	hosts := hostAttachRegistry(t, cfg)
+	navigation := newTestNavigationService(t, newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC()))
+	if _, err := navigation.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := hostAttachAndInvalidateSources(t.Context(), cfg, appsource.NewRegistry(), hosts, navigation, appwire.HostAttachParams{Host: "alpha"}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	navigation.refreshPending(t.Context())
+	publications := navigation.DrainPublications()
+	if len(publications) != 1 || !hasNavigationTarget(publications[0].Targets, appwire.NavigationTargetManifest, "") {
+		t.Fatalf("attach publications = %+v, want one manifest target", publications)
 	}
 }

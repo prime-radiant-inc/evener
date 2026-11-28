@@ -97,11 +97,16 @@ var hostRequestMethods = map[string]struct{}{
 	// the admin families above do not already carry. Without these rows a remote
 	// settings pane or spawn form fails closed with appwire.InvalidParams.
 	MethodEvenerPathsComplete:     {},
+	MethodEvenerFilesSearch:       {},
 	MethodEvenerPathValidate:      {},
 	MethodEvenerDirsCreate:        {},
 	MethodEvenerProjectsRecent:    {},
 	MethodEvenerHarnessesList:     {},
 	MethodEvenerSpawnSlashCatalog: {},
+	// evener/settings/skillDirs/get answers with the host's own home and
+	// user-config skill roots, which the Settings pane shows beside its
+	// editable extra-directory list.
+	MethodEvenerSettingsSkillDirsGet: {},
 	// evener/git/head is read-only branch metadata for a remote working
 	// directory (protocol.go: ScopeHub, GitHeadParams/GitHeadResponse); the
 	// spawn form needs the branch of the path it is about to launch.

@@ -214,7 +214,7 @@ func writeFluencyTranscript(t *testing.T, stateDir, sid string, turns []schema.T
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for _, turn := range turns {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append transcript turn: %v", err)
 		}
 	}

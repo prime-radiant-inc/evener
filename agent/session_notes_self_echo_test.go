@@ -143,10 +143,10 @@ func TestAgentNotesAndURLToolsKeepTranscriptRowWhileSuppressingModelSelfEcho(t *
 		}
 	}, func(_ llm.Request) llm.Response {
 		args, _ := json.Marshal(map[string]any{
-			"message":  "done",
-			"end_turn": true,
-			"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
-			"intent":   "finishing turn",
+			"message": "done",
+			"next":    "send_and_end_turn",
+			"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+			"intent":  "finishing turn",
 		})
 		return llm.Response{
 			Message: llm.Message{
@@ -196,7 +196,7 @@ func TestAgentNotesAndURLToolsKeepTranscriptRowWhileSuppressingModelSelfEcho(t *
 				}
 			}
 		}
-		items := apptranscript.ProjectTurn("t1", i, turn, reg, nil, nil)
+		items, _ := apptranscript.ProjectTurnParts("t1", i, turn, reg, nil, nil)
 		if turn.Kind == schema.TurnNotesContext {
 			notesTurnsInHistory++
 			if len(items) != 1 || items[0].EventKind != appwire.ThreadItemEventKindNotesContext {

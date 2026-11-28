@@ -176,3 +176,34 @@ test("a binary memory read omits the line range, like a read_file of the same by
   );
   expect(memoryReadSummary(memoryStep)).toBe("Read memory personal/pic.png");
 });
+
+test("memoryEditSummary aggregates multi-edit and legacy calls and omits detail when malformed", () => {
+  expect(
+    memoryEditSummary(
+      step({
+        scope: "project",
+        file_path: "MEMORY.md",
+        edits: [
+          { old_string: "one\ntwo", new_string: "uno" },
+          { old_string: "-- old", new_string: "++ new\nsecond" },
+        ],
+      }),
+    ),
+  ).toBe("Edited memory project/MEMORY.md · +3 -3");
+
+  expect(memoryEditSummary(step({ scope: "project", file_path: "MEMORY.md", edits: [null] }))).toBe(
+    "Edited memory project/MEMORY.md",
+  );
+  expect(memoryEditSummary(step({ scope: "project", file_path: "MEMORY.md", edits: "not-json" }))).toBe(
+    "Edited memory project/MEMORY.md",
+  );
+  expect(
+    memoryEditSummary(
+      step({
+        scope: "project",
+        file_path: "MEMORY.md",
+        edits: [{ old_str: "a", new_str: "b" }],
+      }),
+    ),
+  ).toBe("Edited memory project/MEMORY.md");
+});

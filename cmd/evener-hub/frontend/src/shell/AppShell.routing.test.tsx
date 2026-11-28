@@ -2758,9 +2758,7 @@ test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane alre
   // text (plus a chevron and a screen-reader hint), so the value is matched
   // inside that text rather than read off an input's .value.
   await waitFor(() =>
-    expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }).textContent).toContain(
-      "/home/me/app",
-    ),
+    expect(screen.getByLabelText(/^Directory:/, { selector: "#spawn-cwd" }).textContent).toContain("/home/me/app"),
   );
 
   // A second /new?dir= navigation (e.g. RailRow's own spawnInProject, for a
@@ -2778,8 +2776,6 @@ test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane alre
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["New session"]);
   await waitFor(() =>
-    expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }).textContent).toContain(
-      "/home/other",
-    ),
+    expect(screen.getByLabelText(/^Directory:/, { selector: "#spawn-cwd" }).textContent).toContain("/home/other"),
   );
 });

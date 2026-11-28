@@ -130,7 +130,7 @@ func testOnboardingBrowserAt(t *testing.T, view onboardingView) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		args, _ := json.Marshal(map[string]any{"message": "ONBOARDING_REPLY_72e", "end_turn": true, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
+		args, _ := json.Marshal(map[string]any{"message": "ONBOARDING_REPLY_72e", "next": "send_and_end_turn", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
 		chunk, _ := json.Marshal(map[string]any{"id": "fixture", "object": "chat.completion.chunk", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": "onboarding-complete", "type": "function", "function": map[string]any{"name": "communicate", "arguments": string(args)}}}}, "finish_reason": nil}}})
 		fmt.Fprintf(w, "data: %s\n\ndata: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n", chunk)
 	}))
@@ -549,7 +549,7 @@ func newOnboardingGuardHub(t *testing.T, g *onboardingGuardEnv, oauthSetup func(
 	past := newRebuiltPastIndex(t, filepath.Join(state, "projects", "*"))
 	spawner := &HubSpawner{EvenerBinary: g.binary, RunDir: g.run, HubToken: g.token, Registry: reg, ProvidersConfigPath: os.Getenv("EVENER_PROVIDERS_CONFIG"), CredentialsPath: os.Getenv("EVENER_CREDENTIALS_CONFIG")}
 	web := newWebServer(hubcore.WebConfig{AuthToken: g.token, HubStateRoot: filepath.Join(g.root, "hub"), LaunchConfigRoot: filepath.Join(g.root, "launch"), RunDir: g.run, StateDir: state, Past: past, Roster: roster, Spawner: spawner, Registry: reg, CredsStore: store, ProvidersConfigPath: spawner.ProvidersConfigPath, CredentialsPath: spawner.CredentialsPath}, nil)
-	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
+	past.SetOnRootChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	roster.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	server := httptest.NewServer(web.Handler())
 	t.Cleanup(server.Close)

@@ -24,10 +24,21 @@ vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connectio
 vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
 
 import { AlertsProvider } from "./AlertsProvider";
-import { useAlertSnapshot, useHeldAlertCount, useHoldAlerts, useOfferAlert, useReportRoutes } from "./alertsContext";
+import { HubWebView } from "../hubWeb/HubWebView";
+vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
+vi.mock("expo-status-bar", () => ({ StatusBar: "StatusBar" }));
+import {
+	useAlertSnapshot,
+	useHeldAlertCount,
+	useHoldAlerts,
+	useManifestSources,
+	useOfferAlert,
+	useReportRoutes,
+} from "./alertsContext";
 
 type Routes = Parameters<ReturnType<typeof useReportRoutes>>[0];
 const probe = {
+	sources: undefined as ReturnType<typeof useManifestSources>,
 	snapshot: null as AlertSnapshot | null,
 	held: 0,
 	report: null as null | ((routes: Routes) => void),
@@ -36,6 +47,7 @@ const probe = {
 function Probe({ quiet }: { quiet: boolean }) {
 	probe.snapshot = useAlertSnapshot();
 	probe.held = useHeldAlertCount();
+	probe.sources = useManifestSources();
 	probe.report = useReportRoutes();
 	probe.offer = useOfferAlert();
 	useHoldAlerts(quiet, "quiet");
@@ -256,6 +268,34 @@ it("takes a changed list as the notice baseline when the list read failed, and a
 	expect(shownRefs()).toEqual(["hostOffline:laptop"]);
 });
 
+it("queues an alert from the underlying session while its document owns the workspace", () => {
+	connect(null);
+	const profile = { id: "hub-1", origin: "https://hub.test", name: "Desk" };
+	const tree = render(
+		<AlertsProvider>
+			<Probe quiet={false} />
+			<HubWebView profile={profile} token="" initialPath="/s/local%3Aa" onPath={vi.fn()} onHubMenu={vi.fn()} />
+		</AlertsProvider>,
+	);
+	const route = { name: "Workspace", params: { hubId: profile.id, path: "/s/local%3Aa" } };
+	const message = (data: unknown) =>
+		act(() =>
+			tree.root.findByType("WebView" as never).props.onMessage({
+				nativeEvent: { url: profile.origin + route.params.path, data: JSON.stringify(data) },
+			}),
+		);
+	act(() => probe.report?.([route]));
+	message({ type: "ready" });
+	message({ type: "readingDocument", active: true });
+	act(() => {
+		probe.report?.([route]);
+		probe.offer?.({ kind: "question", ref: "local:a", title: "A", why: null });
+	});
+	expect(probe.held).toBe(1);
+	message({ type: "readingDocument", active: false });
+	expect(probe.held).toBe(0);
+});
+
 it("holds a banner while you read or type, and counts what waits", async () => {
 	const hub = boundary();
 	connect(hub.client);
@@ -327,4 +367,27 @@ it("drops a removed hub's failed start, so no banner is left that can open nothi
 	rerender();
 	expect(probe.snapshot).toMatchObject({ banner: null });
 	expect(probe.held).toBe(0);
+});
+
+it("exposes live manifest sources through useManifestSources", async () => {
+	const hub = boundary();
+	connect(hub.client);
+	const { rerender } = mount();
+	expect(probe.sources).toBeNull();
+	const updatedSources = [
+		{ id: "local", label: "this host", kind: "local", online: true, threadStartIdempotency: true },
+		{ id: "remote-a", label: "remote-a", kind: "appwire", online: true, threadStartIdempotency: true },
+	];
+	await firstReads(hub);
+	expect(probe.sources).toEqual(sources);
+	await act(async () => {
+		invalidate(hub, 1, [{ kind: "manifest", revision: 2 }]);
+		answer(hub, "manifest", manifest({ sources: updatedSources }), 2);
+		await tick();
+	});
+	expect(probe.sources).toEqual(updatedSources);
+	// Clears back to null while disconnected.
+	connect(null, "reconnecting", "hub-1");
+	rerender();
+	expect(probe.sources).toBeNull();
 });

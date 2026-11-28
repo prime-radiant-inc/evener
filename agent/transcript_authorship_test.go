@@ -416,7 +416,7 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 				t.Errorf("inherited note kind=%q source=%q steering kind=%q", turn.Kind, turn.SteeringSource, turn.SteeringKind)
 			}
 			assertTranscriptAuthor(t, turn, map[string]any{"kind": "human"}, true)
-			items := apptranscript.ProjectTurn("fork-note", index, turn, nil, nil, nil)
+			items, _ := apptranscript.ProjectTurnParts("fork-note", index, turn, nil, nil, nil)
 			if len(items) != 1 || items[0].Type != "steering" || items[0].Source != "user" || items[0].SteeringKind != "human-note" || items[0].Text != note.Message.Text() {
 				t.Errorf("projected inherited note = %+v", items)
 			} else {
@@ -431,7 +431,7 @@ func TestTranscriptAuthorshipForkCopiesKnown(t *testing.T) {
 	answer.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: root.id}}
 	root.recordTurn(answer, answer)
 	call := schema.NewTurn(schema.TurnAssistant, forkContextToolCall("comm-copy", "communicate"))
-	call.Message.Content[0].ToolCall.Arguments = []byte(`{"message":"original-communicate","end_turn":false}`)
+	call.Message.Content[0].ToolCall.Arguments = []byte(`{"message":"original-communicate","next":"send_and_continue"}`)
 	call.Authorship = answer.Authorship.Clone()
 	root.recordTurn(call, call)
 	root.appendTurn(schema.TurnToolResults, llm.ToolResult("comm-copy", `{"delivery":"delivered"}`, false))

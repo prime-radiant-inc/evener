@@ -137,7 +137,7 @@ func TestSetModel_RecordsBudgetingWindowAndSource(t *testing.T) {
 		{"gw-listed/narrow", contextmgr.AssumedContextWindow, provider.ContextWindowSourceAssumed},
 		{"gw-down/unlisted", contextmgr.AssumedContextWindow, provider.ContextWindowSourceAssumed},
 	} {
-		if err := sess.SetModel(tc.model); err != nil {
+		if err := sess.SetModel("", tc.model); err != nil {
 			t.Fatalf("SetModel(%s): %v", tc.model, err)
 		}
 		rec := lastModelSwitchRecord(t, sess)

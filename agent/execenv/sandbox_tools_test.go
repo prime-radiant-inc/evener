@@ -512,7 +512,7 @@ func TestReadFileOffModeIdentical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("off read: %v", err)
 	}
-	if !strings.Contains(offOut, "   1\tline one") || !strings.Contains(offOut, "   3\tline three") {
+	if !strings.Contains(offOut, "1\tline one") || !strings.Contains(offOut, "3\tline three") {
 		t.Fatalf("off read did not produce today's line-numbered output: %q", offOut)
 	}
 
@@ -1045,7 +1045,7 @@ func TestSandboxGrepSearchesOneNamedFile(t *testing.T) {
 				t.Errorf("grep with a non-matching glob filter = %q, %v; want no result", got, err)
 			}
 			skipAll := func(string) bool { return true }
-			if got, err := env.GrepSkipping(t.Context(), "needle", file, "", false, 100, "files_with_matches", 0, skipAll); err != nil || got != "" {
+			if got, err := env.GrepConfinedFiles(t.Context(), "needle", file, "", false, 100, "files_with_matches", 0, skipAll); err != nil || got != "" {
 				t.Errorf("grep of a skipped file = %q, %v; want no result", got, err)
 			}
 			if got, err := env.Grep(t.Context(), "needle", filepath.Join(worktree, "sub", ".hidden"), "", false, 100, "files_with_matches"); err != nil || got != "" {

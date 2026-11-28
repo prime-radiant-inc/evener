@@ -2,9 +2,10 @@ import { fenceLanguage } from "@evener/appwire-client";
 import DOMPurify from "dompurify";
 import type { RendererObject, Token, Tokens } from "marked";
 import { memo, type Ref, useMemo, useRef } from "react";
-import codeblockStyles from "../codeblock/codeblock.module.css";
+import { codeBlockHtml } from "../codeblock";
 import { requireClass } from "../internal/requireClass";
 import { MermaidDiagram } from "../mermaid";
+import { plainTextFromTokens } from "./lexer";
 import styles from "./markdown.module.css";
 import {
   type HeadGateVerdict,
@@ -36,15 +37,15 @@ const CLASS = {
   inlineCode: requireClass(styles.inlineCode, "markdown.module.css", "inlineCode"),
   bubble: requireClass(styles.markdownBubble, "markdown.module.css", "markdownBubble"),
   bubbleCompact: requireClass(styles.markdownBubbleCompact, "markdown.module.css", "markdownBubbleCompact"),
+  tableWrap: requireClass(styles.tableWrap, "markdown.module.css", "tableWrap"),
+  tableReflow: requireClass(styles.tableReflow, "markdown.module.css", "tableReflow"),
+  cellValue: requireClass(styles.cellValue, "markdown.module.css", "cellValue"),
 };
 
-const CODEBLOCK_CLASS = {
-  root: requireClass(codeblockStyles.root, "codeblock.module.css", "root"),
-  header: requireClass(codeblockStyles.header, "codeblock.module.css", "header"),
-  language: requireClass(codeblockStyles.language, "codeblock.module.css", "language"),
-  pre: requireClass(codeblockStyles.pre, "codeblock.module.css", "pre"),
-  code: requireClass(codeblockStyles.code, "codeblock.module.css", "code"),
-};
+// Tables with at least this many columns reflow to list-style key-value records
+// inside narrow containers (<= 559px), where equal fixed columns would crush
+// text into ~2-3 character strips. Narrower tables (<= 4 columns) stay tabular.
+const REFLOW_MIN_COLUMNS = 5;
 
 function escapeHtml(value: string): string {
   return value
@@ -55,7 +56,7 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-// Overrides the four token renderers that need to differ from marked's
+// Overrides the five token renderers that need to differ from marked's
 // HTML-string defaults; everything else (headings, paragraphs, lists,
 // blockquotes, emphasis, hr) uses marked's own safe defaults and is styled
 // by plain-tag descendant selectors scoped under .root in
@@ -64,24 +65,10 @@ function escapeHtml(value: string): string {
 // is the standard way to style dangerouslySetInnerHTML content without
 // hand-building markup for every token type).
 const renderer: RendererObject = {
-  // Renders through CodeBlock's own stylesheet so a fenced block looks
-  // identical to the standalone CodeBlock widget. It's static HTML, not a
-  // mounted CodeBlock instance - dangerouslySetInnerHTML can't host live
-  // React children - so there's no copy button here; that's a deliberate,
-  // documented scope cut, the same way CodeBlock itself skips a
-  // highlighter this wave.
+  // Shared block markup; static HTML cannot host a copy button here (documented scope cut).
   code(token: Tokens.Code) {
-    const { text } = token;
-    // The same derivation the transcript's Find reads, so the header's words
-    // and the searched words agree.
-    const language = fenceLanguage(token);
-    const header = language
-      ? `<div class="${CODEBLOCK_CLASS.header}"><span class="${CODEBLOCK_CLASS.language}">${escapeHtml(language)}</span></div>`
-      : "";
-    return (
-      `<div class="${CODEBLOCK_CLASS.root}">${header}` +
-      `<pre class="${CODEBLOCK_CLASS.pre}"><code class="${CODEBLOCK_CLASS.code}">${escapeHtml(text)}</code></pre></div>`
-    );
+    // The same derivation the transcript's Find reads, so header words and searched words agree.
+    return codeBlockHtml({ text: escapeHtml(token.text), language: escapeHtml(fenceLanguage(token)) });
   },
   // Inline `` `code` `` spans get their own class rather than reusing
   // CodeBlock's block-level classes (which are sized/bordered for a
@@ -95,6 +82,40 @@ const renderer: RendererObject = {
     const label = this.parser.parseInline(tokens);
     const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
     return `<a href="${escapeHtml(href)}"${titleAttr} target="_blank" rel="noopener noreferrer">${label}</a>`;
+  },
+  // Wraps GFM tables in a container and, for wide tables (5+ columns with body
+  // rows), enables inline-size reflow with per-column plain-text data-label
+  // attributes and a single value span so mixed inline children stay together
+  // in one grid track. Narrower and header-only tables skip that overhead.
+  table(token: Tokens.Table) {
+    const reflow = token.header.length >= REFLOW_MIN_COLUMNS && token.rows.length > 0;
+    const renderAlign = (align: Tokens.TableCell["align"]) =>
+      align === "left" || align === "center" || align === "right" ? ` align="${align}"` : "";
+    const headCells = token.header
+      .map((cell) => `<th${renderAlign(cell.align)}>${this.parser.parseInline(cell.tokens)}</th>`)
+      .join("");
+    const labelAttrs = reflow
+      ? token.header.map((cell) => {
+          const label = plainTextFromTokens(cell.tokens, cell.text);
+          return label ? ` data-label="${escapeHtml(label)}"` : "";
+        })
+      : null;
+    const bodyRows = token.rows
+      .map((row) => {
+        const cells = row
+          .map((cell, colIndex) => {
+            const content = this.parser.parseInline(cell.tokens);
+            const align = renderAlign(cell.align);
+            if (!labelAttrs) return `<td${align}>${content}</td>`;
+            return `<td${align}${labelAttrs[colIndex] ?? ""}><span class="${CLASS.cellValue}">${content}</span></td>`;
+          })
+          .join("");
+        return `<tr>${cells}</tr>`;
+      })
+      .join("");
+    const tbody = bodyRows ? `<tbody>${bodyRows}</tbody>` : "";
+    const wrapClass = reflow ? `${CLASS.tableWrap} ${CLASS.tableReflow}` : CLASS.tableWrap;
+    return `<div class="${wrapClass}"><table><thead><tr>${headCells}</tr></thead>${tbody}</table></div>`;
   },
   // NO RAW HTML PASSTHROUGH: literal HTML typed directly in the markdown
   // source (block or inline - both token types land here) is shown as
@@ -168,7 +189,7 @@ const SANITIZE_CONFIG = {
   // "class" is allowlisted globally (not scoped to specific tags) but is
   // currently inert against anything a markdown AUTHOR controls: the only
   // class attributes this pipeline ever produces are the ones the code
-  // above writes itself (CODEBLOCK_CLASS/CLASS.inlineCode) - html() above
+  // above writes itself (the codeblock helper's classes/CLASS.inlineCode) - html() above
   // escapes all raw source HTML to text before DOMPurify ever sees it, so
   // there's no path today for a class value to originate from user input.
   // `align` is the legacy HTML attribute marked emits for GFM column
@@ -178,8 +199,10 @@ const SANITIZE_CONFIG = {
   // automatic - re-check whether "class"/"align" should stay this
   // permissive at that point.
   // `start` is the numeric first-item marker emitted for ordered lists.
+  // `data-label` is the column's plain-text header emitted on `<td>` by
+  // `renderer.table` for narrow-container list-style reflow.
   // Authored HTML remains escaped by html(), not passed through here.
-  ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "align", "start"],
+  ALLOWED_ATTR: ["href", "title", "target", "rel", "class", "align", "start", "data-label"],
   // DOMPurify's default scheme allowlist plus `file`. A file:// link is how an
   // agent names a report it filed beside the session, and dropping the href
   // leaves a bare anchor that looks like a link and goes nowhere. Keeping the
@@ -190,11 +213,14 @@ const SANITIZE_CONFIG = {
   // already rejected are still stripped, which the widget's own tests pin.
   //
   // The scheme is allowed for every consumer of this widget, but only the
-  // transcript resolves it. Elsewhere a file:// anchor is a destination the
-  // browser will not follow from an http(s) page, which is honest - it shows
-  // where the link goes - where a stripped href showed nothing. Scoping the
-  // scheme to the transcript needs a caller-supplied link policy on this
-  // widget, which the design system makes Jesse's call, not a local edit.
+  // transcript's AgentMarkdown layer resolves it - the ask dock's question
+  // cards render through that same layer, so a report link in a question
+  // opens beside the answering surface. Elsewhere a file:// anchor is a
+  // destination the browser will not follow from an http(s) page, which is
+  // honest - it shows where the link goes - where a stripped href showed
+  // nothing. Scoping the scheme further needs a caller-supplied link policy
+  // on this widget, which the design system makes Jesse's call, not a local
+  // edit.
   ALLOWED_URI_REGEXP:
     /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|file):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
 };

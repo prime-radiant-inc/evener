@@ -104,7 +104,7 @@ func TestNavigationCatalogGraphCollapsesDuplicateProjectKeys(t *testing.T) {
 			case navigationResourceTestRuns:
 				tree.Projects = projects
 			}
-			projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: generation, Revision: 1, Tree: tree})
+			projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: generation, Revision: 1, Tree: tree})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -139,7 +139,7 @@ func TestNavigationCatalogGraphCollapsesDuplicateProjectKeys(t *testing.T) {
 			// map, the manifest counts, and the location index, so a dropped group
 			// loses its sessions from the project entry and from a location lookup
 			// by ref.
-			project, ok := projection.Project("no-project")
+			project, ok := projection.Project("", "no-project")
 			if !ok {
 				t.Fatal("collapsed catalog row has no project entry")
 			}
@@ -189,7 +189,7 @@ func TestNavigationCatalogGraphKeepsDuplicateKeyPerBucket(t *testing.T) {
 	archived := hubcore.TreeProject{Key: "no-project", Name: "archived", IsArchived: true, Current: []hubcore.TreeNode{
 		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAW", Title: "two", Project: "two", Kind: "session", State: "idle"},
 	}}
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: generation, Revision: 1,
 		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{active}, ArchivedProjects: []hubcore.TreeProject{archived}},
 	})
@@ -292,7 +292,7 @@ func TestNavigationCatalogGraphMergeCapsTiersAndKeepsCreationOrder(t *testing.T)
 	first := hubcore.TreeProject{Key: "no-project", Name: "one", Current: group("a", 2*time.Hour)}
 	second := hubcore.TreeProject{Key: "no-project", Name: "two", Current: group("b", 0)}
 	total := len(first.Current) + len(second.Current)
-	projection, err := buildNavigationProjection(navigationBuildInputs{
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{
 		GenerationID: generation, Revision: 1,
 		Tree: hubcore.Tree{Projects: []hubcore.TreeProject{first, second}},
 	})
@@ -339,7 +339,7 @@ func TestNavigationCatalogGraphMergeCapsTiersAndKeepsCreationOrder(t *testing.T)
 	// The project detail serves the same order, caps the initial page at the
 	// public tier, and pages through the retained rows beyond the cap instead of
 	// losing them to the merge.
-	project, ok := projection.Project("no-project")
+	project, ok := projection.Project("", "no-project")
 	if !ok {
 		t.Fatal("merged project missing from the project map")
 	}
@@ -349,7 +349,7 @@ func TestNavigationCatalogGraphMergeCapsTiersAndKeepsCreationOrder(t *testing.T)
 	if project.Current.Remaining != total-capacity {
 		t.Errorf("project current remaining = %d, want %d", project.Current.Remaining, total-capacity)
 	}
-	page, err := projection.ProjectPage("no-project", "current", capacity, capacity)
+	page, err := projection.ProjectPage("", "no-project", "current", capacity, capacity)
 	if err != nil {
 		t.Fatal(err)
 	}

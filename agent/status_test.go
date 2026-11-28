@@ -116,7 +116,7 @@ func TestDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				if err != nil {
 					t.Fatalf("open owed attention transcript: %v", err)
 				}
-				if err := writer.AppendDurable(delegateAttentionResolutionTurnForGeneration(attentionID, delegateAttentionConsumed, 1)); err != nil {
+				if _, err := writer.Record(delegateAttentionResolutionTurnForGeneration(attentionID, delegateAttentionConsumed, 1), transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 					_ = writer.Close()
 					t.Fatalf("append owed resolution: %v", err)
 				}
@@ -236,17 +236,18 @@ func TestDelegateAttention_RestoreAndColdRead(t *testing.T) {
 				fixture.adapter.setSteps([]func(llm.Request) llm.Response{func(llm.Request) llm.Response {
 					events, err := delegatestore.ReadEvents(delegateResourceStorePath(fixture.stateDir, fixture.meta.ID))
 					if err == nil {
-						falseIndex, runIndex := -1, -1
+						runIndex := -1
 						for i, event := range events {
-							if event.Kind == delegatestore.EventDelegateAttentionChanged && event.AttentionChanged != nil && !event.AttentionChanged.NeedsAttention {
-								falseIndex = i
-							}
 							if event.Kind == delegatestore.EventDelegateRunStarted && event.RunStarted != nil && event.RunStarted.Generation == 1 {
 								runIndex = i
 							}
 						}
-						if falseIndex < 0 || runIndex < 0 || falseIndex >= runIndex {
-							err = fmt.Errorf("owed launch journal order = false attention at %d, generation 1 start at %d", falseIndex, runIndex)
+						if runIndex < 0 {
+							err = errors.New("owed launch journal holds no generation 1 start")
+						} else if atLaunch, foldErr := delegatestore.Fold(events[:runIndex+1]); foldErr != nil {
+							err = fmt.Errorf("fold the journal at the owed launch: %w", foldErr)
+						} else if aggregate := atLaunch[targetDelegateID]; aggregate == nil || aggregate.NeedsAttention || len(aggregate.PendingAttention) != 0 {
+							err = fmt.Errorf("owed launch observed before attention repair: projection at the generation 1 start = %+v", aggregate)
 						}
 					}
 					launchObserved <- err
@@ -279,10 +280,13 @@ func TestDelegateAttention_RestoreAndColdRead(t *testing.T) {
 			_, wakePublished := wakeIDs[attentionID]
 			wakeCount := len(wakeIDs)
 			restored.delegateController.mu.Unlock()
-			if aggregate == nil || aggregate.NeedsAttention != tt.wantAttention {
-				t.Fatalf("restored aggregate = %+v, want needs_attention=%t", aggregate, tt.wantAttention)
+			// A recovered owed generation keeps its queued trigger unheld until
+			// the run presents it, so the restored journal still owes attention.
+			wantRestoredAttention := tt.wantAttention || tt.owed
+			if aggregate == nil || aggregate.NeedsAttention != wantRestoredAttention {
+				t.Fatalf("restored aggregate = %+v, want needs_attention=%t", aggregate, wantRestoredAttention)
 			}
-			wantWake := tt.pending && !tt.owed
+			wantWake := wantRestoredAttention
 			wantWakeCount := 0
 			if wantWake {
 				wantWakeCount = 1

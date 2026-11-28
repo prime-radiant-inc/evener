@@ -487,9 +487,7 @@ type jobWatchInspectToolResult struct {
 }
 
 type jobWatchToolSendArgs struct {
-	To             string `json:"to"`
-	Message        string `json:"message,omitempty"`
-	IncludeExcerpt bool   `json:"include_excerpt,omitempty"`
+	To string `json:"to"`
 }
 
 func marshalWatchResult(res watchResult, maxChars int) (any, error) {
@@ -522,9 +520,7 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 	}
 	if res.Send != nil {
 		out.Send = &jobWatchToolSendArgs{
-			To:             res.Send.To,
-			Message:        res.Send.Message,
-			IncludeExcerpt: res.Send.IncludeExcerpt,
+			To: res.Send.To,
 		}
 	}
 	return tool.StateResult{Output: formatJobWatch(out), State: out}, nil

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -22,8 +23,13 @@ func TestProjectTurnPartsReportsTheContentPartOfEachItem(t *testing.T) {
 	if !reflect.DeepEqual(parts, []int{1, 2, 4}) {
 		t.Fatalf("parts = %v, want [1 2 4]", parts)
 	}
-	if want := ProjectTurn("turn_1", 1, assistant, NewToolCallRegistry(), nil, nil); !reflect.DeepEqual(items, want) {
-		t.Fatalf("ProjectTurnParts items differ from ProjectTurn:\n got %+v\nwant %+v", items, want)
+	want := []appwire.ThreadItem{
+		{Type: "reasoning", ID: "item_reasoning_1_1", TurnID: "turn_1", Text: "think", Status: appwire.TurnStatusCompleted},
+		{Type: "agentMessage", ID: "item_assistant_1_2", TurnID: "turn_1", Text: "hello", Status: appwire.TurnStatusCompleted},
+		{Type: "commandExecution", ID: "item_tool_1_4", TurnID: "turn_1", ToolName: "read_file", CallID: "c2", ArgumentsJSON: "{}", Status: appwire.TurnStatusInProgress},
+	}
+	if !reflect.DeepEqual(items, want) {
+		t.Fatalf("ProjectTurnParts items:\n got %+v\nwant %+v", items, want)
 	}
 
 	results := schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{

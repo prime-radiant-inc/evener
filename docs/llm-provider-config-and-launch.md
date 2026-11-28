@@ -18,6 +18,7 @@ Companion docs:
 |---|---|---|---|
 | Credentials store | `<config-root>/credentials.toml` (chmod 600) | TOML | API keys, keyed by **instance name** |
 | OpenAI OAuth record | `<state-root>/auth/<instance>.json` (chmod 600) | JSON | OpenAI ChatGPT/Codex OAuth tokens, per instance — the default instance is now `openai-codex`, not `openai` |
+| GitHub Copilot OAuth record | `<state-root>/auth/github-copilot/<instance>.json` (chmod 600) | JSON | GitHub Copilot subscription tokens and account identity, per instance |
 | Providers config | `<config-root>/providers.toml` | TOML | instance descriptors: `base`, transport, protocol, surface, caps, and optional `headers`/`credential_headers`/model overrides (see [`llm-providers.md`](llm-providers.md#providerstoml)) |
 | Process environment | n/a | env vars | fallback / base URLs / tuning |
 
@@ -267,7 +268,49 @@ session; Start stays the explicit launch action.
 A stray record — `auth/<name>.json` where `<name>` isn't an instance on the
 Codex transport (including one left over from `evener openai login
 --instance work` under the old scheme) — produces a one-line startup notice
-naming the file, remedied with `evener openai logout --instance <name>` after confirming that the record is no longer needed.
+naming the file, remedied with `evener openai logout --instance <name>` after confirming that the record is no longer needed. A stray
+`auth/github-copilot/<name>.json` for a name that is not a Copilot instance is
+treated the same way and removed with `evener github-copilot logout --instance
+<name>`.
+
+## GitHub Copilot OAuth
+
+GitHub Copilot is a subscription connection, not an API-key provider. Its
+device-only login writes an OAuth record at
+`<state-root>/auth/github-copilot/<instance>.json` under the
+`oauth-github-copilot` scheme and mode 0600. The record holds the GitHub OAuth
+token, the short-lived Copilot session token and its expiry, and the account
+identity that keys model discovery.
+
+The Copilot session token is renewed shortly before expiry through
+`/copilot_internal/v2/token`. The GitHub OAuth token and its rotating refresh
+token are refreshed with the same five-minute margin, serialized by a
+per-record inter-process lock that compares a stored generation, so concurrent
+processes cannot each consume one rotation. A generation that receives a 401 is
+retried once, and only when a refresh changed the token generation; an opened
+stream is not replayed.
+
+The hub treats these records as live state. A notice sweep compares a
+signature computed from each record without contacting GitHub — existence, instance, scheme, account,
+corrupt or login-required, readiness — and, when GitHub login, logout or an
+account switch happens outside the hub, reloads the affected instances and
+emits one `evener/auth/updated` notice without a hub restart. A change that
+only renews a token stays quiet, and a device login started by this hub is not
+echoed back. Logout deletes the local record, including a corrupt one, and
+revokes nothing on GitHub's side.
+
+The CLI is `evener github-copilot login|status|logout`, with `--dir`,
+`--state-dir` and `--instance` (default `github-copilot`). Login is
+device-only: it prints the verification URL and user code, then polls until
+the authorization is entered. Status reports the local record. Sign-in uses the
+github.com OAuth endpoint with the `read:user` scope; GitHub Enterprise Server
+and personal access tokens are not supported.
+
+The provider uses a temporary, Pi-compatible public OAuth client identity and
+direct HTTPS requests to the Copilot backend. That is a temporary compatibility
+boundary, not a GitHub-approved or partner integration: it uses no GitHub SDK
+or CLI, and the raw inference responses it consumes are not a stable public
+contract.
 
 ## Hub launch / spawn process model
 
@@ -330,7 +373,8 @@ every instance write until the file is fixed by hand.
 
 The spawn credential gate keys on the instance's `Transport.Auth`: `none`
 and `optional-bearer` need nothing; `oauth-openai-codex` is satisfied by the
-instance's OAuth record; `gcp-adc` by a stored credential JSON, the ADC
+instance's OAuth record; `oauth-github-copilot` by its
+`auth/github-copilot/<instance>.json` record; `gcp-adc` by a stored credential JSON, the ADC
 variable, or the well-known file; everything else needs a resolved key or
 credential header, or the launch fails before a process is spawned.
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,6 +31,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/appwire/appwiretest"
+	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/shellquote"
@@ -37,10 +39,15 @@ import (
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
+
+func runServe(args []string) error {
+	return runServeWithDeps(args, defaultServeDeps())
+}
 
 func shutdownServeTestDaemon(ctx context.Context, address, sessionID string) error {
 	transport, err := appwire.DialWebSocket(ctx, "ws://"+address+"/rpc", http.DefaultClient)
@@ -406,7 +413,7 @@ func serveTestClient(t *testing.T) *llm.Client {
 // a custom instance name (e.g. "work" defined in providers.toml) to a profile
 // whose ID matches the instance name, not the provider id behind it.
 func TestBuildInitialProfile_ConfigPath(t *testing.T) {
-	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
+	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "", profileLaunch{})
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -418,7 +425,7 @@ func TestBuildInitialProfile_ConfigPath(t *testing.T) {
 // TestBuildInitialProfile_ConfigPathInvalidOutputSchema verifies that an invalid
 // --output-schema returns an error.
 func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
-	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
+	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json", profileLaunch{})
 	if err == nil {
 		t.Fatal("expected error for invalid --output-schema JSON")
 	}
@@ -430,7 +437,7 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 // TestBuildInitialProfile_UnknownInstanceError verifies that an unknown
 // instance name returns the expected error.
 func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
-	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
+	_, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "", profileLaunch{})
 	if err == nil {
 		t.Fatal("expected error for unknown instance name")
 	}
@@ -442,7 +449,7 @@ func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
 // TestBuildInitialProfile_CuratedInstance verifies that a curated implicit id
 // resolves the same way a configured instance does.
 func TestBuildInitialProfile_CuratedInstance(t *testing.T) {
-	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
+	profile, _, err := buildInitialProfile(context.Background(), serveTestClient(t), cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "", profileLaunch{})
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -880,9 +887,19 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 		serveLoadClient = oldLoadClient
 	})
 
-	client, closeAPILog, err := newServeLLMClient(stateDir, nil)
+	deps := defaultServeDeps()
+	client, closeClient, err := deps.newClient(stateDir, nil)
 	if err != nil {
-		t.Fatalf("newServeLLMClient: %v", err)
+		t.Fatalf("deps.newClient: %v", err)
+	}
+	defer func() {
+		if closeErr := closeClient(); closeErr != nil {
+			t.Errorf("closeClient: %v", closeErr)
+		}
+	}()
+	_, closeAPILog, err := deps.attachAPILogger(client, stateDir, nil, true)
+	if err != nil {
+		t.Fatalf("deps.attachAPILogger: %v", err)
 	}
 	_, err = client.Complete(llm.WithAPILogContext(context.Background(), "serve-session"), llm.Request{
 		Provider: "openai",
@@ -2113,5 +2130,180 @@ func TestAgentToServerDetailedStatus_DelegatesCarryEveryAgentField(t *testing.T)
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("bridged delegate JSON differs from the agent's:\ngot=%s\nwant=%s", got, want)
+	}
+}
+
+// serveCopilotClient builds a client for a Copilot instance whose listing
+// endpoint is the returned test server, with a stored future-dated session so
+// the fetch needs no network. The context binds the record's state root.
+func serveCopilotClient(t *testing.T, body string) (*llm.Client, context.Context, *int) {
+	t.Helper()
+	return serveCopilotClientStatus(t, body, http.StatusOK)
+}
+
+// serveCopilotClientStatus is serveCopilotClient for a listing endpoint that
+// answers with status.
+func serveCopilotClientStatus(t *testing.T, body string, status int) (*llm.Client, context.Context, *int) {
+	t.Helper()
+	state := t.TempDir()
+	if err := githubcopilot.SaveAuth(state, "work", githubcopilot.AuthRecord{
+		Instance: "work", Scheme: githubcopilot.AuthScheme, Version: 1,
+		AccessToken: "access", CopilotToken: "copilot", AccountID: "account-1",
+		ObtainedAt: time.Now().Add(-time.Hour), CopilotExpiry: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	hits := new(int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		*hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	cfgPath := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"" + srv.URL + "/v1\"\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := registry.Load(
+		registry.WithConfigPath(cfgPath), registry.WithStateRoot(state),
+		registry.WithOffline(true), registry.WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	ctx := llm.WithScopedAuthenticator(context.Background(), registry.AuthOAuthGitHubCopilot, tokenauth.ScopedCopilot(state))
+	return client, ctx, hits
+}
+
+// TestBuildInitialProfileAuthoritativeAbsentModel pins the launch gate for an
+// account-owned roster: a model the account does not list is refused with a
+// typed error naming the models it does, after exactly one listing fetch.
+func TestBuildInitialProfileAuthoritativeAbsentModel(t *testing.T) {
+	client, ctx, hits := serveCopilotClient(t, `{"data":[
+	 {"id":"claude-haiku-5.5","supported_endpoints":["/v1/messages"],"capabilities":{"family":"claude"}}
+	]}`)
+	_, _, err := buildInitialProfile(ctx, client, cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}, "", profileLaunch{})
+	var absent *llm.ModelNotAvailableError
+	if !errors.As(err, &absent) {
+		t.Fatalf("error = %v, want a typed available-models error", err)
+	}
+	if !slices.Contains(absent.Available, "claude-haiku-5.5") {
+		t.Fatalf("available = %v, want the account's row", absent.Available)
+	}
+	if *hits != 1 {
+		t.Fatalf("listing fetches = %d, want 1", *hits)
+	}
+}
+
+// TestBuildInitialProfileAuthoritativePresentModel pins the successful launch:
+// the account lists the model, the profile resolves from that listing, and the
+// session receives the same spelling for its primed hydration.
+func TestBuildInitialProfileAuthoritativePresentModel(t *testing.T) {
+	client, ctx, hits := serveCopilotClient(t, `{"data":[
+	 {"id":"gpt-5.6-sol","supported_endpoints":["/responses"],"capabilities":{"family":"gpt","supports":{"tool_calls":true}}}
+	]}`)
+	profile, primed, err := buildInitialProfile(ctx, client, cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}, "", profileLaunch{})
+	if err != nil {
+		t.Fatalf("buildInitialProfile: %v", err)
+	}
+	if profile.Model() != "gpt-5.6-sol" {
+		t.Fatalf("profile model = %q", profile.Model())
+	}
+	if primed == nil || !primed.Listing.Usable || len(primed.Listing.Models) != 1 {
+		t.Fatalf("primed = %+v, want the one-row account listing", primed)
+	}
+	if got := primed.Listing.Models[0].Protocol; got != registry.ProtocolOpenAIResponses {
+		t.Fatalf("primed protocol = %q, want responses", got)
+	}
+	if *hits != 1 {
+		t.Fatalf("listing fetches = %d, want 1", *hits)
+	}
+}
+
+// TestBuildInitialProfileResumeFallsBackWhenRosterUnreadable pins resume past
+// a roster failure: the saved profile the session's metadata names still
+// starts the session. A fresh launch keeps its listing error, and a cancelled
+// caller gets cancellation instead of the static fallback.
+func TestBuildInitialProfileResumeFallsBackWhenRosterUnreadable(t *testing.T) {
+	client, ctx, hits := serveCopilotClientStatus(t, `{"message":"boom"}`, http.StatusInternalServerError)
+	ref := cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}
+
+	profile, primed, err := buildInitialProfile(ctx, client, ref, "", profileLaunch{resuming: true})
+	if err != nil {
+		t.Fatalf("resume with an unreadable roster: %v", err)
+	}
+	if profile.ID() != "work" || profile.Model() != "gpt-5.6-sol" {
+		t.Fatalf("profile = %s/%s, want the saved work/gpt-5.6-sol", profile.ID(), profile.Model())
+	}
+	if primed != nil {
+		t.Fatalf("primed listing = %+v, want none when the roster could not be read", primed)
+	}
+	if *hits != 1 {
+		t.Fatalf("listing fetches = %d, want 1", *hits)
+	}
+
+	if _, _, err := buildInitialProfile(ctx, client, ref, "", profileLaunch{}); err == nil {
+		t.Fatal("a fresh launch started without reading the account roster")
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	profile, primed, err = buildInitialProfile(cancelled, client, ref, "", profileLaunch{resuming: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled resume error = %v, want context.Canceled", err)
+	}
+	if profile != nil || primed != nil {
+		t.Fatalf("cancelled resume returned profile %+v primed %+v, want neither", profile, primed)
+	}
+}
+
+// TestBuildInitialProfileRosterMembership pins the three roster policies: a
+// fresh launch and an explicit new model selection during resume are both
+// refused when the account roster omits the model, while an ordinary resume
+// reopens the saved profile with the fetched roster so the user can switch.
+func TestBuildInitialProfileRosterMembership(t *testing.T) {
+	const roster = `{"data":[
+	 {"id":"claude-haiku-5.5","supported_endpoints":["/v1/messages"],"capabilities":{"family":"claude"}}
+	]}`
+	ref := cmdutil.ModelRef{Provider: "work", Model: "gpt-5.6-sol"}
+	cases := []struct {
+		name    string
+		launch  profileLaunch
+		refused bool
+	}{
+		{name: "fresh launch", launch: profileLaunch{}, refused: true},
+		{name: "explicit resume selection", launch: profileLaunch{resuming: true, selectedModel: true}, refused: true},
+		{name: "ordinary resume", launch: profileLaunch{resuming: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, ctx, hits := serveCopilotClient(t, roster)
+			profile, primed, err := buildInitialProfile(ctx, client, ref, "", tc.launch)
+			if tc.refused {
+				if _, ok := errors.AsType[*llm.ModelNotAvailableError](err); !ok {
+					t.Fatalf("error = %v, want the available-models refusal", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ordinary resume with a roster that dropped the saved model: %v", err)
+			}
+			if profile == nil || profile.ID() != "work" || profile.Model() != "gpt-5.6-sol" {
+				t.Fatalf("profile = %+v, want the saved work/gpt-5.6-sol", profile)
+			}
+			if primed == nil || primed.Instance != "work" || !primed.Listing.Usable || !listingHasModel(primed.Listing.Models, "claude-haiku-5.5") {
+				t.Fatalf("primed = %+v, want the fetched work roster", primed)
+			}
+			if *hits != 1 {
+				t.Fatalf("listing fetches = %d, want 1", *hits)
+			}
+		})
 	}
 }

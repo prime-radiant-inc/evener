@@ -84,10 +84,12 @@ func incrementalTestEvent(i int) Event {
 	switch i % 6 {
 	case 0:
 		started := ts
+		processStarted := ts
 		return Event{
 			Kind: EventJobStarted, TS: ts, JobID: jobID, Type: JobShell,
 			Task: strings.Repeat("t", i%17), OwnerSessionID: "ses_owner",
 			VisibleToSession: "ses_owner", StartedAt: &started, OutputPath: "/tmp/out",
+			Background: true, ProcessGroupID: 4242, ProcessStartTime: &processStarted,
 			Provenance: &provenance.Causal{
 				WatchKeys: []provenance.WatchKey{{WatchID: "w1", WatchGeneration: "g1"}},
 				FireKeys:  []provenance.FireKey{{WatchID: "w1", WatchGeneration: "g1", DeliveryID: "d1"}},
@@ -111,7 +113,7 @@ func incrementalTestEvent(i int) Event {
 		}
 	case 3:
 		return Event{
-			Kind: EventJobMessageSent, TS: ts, JobID: jobID, Target: "ses_target", Action: "note",
+			Kind: EventJobNotificationDelivered, TS: ts, JobID: jobID, TerminalGen: fmt.Sprintf("gen_%d", i),
 		}
 	case 4:
 		return Event{
@@ -132,7 +134,7 @@ func incrementalTestEvent(i int) Event {
 			Kind: EventWatchSendPending, TS: ts,
 			WatchSend: &WatchSendState{
 				Key:        WatchSendKey{VisibleSessionID: "ses_owner", WatchID: fmt.Sprintf("w_%d", i%3), WatchTarget: "job:1", WatchGeneration: "g1"},
-				DeliveryID: fmt.Sprintf("d%d", i), UpdateSeq: uint64(i), Message: "m",
+				DeliveryID: fmt.Sprintf("d%d", i), UpdateSeq: uint64(i), Frame: "m",
 				CreatedAt: ts, UpdatedAt: ts,
 				Provenance: &provenance.Causal{
 					Chain:    []provenance.Entry{{Kind: "watch", WatchID: "w1"}},
@@ -433,6 +435,9 @@ func mutateEventDeeply(e *Event) {
 	if e.ExitCode != nil {
 		*e.ExitCode = 99
 	}
+	if e.ProcessStartTime != nil {
+		*e.ProcessStartTime = time.Unix(0, 0)
+	}
 	if e.StructuredResultValid != nil {
 		*e.StructuredResultValid = !*e.StructuredResultValid
 	}
@@ -444,7 +449,7 @@ func mutateEventDeeply(e *Event) {
 	}
 	mutateCausal(e.Provenance)
 	if ws := e.WatchSend; ws != nil {
-		ws.Message = "mutated"
+		ws.Frame = "mutated"
 		mutateCausal(ws.Provenance)
 	}
 	if w := e.Watch; w != nil {
@@ -487,6 +492,7 @@ func TestCloneEventCoversEveryReferenceField(t *testing.T) {
 	want := []string{
 		"Event.EndedAt",
 		"Event.ExitCode",
+		"Event.ProcessStartTime",
 		"Event.Provenance",
 		"Event.Provenance.Chain",
 		"Event.Provenance.FireKeys",

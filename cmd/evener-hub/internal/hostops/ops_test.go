@@ -37,21 +37,22 @@ func opQuery(host string, kind Kind, clientID string, generation uint64, incarna
 // record.
 func createPairRecord(t *testing.T, store *Store, host string, kind Kind, clientID string, generation uint64, incarnationID string) Record {
 	t.Helper()
-	record, err := store.Create(NewRecord{
+	outcome, err := store.Create(OperationCreateRequest{
 		ClientOperationID: clientID,
 		Host:              host,
 		Kind:              kind,
-		Generation:        generation,
-		IncarnationID:     incarnationID,
+		Pair:              OperationPair{Generation: generation, IncarnationID: incarnationID},
+		BootID:            "test-boot",
+		SequenceBefore:    store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create(%s/%s): %v", host, clientID, err)
 	}
-	done, err := store.Transition(record.ID, StateComplete, func(r *Record) {
+	done, err := store.Transition(outcome.Record.ID, StateComplete, func(r *Record) {
 		r.Result = &Result{OK: true, Message: "done"}
 	})
 	if err != nil {
-		t.Fatalf("Transition(%s): %v", record.ID, err)
+		t.Fatalf("Transition(%s): %v", outcome.Record.ID, err)
 	}
 	return done
 }
@@ -74,13 +75,10 @@ func TestLookupOperationReplaysTheCurrentPairRecord(t *testing.T) {
 // TestLookupOperationRefusesCrossHostReuse is §12's conflicting-reuse row: a
 // current-generation record of a different host refuses the reuse.
 func TestLookupOperationRefusesCrossHostReuse(t *testing.T) {
-	store, _ := openTestStore(t)
-	createPairRecord(t, store, "h2", KindDeploy, "op-1", 7, "inc-h2")
-	if err := store.MirrorBoundaries(map[string]Boundary{
+	store, _ := openStoreWithRawMirror(t, map[string]Boundary{
 		"h2": {Generation: 7, IncarnationID: "inc-h2", PresenceEpoch: 1},
-	}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
-	}
+	}, nil)
+	createPairRecord(t, store, "h2", KindDeploy, "op-1", 7, "inc-h2")
 
 	_, _, err := store.LookupOperation(opQuery("h1", KindDeploy, "op-1", 7, "inc-h1"))
 	if _, ok := errors.AsType[*ConflictingOperationIDError](err); !ok {
@@ -105,13 +103,13 @@ func TestLookupOperationRefusesDeployVersusRestartReuse(t *testing.T) {
 // a conflicting reuse, never a replay.
 func TestLookupOperationNeverMatchesAHostRemovedRecord(t *testing.T) {
 	store, _ := openTestStore(t)
-	record, err := store.Create(NewRecord{
-		ClientOperationID: "op-1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-h1",
+	outcome, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "op-1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-h1"}, BootID: "test-boot",
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := store.Transition(record.ID, StateComplete, func(r *Record) {
+	if _, err := store.Transition(outcome.Record.ID, StateComplete, func(r *Record) {
 		r.Result = &Result{OK: true, Message: "done"}
 		r.HostRemoved = true
 	}); err != nil {
@@ -187,13 +185,13 @@ func TestLookupOperationReplaysTheIntendedSupersededPair(t *testing.T) {
 // naming the re-added pair opens fresh rather than replaying them.
 func TestLookupOperationOpensFreshOnTheCurrentPairAfterReAdd(t *testing.T) {
 	store, _ := openTestStore(t)
-	record, err := store.Create(NewRecord{
-		ClientOperationID: "op-1", Host: "h1", Kind: KindRestart, Generation: 7, IncarnationID: "inc-old",
+	outcome, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "op-1", Host: "h1", Kind: KindRestart, Pair: OperationPair{Generation: 7, IncarnationID: "inc-old"}, BootID: "test-boot",
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := store.Transition(record.ID, StateFailed, func(r *Record) {
+	if _, err := store.Transition(outcome.Record.ID, StateFailed, func(r *Record) {
 		r.Result = &Result{OK: false, Message: "lost"}
 		r.HostRemoved = true
 	}); err != nil {
@@ -441,11 +439,11 @@ func TestConsumeAndCreateCrashWindowLeavesNoConsumedToken(t *testing.T) {
 	}
 }
 
-// TestCreateOperationMintsItsFencingEpoch is restart's atomic record creation:
+// TestCreateMintsItsFencingEpoch is restart's atomic record creation:
 // no pre-probe epoch row is promoted, but the record still carries a durable
 // (boot id, op sequence) epoch, minted above the host's counter, and a stale
 // probe-epoch row for the host is superseded.
-func TestCreateOperationMintsItsFencingEpoch(t *testing.T) {
+func TestCreateMintsItsFencingEpoch(t *testing.T) {
 	store, path, _ := openClockStore(t)
 	stale, err := store.PersistProbeEpoch(ProbeEpochRequest{
 		Host: "h1", BootID: "boot-old", Generation: 7, IncarnationID: "inc-h1",
@@ -454,7 +452,7 @@ func TestCreateOperationMintsItsFencingEpoch(t *testing.T) {
 		t.Fatalf("PersistProbeEpoch: %v", err)
 	}
 
-	outcome, err := store.CreateOperation(OperationCreateRequest{
+	outcome, err := store.Create(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindRestart,
@@ -462,7 +460,7 @@ func TestCreateOperationMintsItsFencingEpoch(t *testing.T) {
 		BootID:            "boot-1",
 	})
 	if err != nil {
-		t.Fatalf("CreateOperation: %v", err)
+		t.Fatalf("Create: %v", err)
 	}
 	record := outcome.Record
 	if record.State != StatePending || record.Kind != KindRestart {
@@ -490,12 +488,13 @@ func TestCreateOperationMintsItsFencingEpoch(t *testing.T) {
 func TestInterruptInFlightNamesTheShutdown(t *testing.T) {
 	store, path := openTestStore(t)
 	pending := createPairRecord(t, store, "h1", KindDeploy, "op-1", 7, "inc-h1")
-	running, err := store.Create(NewRecord{
-		ClientOperationID: "op-2", Host: "h2", Kind: KindRestart, Generation: 7, IncarnationID: "inc-h2",
+	outcome, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "op-2", Host: "h2", Kind: KindRestart, Pair: OperationPair{Generation: 7, IncarnationID: "inc-h2"}, BootID: "test-boot", SequenceBefore: store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	running := outcome.Record
 	if _, err := store.Transition(running.ID, StateRunning, nil); err != nil {
 		t.Fatalf("Transition to running: %v", err)
 	}
@@ -581,12 +580,13 @@ func TestEffectiveNowReadsMaxOfClockAndMark(t *testing.T) {
 // bounded shape: oldest entries drop first and the list never exceeds the cap.
 func TestAppendProgressIsBounded(t *testing.T) {
 	store, _ := openTestStore(t)
-	record, err := store.Create(NewRecord{
-		ClientOperationID: "op-1", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-h1",
+	outcome, err := store.Create(OperationCreateRequest{
+		ClientOperationID: "op-1", Host: "h1", Kind: KindDeploy, Pair: OperationPair{Generation: 7, IncarnationID: "inc-h1"}, BootID: "test-boot", SequenceBefore: store.Sequence(),
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	record := outcome.Record
 	for i := range MaxProgressEntries + 5 {
 		if _, err := store.AppendProgress(record.ID, "step"); err != nil {
 			t.Fatalf("AppendProgress(%d): %v", i, err)

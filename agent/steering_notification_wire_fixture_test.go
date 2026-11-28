@@ -295,7 +295,7 @@ func TestSteeringNotificationWireFixtures(t *testing.T) {
 
 	got := make([]notificationWireFixture, 0, len(cases))
 	for i, tc := range cases {
-		items := apptranscript.ProjectTurn("turn_1", i, tc.turn, nil, nil, nil)
+		items, _ := apptranscript.ProjectTurnParts("turn_1", i, tc.turn, nil, nil, nil)
 		if len(items) != 1 {
 			t.Fatalf("%s: projected %d items, want 1", tc.name, len(items))
 		}

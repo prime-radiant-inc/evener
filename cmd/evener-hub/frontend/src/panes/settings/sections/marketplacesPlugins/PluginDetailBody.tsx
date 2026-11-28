@@ -6,15 +6,16 @@
 // expanded at a time, and `onCollapse` is how a body that lost its entry
 // (its own remove completing, or another client's) takes itself down.
 
-import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
-import { HUB_WRITE_BUSY, isHubWriteBusy, pluginComponentsKey } from "@evener/appwire-client/state/extensions";
+import { marketplaceSourceLabel } from "@evener/appwire-client";
+import { pluginComponentsKey } from "@evener/appwire-client/state/extensions";
 import { useEffect, useRef, useState } from "react";
 import { Button, ConfirmDialog, Switch, useFocusRehome, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { PluginContentsBlock } from "../../../plugins/PluginContents";
-import { PluginDetail, type PluginMetadataRow } from "../../../plugins/PluginDetail";
+import { PluginDetail, pluginMetadataRows } from "../../../plugins/PluginDetail";
 import { pluginDetailBodyId } from "../../../plugins/pluginRowFocus";
 import { pluginStatusChips } from "../../../plugins/pluginStatusChips";
+import { writeFailureText } from "../../../plugins/writeFailure";
 import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 
@@ -111,7 +112,7 @@ export function PluginDetailBody({ target, onCollapse, onInstall }: PluginDetail
       if (currentlyEnabled) await store.getState().disablePlugin(target.plugin, target.marketplace);
       else await store.getState().enablePlugin(target.plugin, target.marketplace);
     } catch (err) {
-      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Toggle enable failed: ${errorText(err)}`);
+      toasts.push("error", writeFailureText(err, "Toggle enable failed"));
     }
   }
 
@@ -120,7 +121,7 @@ export function PluginDetailBody({ target, onCollapse, onInstall }: PluginDetail
     try {
       await store.getState().setPluginAutoUpgrade(target.plugin, target.marketplace, !currentlyAutoUpgrade);
     } catch (err) {
-      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Toggle auto-upgrade failed: ${errorText(err)}`);
+      toasts.push("error", writeFailureText(err, "Toggle auto-upgrade failed"));
     }
   }
 
@@ -130,7 +131,7 @@ export function PluginDetailBody({ target, onCollapse, onInstall }: PluginDetail
       await store.getState().upgradePlugin(target.plugin, target.marketplace);
       toasts.push("success", `Upgraded ${target.plugin}`);
     } catch (err) {
-      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Upgrade failed: ${errorText(err)}`);
+      toasts.push("error", writeFailureText(err, "Upgrade failed"));
     }
   }
 
@@ -143,7 +144,7 @@ export function PluginDetailBody({ target, onCollapse, onInstall }: PluginDetail
       // onCollapse fires via the entry-vanished effect above once the
       // store's updated plugin list lands - no explicit collapse here.
     } catch (err) {
-      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Remove failed: ${errorText(err)}`);
+      toasts.push("error", writeFailureText(err, "Remove failed"));
     }
   }
 
@@ -154,27 +155,14 @@ export function PluginDetailBody({ target, onCollapse, onInstall }: PluginDetail
   const description = catalogEntry?.description;
   const marketplaceEntry = marketplaces.find((m) => m.name === target.marketplace);
 
-  const metaRows: PluginMetadataRow[] = [
-    ...(mode === "installed" && entry !== undefined
-      ? [{ kind: "version" as const, label: "Version", value: `v${entry.version || "unknown"}`, mono: true }]
-      : []),
-    { kind: "marketplace", label: "Marketplace", value: target.marketplace },
-    ...(marketplaceEntry !== undefined
-      ? [
-          {
-            kind: "source" as const,
-            label: "Source",
-            value: marketplaceSourceLabel(marketplaceEntry.source),
-            mono: true,
-          },
-        ]
-      : []),
-    // Catalog metadata carries the author the browse catalog knows; an
-    // installed entry's metadata stays today's rows.
-    ...(mode === "catalog" && catalogEntry?.author !== undefined
-      ? [{ kind: "author" as const, label: "Author", value: catalogEntry.author }]
-      : []),
-  ];
+  // Catalog metadata carries the author the browse catalog knows; an
+  // installed entry's metadata stays today's rows.
+  const metaRows = pluginMetadataRows({
+    version: mode === "installed" && entry !== undefined ? `v${entry.version || "unknown"}` : undefined,
+    marketplace: target.marketplace,
+    source: marketplaceEntry !== undefined ? marketplaceSourceLabel(marketplaceEntry.source) : undefined,
+    author: mode === "catalog" ? catalogEntry?.author : undefined,
+  });
 
   // Where the Contents block goes, between the description and the metadata.
   // Only a settled inventory renders - the block appears when the answer

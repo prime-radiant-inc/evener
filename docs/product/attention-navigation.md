@@ -10,11 +10,12 @@ page owns what the client does with that membership.
 
 ## Membership
 
-Only an actionable condition puts a session in Needs you: a pending question,
-a pending approval, a warning, or a restart. A turn that merely ended on
-`needs_response` is finished, not blocked on a person, so it rests Idle and
-never enters the tier. A failed session stays in the tier too, under its own
-error level, ordered first. The hub owns the rule once:
+Only an actionable condition puts a session in Needs you: a pending `ask_user`
+question, a pending approval, a warning, or a restart. The daemon's `awaiting`
+state comes from a pending question; approvals carry their own pending fact.
+Legacy or remote `awaiting` without `askPending` or a pending approval
+normalizes to Idle and does not enter the tier. A failed session stays in the
+tier too, under its own error level, ordered first. The hub owns the rule once:
 [`hubapi.NeedsAction`](../../hubapi/attention.go) decides the actionable
 conditions, and the hub's
 [`attentionLevel`](../../cmd/evener-hub/internal/hubcore/attention.go) adds
@@ -42,6 +43,15 @@ Archiving is a clearing verb for the population too, and it reaches the whole
 project as well as a single session. `tierEligible` drops a session whose own
 decision archives it and one whose owning project's decision does, so a
 manually archived project stops claiming attention for every session under it.
+That project decision is cleared when a top-level session is created in the
+project after the decision: launching a session is using the project again, so
+the new session is not filed as archived at birth and the project's earlier
+sessions return to their tiers. The rule is per owning source and counts only
+sessions created strictly after the decision, compared at the decision row's
+one-second precision so a session created in the decision's own second counts
+as covered. An existing or resumed session,
+or a subagent's spawn, leaves the archive in place, and a session's own
+unarchive decision still cannot override a project archive.
 Only the manual decision counts here: the sidebar's age-based auto-archive
 never clears attention, because a needs-you session does not decay. Live
 applies the same manual decisions plus its age rule
@@ -312,7 +322,8 @@ separate server-side contract.
 A session opens at the live end, with one exception: a finished reply the
 reader has not seen opens at that reply's start, so they read it downward
 instead of scrolling back from its end to find where it began. Both clients
-make that exception, each with its own memory of what was seen.
+offer that exception, each with its own memory of what was seen; the web
+makes it opt-in.
 
 The web remembers, per session and per browser, the latest finished turn at
 the moment the reader left the pane
@@ -338,17 +349,24 @@ unseen reply. The landing is the opening's alone: a transcript that reloads
 under an open pane does not send the reader back, and the reader's own scroll
 cancels a landing still in flight
 ([`useTranscriptScroll`](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)).
-There is no setting for this on the web: the live end is one click on the
-pill away, and a preference would only choose between two places that are
-both already reachable.
+The web makes that exception opt-in, off by default: Settings > Conversation
+display offers "Open at unread replies"
+([`prefs.ts`](../../cmd/evener-hub/frontend/src/stores/prefs.ts)). Off, an
+opening keeps the live end and the divider still marks where the new reply
+began; on, a finished unseen reply opens at its start, and the jump pill
+offers the live end from there. The choice is per browser, so opting in on
+one machine does not move another reader's opening.
 
 The mark is local to the browser, so it is independent of the hub's
 cross-device seen state: opening still marks the session seen through the
 rules in [session activity](session-activity.md), and a reply already read on
-another device still opens at its start here.
+another device still counts as unseen here - it opens at its start when
+"Open at unread replies" is on.
 
-The phone's Display page owns an open-at-unread-replies preference
+The phone's Display page owns the same open-at-unread-replies preference
 ([`openAtUnreadReplies`](../../mobile-native/src/display/displayPreferences.ts)),
-on by default: with it, a reply that finished since the reader last reached
-the end opens at that reply's start, past the reader's own message, its time
-marker and its attachments; a pending question or approval still wins.
+on by default there: with it, a reply that finished since the reader last
+reached the end opens at that reply's start, past the reader's own message,
+its time marker and its attachments; a pending question or approval still
+wins. The web's default is off, because the web reader already has the jump
+pill at the live end.

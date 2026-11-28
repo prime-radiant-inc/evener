@@ -48,10 +48,10 @@ func writeTranscriptPairs(t testing.TB, path string, pairs int) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	for range pairs {
-		if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+		if _, err := tw.Record(schema.NewTurn(schema.TurnUserInput, llm.User("in")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append user: %v", err)
 		}
-		if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("out"))); err != nil {
+		if _, err := tw.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("out")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append assistant: %v", err)
 		}
 	}
@@ -83,9 +83,9 @@ func TestServedTranscriptReadsPersistedCommunicate(t *testing.T) {
 // serve does: project once, then publish.
 func installTranscriptIdentity(t testing.TB, srv *Server, threadID, path string) {
 	t.Helper()
-	prepared, err := PrepareAppIdentity("local", threadID, path)
+	prepared, err := PrepareAppIdentityForRef("local", threadID, "local:"+threadID, path)
 	if err != nil {
-		t.Fatalf("PrepareAppIdentity(%s): %v", path, err)
+		t.Fatalf("PrepareAppIdentityForRef(%s): %v", path, err)
 	}
 	srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 }
@@ -170,8 +170,8 @@ func TestDaemonTranscriptPreparationPropagatesUnsupportedFormat(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := PrepareAppIdentity("local", "th_1", path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
-				t.Fatalf("PrepareAppIdentity = %v, want ErrUnsupportedFormat", err)
+			if _, err := PrepareAppIdentityForRef("local", "th_1", "local:th_1", path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+				t.Fatalf("PrepareAppIdentityForRef = %v, want ErrUnsupportedFormat", err)
 			}
 		})
 	}
@@ -236,8 +236,8 @@ func TestServerAppWireOldIdentityCannotPublishAfterReplacement(t *testing.T) {
 // and that the new thread's subscribers are not.
 func TestServerAppWireReplacementClosesTheOldStreamOnce(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "old")
-	srv.SetAppIdentity("local", "new")
+	setAppIdentity(t, srv, "local", "old")
+	setAppIdentity(t, srv, "local", "new")
 
 	closed := srv.AppNotificationsAfter(0, "local:old")
 	if len(closed) != 1 || closed[0].Notification.Method != appwire.NotifyThreadClosed {
@@ -260,12 +260,12 @@ func TestServerAppWireReplacementClosesTheOldStreamOnce(t *testing.T) {
 // published does not survive the replacement.
 func TestServerAppWireReplacementLeavesNoActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	srv.SetProcessingTurn("t_running")
 	if got := srv.appThread().Evener.ActiveTurnID; got != "t_running" {
 		t.Fatalf("thread.evener.activeTurnId = %q, want the running t_running", got)
 	}
-	srv.SetAppIdentity("local", "th_3")
+	setAppIdentity(t, srv, "local", "th_3")
 	if got := srv.appThread().Evener.ActiveTurnID; got != "" {
 		t.Fatalf("thread.evener.activeTurnId = %q after replacement, want none", got)
 	}
@@ -350,7 +350,7 @@ func TestTranscriptHeaderReadsOnlyLeadingHeader(t *testing.T) {
 		// Close still flushes, so the file read back is byte-identical.
 		writer.SyncInterval = time.Hour
 		for range entries {
-			if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("historical entry"))); err != nil {
+			if _, err := writer.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("historical entry")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -404,16 +404,16 @@ func TestPreparedAppIdentityRejectsAnotherSessionsTranscript(t *testing.T) {
 		return path
 	}
 
-	if _, err := PrepareAppIdentity("local", "th_1", write("th_1")); err != nil {
-		t.Fatalf("PrepareAppIdentity with a matching header = %v, want success", err)
+	if _, err := PrepareAppIdentityForRef("local", "th_1", "local:th_1", write("th_1")); err != nil {
+		t.Fatalf("PrepareAppIdentityForRef with a matching header = %v, want success", err)
 	}
 
 	st := newServedTranscript(t, NewServer(ServerConfig{}), "th_1", schema.NewTurn(schema.TurnUserInput, llm.User("installed")))
 	srv := st.srv
 	before := st.read(t)
 
-	if _, err := PrepareAppIdentity("local", "th_1", write("th_other")); err == nil {
-		t.Fatal("PrepareAppIdentity accepted another session's transcript")
+	if _, err := PrepareAppIdentityForRef("local", "th_1", "local:th_1", write("th_other")); err == nil {
+		t.Fatal("PrepareAppIdentityForRef accepted another session's transcript")
 	}
 	if after := st.read(t); !reflect.DeepEqual(after, before) {
 		t.Fatalf("failed preparation mutated installed state\n got: %+v\nwant: %+v", after, before)
@@ -438,9 +438,9 @@ func TestPreparedAppIdentityServesNoHistoryWithoutATranscript(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
 			t.Cleanup(srv.Close)
-			prepared, err := PrepareAppIdentity("local", "th_1", tc.path)
+			prepared, err := PrepareAppIdentityForRef("local", "th_1", "local:th_1", tc.path)
 			if err != nil {
-				t.Fatalf("PrepareAppIdentity: %v", err)
+				t.Fatalf("PrepareAppIdentityForRef: %v", err)
 			}
 			srv.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
 			if srv.appHistoryForID("th_1") != nil {
@@ -457,25 +457,22 @@ func TestPreparedAppIdentityServesNoHistoryWithoutATranscript(t *testing.T) {
 	}
 }
 
-// TestPreparedAppIdentityRequiresAThreadID also covers SetAppIdentity, which
-// installs through the same validation. An identity with no thread cannot be
-// published half-way: it would blank status.SessionID while leaving the caller
-// believing a thread was installed.
+// TestPreparedAppIdentityRequiresAThreadID verifies that an identity with no
+// thread cannot be prepared: preparation fails before any Server state is
+// touched, rather than blanking status.SessionID.
 func TestPreparedAppIdentityRequiresAThreadID(t *testing.T) {
 	for _, threadID := range []string{"", "   "} {
-		if _, err := PrepareAppIdentity("local", threadID, ""); err == nil {
-			t.Fatalf("PrepareAppIdentity(%q) succeeded, want an error", threadID)
-		}
-
 		srv := NewServer(ServerConfig{})
-		srv.SetAppIdentity("local", "th_1")
+		setAppIdentity(t, srv, "local", "th_1")
 		srv.UpdateSessionInfo("01SESS001", "gpt-5", "openai")
-		srv.SetAppIdentity("local", threadID)
+		if _, err := PrepareAppIdentityForRef("local", threadID, "local:th_1", ""); err == nil {
+			t.Fatalf("PrepareAppIdentityForRef(%q) succeeded, want an error", threadID)
+		}
 		if got := srv.GetStatus().SessionID; got != "01SESS001" {
-			t.Fatalf("SetAppIdentity(%q) left status.SessionID = %q, want the untouched 01SESS001", threadID, got)
+			t.Fatalf("PrepareAppIdentityForRef(%q) left status.SessionID = %q, want the untouched 01SESS001", threadID, got)
 		}
 		if got := srv.appThread().ID; got != "th_1" {
-			t.Fatalf("SetAppIdentity(%q) replaced the installed thread with %q", threadID, got)
+			t.Fatalf("PrepareAppIdentityForRef(%q) replaced the installed thread with %q", threadID, got)
 		}
 	}
 }
@@ -503,10 +500,10 @@ func TestSeedingAReservedTurnIDFromTheTranscriptKeepsTurnIDsUnique(t *testing.T)
 			user.ClientMutationID = "reply-1"
 			user.StableTurnID = reserved
 		}
-		if err := tw.Append(user); err != nil {
+		if _, err := tw.Record(user, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append user: %v", err)
 		}
-		if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("out-%d", i)))); err != nil {
+		if _, err := tw.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("out-%d", i))), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append assistant: %v", err)
 		}
 	}

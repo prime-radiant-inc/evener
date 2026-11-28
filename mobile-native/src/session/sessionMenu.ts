@@ -102,7 +102,7 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 			type: "menu",
 			label: "Session actions",
 			accessibilityLabel: "Session actions",
-			icon: { type: "sfSymbol", name: "ellipsis.circle" },
+			icon: { type: "sfSymbol", name: "ellipsis" },
 			menu: { items: entries },
 		},
 	];

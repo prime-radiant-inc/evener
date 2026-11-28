@@ -14,7 +14,7 @@ import (
 func TestThreadSnapshotsCarryTheSessionsAccess(t *testing.T) {
 	networkOff := false
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
 		ID:     "root",
 		Config: schema.ConfigSnapshot{Sandbox: "workspace-write", SandboxNet: &networkOff},
@@ -29,7 +29,7 @@ func TestThreadSnapshotsCarryTheSessionsAccess(t *testing.T) {
 // network on.
 func TestThreadSnapshotsSayAnUnsandboxedSessionIsOff(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "root"}})
 	want := appwire.ThreadAccess{Sandbox: "off", Network: true}
 	if got := readThreadOverWire(t, srv, "local:root").Evener.Access; got == nil || *got != want {
@@ -42,7 +42,7 @@ func TestThreadSnapshotsSayAnUnsandboxedSessionIsOff(t *testing.T) {
 func TestDescendantThreadsCarryTheirOwnAccess(t *testing.T) {
 	networkOff := false
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "root", Config: schema.ConfigSnapshot{Sandbox: "workspace-write"}}})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
 		Sandbox: "read-only", SandboxNet: &networkOff,
@@ -62,7 +62,7 @@ func TestDescendantThreadsCarryTheirOwnAccess(t *testing.T) {
 // the snapshot gets its own copy.
 func TestThreadSnapshotsDoNotAliasTheEnvelopeAccess(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
 		ID:     "root",
 		Config: schema.ConfigSnapshot{Sandbox: "workspace-write"},
@@ -82,7 +82,7 @@ func TestThreadSnapshotsDoNotAliasTheEnvelopeAccess(t *testing.T) {
 // child's snapshot corrupts the projection for every later reader (S15).
 func TestDescendantSnapshotsDoNotAliasTheProjectionAccess(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "root"}})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
 		Sandbox: "read-only",

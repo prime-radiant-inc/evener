@@ -1,22 +1,36 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { bindFilePath } from "@evener/appwire-client/docContent";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
+import { testEscalation } from "@evener/appwire-client/testing/reducerTestKit";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { DockviewApi } from "dockview-core";
-import { lazy, useEffect, useState } from "react";
+import { lazy, useEffect, useRef, useState } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { openDocBeside } from "../../panes/doc/openDoc";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
-import { MOBILE_QUERY } from "../useIsMobile";
+import { useTranscriptScroll } from "../../panes/session/transcript/flow/useTranscriptScroll";
+import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
+import {
+  holdReaderFrames,
+  installTranscriptGeometry,
+} from "../../panes/session/transcript/transcriptReadingGeometryTestUtils";
+import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
+import type { VirtualListHandle } from "../../widgets";
+import { connectIPhoneHost } from "../iPhoneHost";
+import { MOBILE_QUERY, TABLET_QUERY } from "../useIsMobile";
 import "../../panes/transcript";
 import { cascadeClient, cascadeContext } from "../../panes/zoom/cascadeTestUtils";
 import { recordCascadeOrigin } from "../../panes/zoom/inspectionOrigin";
 import type { SessionZoomParams } from "../../panes/zoom/intent";
+import { StubResizeObserver } from "../../resizeObserverTestUtils";
 import "../../panes/zoom";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import {
   activityClient,
   activityContext,
@@ -24,8 +38,10 @@ import {
   activityDetailsThread,
   activitySummary,
 } from "../../stores/sessionActivityTestUtils";
+import { topNotesStore } from "../../stores/topNotes";
 import { initTranscriptDisplay, resetTranscriptDisplayStoreForTests } from "../../stores/transcriptDisplay";
 import { readModuleCss } from "../../styles/cssBlock";
+import { Badge, Dialog, Input } from "../../widgets";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { openAttentionSession } from "../attentionHistory";
 import { captureAttentionPlacement, presentAttentionTarget, restoreAttentionPlacement } from "../attentionPlacement";
@@ -33,7 +49,8 @@ import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { ClientProvider } from "../clientContext";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
 import { usePaneVisible } from "../paneVisibility";
-import { openTopLevelSession } from "../sessionPlacement";
+import { useRailHeaderAction } from "../rail/railHeaderAction";
+import { openSessionByRef, openTopLevelSession } from "../sessionPlacement";
 import {
   documentPaneState,
   recordConversationOpenParent,
@@ -41,6 +58,7 @@ import {
   resetWorkspaceStoreForTests,
   workspaceStore,
 } from "../workspace";
+import mobilePanelStyles from "./MobilePanel.module.css";
 import { StackHost, scrollOffsetsForTests, setLastPopstateWasTrustedForTests } from "./StackHost";
 import stackStyles from "./StackHost.module.css";
 
@@ -247,6 +265,11 @@ function openConversation(ref: string, parentRef?: unknown): string {
   return id;
 }
 
+async function openSessionsPanel(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+  expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+}
+
 class RestoreDockviewApi {
   panels: Array<{ id: string; params: unknown }> = [];
   activePanel: { id: string } | undefined = undefined;
@@ -283,7 +306,56 @@ function asDockviewApi(fake: RestoreDockviewApi): DockviewApi {
   return fake as unknown as DockviewApi;
 }
 
+// motion-dom initializes its prefers-reduced-motion listener once per module
+// load against window.matchMedia("(prefers-reduced-motion)"). Installing a
+// MediaQueryList with real change notifications up front lets the reduced-
+// motion test toggle the preference through the library's own listener.
+let reducedMotionMatches = false;
+const reducedMotionListeners = new Set<() => void>();
+
+function setReducedMotionPreference(matches: boolean): void {
+  reducedMotionMatches = matches;
+  for (const listener of reducedMotionListeners) listener();
+}
+
+const defaultMatchMedia: typeof window.matchMedia = (media) => {
+  const isReducedMotion = media === "(prefers-reduced-motion)" || media === "(prefers-reduced-motion: reduce)";
+  return {
+    media,
+    get matches() {
+      return isReducedMotion ? reducedMotionMatches : false;
+    },
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (isReducedMotion && typeof listener === "function") reducedMotionListeners.add(listener as () => void);
+    },
+    removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject | null) => {
+      if (isReducedMotion && typeof listener === "function") reducedMotionListeners.delete(listener as () => void);
+    },
+    dispatchEvent: () => false,
+  };
+};
+
+function installTabletMatchMedia(): () => void {
+  const originalMedia = window.matchMedia;
+  window.matchMedia = ((media: string) =>
+    media === "(prefers-reduced-motion)" || media === "(prefers-reduced-motion: reduce)"
+      ? defaultMatchMedia(media)
+      : ({
+          media,
+          matches: media === MOBILE_QUERY || media === TABLET_QUERY,
+          addEventListener() {},
+          removeEventListener() {},
+        } as unknown as MediaQueryList)) as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = originalMedia;
+  };
+}
+
 beforeAll(async () => {
+  window.matchMedia = defaultMatchMedia;
   registerPaneForTests<{ ref?: string; path?: string }>({
     id: "doc",
     title: (params) => `Doc ${params.ref ?? params.path ?? "unknown"}`,
@@ -363,6 +435,7 @@ async function warmPane(open: () => void, findLandmark: (timeout: number) => Pro
   cleanup();
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
+  resetNavigationStoreForTests();
   setLastPopstateWasTrustedForTests(false);
   window.history.pushState({}, "", "/");
 }
@@ -370,14 +443,17 @@ async function warmPane(open: () => void, findLandmark: (timeout: number) => Pro
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySidebarStoreForTests();
+  resetNavigationStoreForTests();
   resetConnectionStoreForTests();
   resetChromeStoreForTests();
+  topNotesStore.getState().resetForTests();
   setLastPopstateWasTrustedForTests(false);
 });
 
 afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
+  setReducedMotionPreference(false);
   setLastPopstateWasTrustedForTests(false); // defensive: no test should leak this into the next
 });
 
@@ -392,6 +468,340 @@ test("opens the mobile panel when nothing is focused", async () => {
   await findStackedEmptyState("welcome");
   // The panel's Sheet title "Sessions" is the dialog's accessible name
   expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+});
+
+test("the Duo edge controls open and dismiss Sessions and yield to a nested dialog", async () => {
+  const restore = installMobileViewport();
+  const ua = vi
+    .spyOn(navigator, "userAgent", "get")
+    .mockReturnValue("EvenerNative/1 EvenerSessionHeader/1 EvenerSessionsToolbar/1 EvenerPaneNavigation/1");
+  let toolbar: { id: string; mode: string | null; needsYou?: number } | undefined;
+  const modes: (string | null)[] = [];
+  vi.stubGlobal("evenerEdgeToolbar", true);
+  vi.stubGlobal("ReactNativeWebView", {
+    postMessage(json: string) {
+      const message = JSON.parse(json);
+      if (message.type === "sessionsToolbar") {
+        toolbar = message;
+        modes.push(message.mode);
+      }
+    },
+  });
+  const send = (id: string | undefined, action: string) =>
+    act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify({ type: "sessionsAction", id, action }) }),
+      ),
+    );
+  try {
+    const filter = <Input role="searchbox" aria-label="Filter" value="" onChange={() => {}} />;
+    const { rerender } = render(<StackHost railSlot={filter} />);
+    await screen.findByRole("dialog");
+    await waitFor(() => expect(toolbar?.mode).toBe("list"));
+    expect(document.activeElement).toBe(screen.getByRole("dialog"));
+    await userEvent.click(screen.getByRole("searchbox"));
+    expect(document.activeElement).toBe(screen.getByRole("searchbox"));
+    const listID = toolbar?.id;
+    rerender(
+      <StackHost
+        railSlot={
+          <Dialog open onClose={() => {}} title="Confirm">
+            <Badge count={1} />
+          </Dialog>
+        }
+      />,
+    );
+    await waitFor(() => expect(toolbar?.mode).toBeNull());
+    send(listID, "close");
+    expect(screen.getAllByRole("dialog")).toHaveLength(2);
+    rerender(<StackHost />);
+    await waitFor(() => expect(toolbar?.mode).toBe("list"));
+    send(listID, "close");
+    await waitFor(() => expect(toolbar?.mode).toBe("launcher"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(within(screen.getByTestId("topbar")).queryByRole("button")).toBeNull();
+    send(toolbar?.id, "open");
+    await waitFor(() => expect(toolbar?.mode).toBe("list"));
+    send(listID, "close");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    send(toolbar?.id, "settings");
+    expect(window.location.pathname).toBe("/settings");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    act(() => workspaceStore.getState().openPane("settings", { section: "appearance" }));
+    await waitFor(() => expect(toolbar).toMatchObject({ mode: "navigation", back: true, destination: "open" }));
+    expect(within(screen.getByTestId("topbar")).queryByRole("button")).toBeNull();
+    modes.length = 0;
+    act(() => setNeedsYouCount(2));
+    expect(toolbar?.needsYou).toBe(2);
+    expect.soft(modes).not.toContain(null);
+    rerender(<StackHost routeDeferred />);
+    expect.soft(toolbar?.mode).toBeNull();
+    rerender(<StackHost />);
+    const paneBack = vi.fn();
+    act(() => chromeStore.getState().setPaneBack(paneBack));
+    send(toolbar?.id, "back");
+    expect(paneBack).toHaveBeenCalledOnce();
+    send(toolbar?.id, "open");
+    await screen.findByRole("dialog");
+  } finally {
+    cleanup();
+    vi.unstubAllGlobals();
+    ua.mockRestore();
+    restore();
+  }
+});
+
+test.each([
+  { installed: false, pane: "session" },
+  { installed: true, pane: "session" },
+  { installed: false, pane: "welcome" },
+  { installed: true, pane: "welcome" },
+  { installed: false, pane: "settings" },
+  { installed: true, pane: "settings" },
+])(
+  "Sessions uses the free edge and restores the opener on $pane when installed=$installed",
+  async ({ installed, pane }) => {
+    const user = userEvent.setup();
+    const restoreViewport = installMobileViewport();
+    Object.defineProperty(navigator, "standalone", { configurable: true, value: installed });
+    document.documentElement.style.setProperty("--home-safe-right", "84px");
+    try {
+      if (pane === "session") workspaceStore.getState().openPane("session", { ref: "local:root-navigation" });
+      if (pane === "settings") workspaceStore.getState().openPane("settings", {});
+      render(<StackHost />);
+      if (pane === "welcome") {
+        await screen.findByRole("dialog");
+        await user.keyboard("{Escape}");
+      }
+      await screen.findByTestId("topbar-title");
+      if (pane === "settings") {
+        const back = screen.getByRole("button", { name: "Back" });
+        expect(Boolean(back.closest("[data-home-toolbar]"))).toBe(installed);
+      } else {
+        expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      }
+      const opener = screen.getByRole("button", { name: "Sessions" });
+      expect(opener.closest("[role=toolbar]")?.getAttribute("data-home-toolbar") ?? null).toBe(
+        installed ? "right" : null,
+      );
+      const bar = screen.getByTestId("topbar");
+      expect(bar.contains(opener)).toBe(!installed);
+      if (!installed) {
+        // The trigger keeps one mounted node in the trailing cluster across
+        // pane swaps, so the drawer's focus restoration keeps its opener; the
+        // bar row-reverses (data-drawer-leads) to put it at the visual leading
+        // edge wherever Back is absent. A Back-owning pane keeps normal order
+        // so the trigger never disappears behind Back.
+        expect(bar.hasAttribute("data-drawer-leads")).toBe(pane === "welcome");
+      }
+      await openSessionsPanel(user);
+      expect(screen.getByRole("dialog").classList.contains(mobilePanelStyles.right ?? "")).toBe(installed);
+      await user.keyboard("{Escape}");
+      expect(document.activeElement).toBe(opener);
+    } finally {
+      cleanup();
+      document.documentElement.style.removeProperty("--home-safe-right");
+      Reflect.deleteProperty(navigator, "standalone");
+      restoreViewport();
+    }
+  },
+);
+
+test("a focused session's top bar orders Find before Overview", async () => {
+  const restoreViewport = installMobileViewport();
+  try {
+    workspaceStore.getState().openPane("session", { ref: "local:header-order" });
+    render(<StackHost />);
+    const title = await screen.findByTestId("topbar-title");
+    const topBar = title.parentElement;
+    if (!topBar) throw new Error("session top bar is missing");
+
+    const find = await within(topBar).findByRole("button", { name: "Find in session" });
+    const overview = within(topBar).getByRole("button", { name: "Overview" });
+    expect(find.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("the iPhone controls stay above inline Find and follow the focused reader", async () => {
+  const restoreViewport = installMobileViewport();
+  const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1 EvenerSessionHeader/1");
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(61);
+  const postMessage = vi.fn<(message: string) => void>();
+  vi.stubGlobal("ReactNativeWebView", { postMessage });
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
+  const header = () =>
+    postMessage.mock.calls
+      .map(([json]) => JSON.parse(json))
+      .filter((message) => message.type === "sessionHeader")
+      .at(-1)?.header;
+  const press = (id: string, action: string) =>
+    act(async () => {
+      window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "headerAction", id, action }) }));
+    });
+  const ref = "remote:header";
+  const client = activityClient();
+  client.on("thread/read", ({ ref }) => {
+    const result = activityDetailsThread(ref, {
+      turns: [{ id: "t", status: "completed", itemsView: "full", items: [] }],
+    });
+    result.thread.evener.capabilities.sharedNotes = true;
+    return result;
+  });
+  connectionStore.getState().connect(client);
+  const pane = workspaceStore.getState().openPane("session", { ref });
+  setNeedsYouCount(3);
+  try {
+    render(
+      <ClientProvider client={client}>
+        <StackHost />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(header()).toMatchObject({ id: pane, leading: "sessions", height: 61, needsYou: 3 }));
+    const bar = screen.getByTestId("topbar");
+    expect(bar.hasAttribute("inert")).toBe(true);
+    const scroller = document.querySelector("[data-reading-scroll-host] > *");
+    if (!scroller) throw new Error("missing transcript scroller");
+    const notes = screen.getByTestId("top-notes-panel");
+    const foldedHeight = bar.offsetHeight + notes.offsetHeight;
+    const scroll = (top: number) =>
+      act(() => {
+        scroller.scrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 2400 });
+    scroll(2400);
+    act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -2400, bubbles: true }));
+    });
+    scroll(0);
+    act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 240, bubbles: true }));
+    });
+    scroll(240);
+    expect(header()?.collapsed).toBe(true);
+    expect(scroller.scrollTop).toBe(240 - foldedHeight);
+    await press(pane, "find");
+    const field = await within(await screen.findByTestId("find-bar")).findByRole("searchbox");
+    expect(document.activeElement).toBe(field);
+    await waitFor(() => expect(header()).toMatchObject({ id: pane, collapsed: false }));
+    scroll(340);
+    expect(header()?.collapsed).toBe(false);
+    expect(bar.hasAttribute("inert")).toBe(true);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(header()?.id).toBe(pane));
+    const child = await act(async () => openConversation("remote:header-child", ref));
+    await waitFor(() => expect(header()).toMatchObject({ id: child, leading: "back" }));
+    await press(pane, "back");
+    expect(workspaceStore.getState().focusedPaneId).toBe(child);
+    await press(child, "back");
+    expect(workspaceStore.getState().focusedPaneId).toBe(pane);
+    await press(pane, "sessions");
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(header()).toBeNull();
+  } finally {
+    cleanup();
+    restoreViewport();
+    vi.unstubAllGlobals();
+    ua.mockRestore();
+    height.mockRestore();
+  }
+});
+
+test("the inner iPhone window keeps the Board and hands focused pane actions to the system edge bar", async () => {
+  const restore = installMobileViewport([MOBILE_QUERY, "(min-width: 648px) and (min-height: 600px)"]);
+  const ua = vi
+    .spyOn(navigator, "userAgent", "get")
+    .mockReturnValue(
+      "EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1 EvenerSessionsToolbar/1 EvenerPaneNavigation/1",
+    );
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(58);
+  const messages: { type: string; id?: string; header?: { leading: string | null } | null }[] = [];
+  vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
+  const stop = connectIPhoneHost(vi.fn());
+  const send = (command: unknown) =>
+    act(() => window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(command) })));
+  const lastHeader = () => messages.filter(({ type }) => type === "sessionHeader").at(-1)?.header;
+  try {
+    const id = workspaceStore.getState().openPane("session", { ref: "local:duo" });
+    render(
+      <ClientProvider client={activityClient()}>
+        <StackHost railSlot={<TabletRailActionSlot />} />
+      </ClientProvider>,
+    );
+    const board = await screen.findByTestId("board-column");
+    const bar = screen.getByTestId("topbar");
+    expect(bar.hasAttribute("inert")).toBe(false);
+    // Rotation can present the already-scoped toolbar before a response from the web process.
+    expect(lastHeader()).toMatchObject({ id, leading: null, split: true });
+    send({ type: "material", glass: true, edgeToolbar: true });
+    await waitFor(() => expect(lastHeader()).toMatchObject({ id, leading: null }));
+    expect(bar.hasAttribute("data-system-edge-actions")).toBe(true);
+    expect(within(bar).getByRole("heading")).toBe(screen.getByTestId("topbar-title"));
+    await userEvent.click(within(board).getByTestId("board-toggle"));
+    await waitFor(() => expect(lastHeader()?.leading).toBe("sessions"));
+    send({ type: "headerAction", id, action: "sessions" });
+    await waitFor(() => expect(lastHeader()?.leading).toBeNull());
+    send({ type: "headerAction", id, action: "overview" });
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    await waitFor(() => expect(lastHeader()).toBeNull());
+    expect(within(bar).queryAllByRole("button")).toHaveLength(0);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(lastHeader()).toMatchObject({ id }));
+    send({ type: "material", glass: true, edgeToolbar: false });
+    await waitFor(() => expect(bar.hasAttribute("data-system-edge-actions")).toBe(false));
+    expect(within(bar).getAllByRole("button").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("board-column")).toBeTruthy();
+    expect(workspaceStore.getState().focusedPaneId).toBe(id);
+    act(() => {
+      workspaceStore.getState().openPane("settings", {});
+      setNeedsYouCount(3);
+    });
+    const settingsId = workspaceStore.getState().focusedPaneId;
+    send({ type: "material", glass: true, edgeToolbar: true });
+    const paneToolbar = () => messages.filter(({ type }) => type === "sessionsToolbar").at(-1);
+    await waitFor(() => expect(paneToolbar()).toMatchObject({ mode: "navigation", destination: null }));
+    await userEvent.click(within(screen.getByTestId("board-column")).getByTestId("board-toggle"));
+    await waitFor(() => expect(paneToolbar()).toMatchObject({ mode: "navigation", destination: "board", needsYou: 3 }));
+    send({ type: "sessionsAction", id: paneToolbar()?.id, action: "board" });
+    await waitFor(() => expect(paneToolbar()).toMatchObject({ mode: "navigation", destination: null }));
+    expect(screen.getByTestId("board-column")).toBeTruthy();
+    expect(workspaceStore.getState().focusedPaneId).toBe(settingsId);
+  } finally {
+    cleanup();
+    stop?.();
+    restore();
+    ua.mockRestore();
+    height.mockRestore();
+    vi.unstubAllGlobals();
+  }
+});
+
+test("a session with a retained parent keeps Back instead of Sessions", async () => {
+  const user = userEvent.setup();
+  const parent = openConversation("local:navigation-parent");
+  openConversation("local:navigation-child", "local:navigation-parent");
+  render(<StackHost />);
+  await screen.findByTestId("topbar-title");
+
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(parent);
+});
+
+test("a session gaining a valid back-stack destination swaps Sessions for Back", async () => {
+  const user = userEvent.setup();
+  const documentPane = workspaceStore.getState().openPane("doc", { ref: "navigation-origin" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: navigation-origin/);
+
+  await act(async () => workspaceStore.getState().openPane("session", { ref: "local:backstack-navigation" }));
+
+  expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(workspaceStore.getState().focusedPaneId).toBe(documentPane);
 });
 
 test("Activity opened from the mobile drawer supersedes the drawer", async () => {
@@ -424,7 +834,11 @@ test("Activity opened from the mobile drawer supersedes the drawer", async () =>
   await user.click(screen.getByRole("button", { name: "Activity for drawer session" }));
 
   expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull();
-  expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  expect(sidebar).toBeTruthy();
+  // The drawer's close restores focus to its own opener; the sidebar's
+  // selected category must take focus back after that restore.
+  await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("tab", { name: /Jobs/ })));
 });
 
 test("renders the new activity sidebar over the mobile stack with the selected tab", async () => {
@@ -447,10 +861,10 @@ test("renders the new activity sidebar over the mobile stack with the selected t
   );
 
   expect(await screen.findByTestId("activity-sidebar")).toBeTruthy();
-  expect(screen.getByRole("radio", { name: /Jobs/ })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: /Jobs/ })).toBeTruthy();
 });
 
-test.each(["Close", "Escape"])(
+test.each(["Hide", "Escape"])(
   "%s returns phone Overview focus to the revealed conversation after child drilling",
   async (dismiss) => {
     const restoreViewport = installMobileViewport();
@@ -487,20 +901,28 @@ test.each(["Close", "Escape"])(
           </MotionProvider>
         </ClientProvider>,
       );
-      await user.click(await screen.findByRole("button", { name: "Session actions" }));
-      await user.click(screen.getByRole("menuitem", { name: /Overview/ }));
-      await user.click(await screen.findByRole("button", { name: /Open child/ }));
+      await user.click(await screen.findByRole("button", { name: "Overview" }));
       const sidebar = await screen.findByTestId("activity-sidebar");
-      await user.click(within(sidebar).getByRole("radio", { name: "About" }));
+      await user.click(within(sidebar).getByRole("tab", { name: /^Agents,/ }));
+      await user.click(await screen.findByRole("button", { name: /Open child/ }));
+      // Drilling changes the inspected scope. The new scope's selected
+      // category must own focus inside the trap before the reader touches
+      // another control.
+      // Entry focus lands in one queued frame, so the short bound reports a
+      // regression as the focus mismatch, not as the test's own deadline.
+      await waitFor(() => expect(document.activeElement).toBe(within(sidebar).getByRole("tab", { name: /Agents/ })), {
+        timeout: 2_000,
+      });
+      await user.click(within(sidebar).getByRole("tab", { name: "About" }));
       await within(sidebar).findByText("~$1.00");
       await screen.findByRole("heading", { name: "Child work" });
       const before = workspaceStore.getState();
       expect(before.focusedPaneId).not.toBe(parentPane);
-      if (dismiss === "Close") await user.click(within(sidebar).getByRole("button", { name: "Close Overview" }));
+      if (dismiss === "Hide") await user.click(within(sidebar).getByRole("button", { name: "Hide Overview" }));
       else await user.keyboard("{Escape}");
       // The read-only transcript's ancestor link is gone: the revealed
       // conversation owns the return focus through its own actions control.
-      const childActions = await screen.findByRole("button", { name: "Session actions" });
+      const childActions = await screen.findByRole("button", { name: "Overview" });
       await waitFor(() => expect(document.activeElement).toBe(childActions));
       await waitFor(() => expect(screen.queryByTestId("activity-sidebar")).toBeNull());
       expect(workspaceStore.getState().panes).toEqual(before.panes);
@@ -781,6 +1203,17 @@ test("a single-pane route offers no tree drawer trigger", async () => {
   render(<StackHost singlePane />);
   expect(await screen.findByTestId("topbar-title")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Sessions" })).toBeNull();
+});
+
+// The drawer restores focus to its opener when it closes, including when a
+// pane choice inside the drawer closes it mid-navigation. A trigger that
+// remounts across the pane swap strands that restoration on a detached node.
+test("the tree drawer trigger stays one mounted node across a Back-owning pane swap", async () => {
+  render(<StackHost />);
+  const opener = await screen.findByRole("button", { name: "Sessions" });
+  act(() => workspaceStore.getState().openPane("settings", {}));
+  await screen.findByRole("button", { name: "Back" });
+  expect(screen.getByRole("button", { name: "Sessions" })).toBe(opener);
 });
 
 // --- back navigation ---------------------------------------------------
@@ -1072,7 +1505,7 @@ test.each([
   { reason: "closed pane", parentRef: "local:closed" },
   { reason: "self reference", parentRef: "local:leaf" },
   { reason: "non-transcript/session pane", parentRef: "local:document" },
-])("retained-parent Back: $reason keeps the Welcome fallback without creating a parent", async ({ parentRef }) => {
+])("retained-parent navigation: $reason opens Sessions without creating a parent", async ({ parentRef }) => {
   const workspace = workspaceStore.getState();
   workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
   workspace.openPane("doc", { ref: "local:document" }, { slot: "secondary" });
@@ -1083,12 +1516,11 @@ test.each([
   render(<StackHost />);
   expect(workspaceStore.getState().focusedPaneId).toBe(leaf);
   const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: "Back" }));
-  await findStackedEmptyState("welcome");
-  const state = workspaceStore.getState();
-  expect(state.panes.find((pane) => pane.id === state.focusedPaneId)?.type).toBe("welcome");
-  expect(state.panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
   expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+  await openSessionsPanel(user);
+  const state = workspaceStore.getState();
+  expect(state.focusedPaneId).toBe(leaf);
+  expect(state.panes).toEqual(retained);
 });
 
 test("retained-parent Back: a non-transcript's parentRef does not override the Welcome fallback", async () => {
@@ -1128,8 +1560,8 @@ test.each([false, true])(
       slot: "main",
       composerSeatId: expect.any(String),
     });
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await findStackedEmptyState("welcome");
+    await openSessionsPanel(user);
+    expect(workspaceStore.getState().panes).toEqual(retained);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
 );
@@ -1204,7 +1636,7 @@ test.each([
 );
 
 test.each([false, true])(
-  "retained-parent cycle safety: longer=%s missing farther ancestor still permits exact immediate parents",
+  "retained-parent cycle safety: longer=%s missing farther ancestor permits exact parents then opens Sessions",
   async (longer) => {
     const workspace = workspaceStore.getState();
     const owner = workspace.openPane("session", { ref: "local:owner" }, { slot: "main" });
@@ -1221,9 +1653,8 @@ test.each([false, true])(
       expect(workspaceStore.getState().panes).toEqual(retained);
       expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
     }
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await findStackedEmptyState("welcome");
-    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    await openSessionsPanel(user);
+    expect(workspaceStore.getState().panes).toEqual(retained);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
 );
@@ -1725,10 +2156,9 @@ test.each(["session origin"])(
     if (shape === "session origin" || shape === "missing farther ancestor") {
       expect(workspaceStore.getState().focusedPaneId).toBe(shape === "session origin" ? siblingId : bId);
       expect(workspaceStore.getState().panes).toEqual(retained);
-      await user.click(screen.getByRole("button", { name: "Back" }));
+      await openSessionsPanel(user);
     }
-    await findStackedEmptyState("welcome");
-    expect(workspaceStore.getState().panes.filter((pane) => pane.type !== "welcome")).toEqual(retained);
+    expect(workspaceStore.getState().panes).toEqual(retained);
     expect(workspaceStore.getState().mainPane()?.id).toBe(owner);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
@@ -1947,11 +2377,89 @@ test("with no slide running, as under reduced motion, a step deeper is the insta
   expect(stackBody().textContent).not.toContain("instant_a");
 });
 
-test("a slide away from a scrolled pane keeps the discarded pane's scroller out of the offsets map", async () => {
-  const slides = installSlideAnimations();
+function TabletRailActionSlot() {
+  return <>{useRailHeaderAction()}</>;
+}
+
+function setNeedsYouCount(needsYou: number): void {
+  navigationStore.setState({
+    mode: "v3",
+    manifest: {
+      key: { kind: "manifest" },
+      data: navigationManifest({
+        sections: { live: { count: 0 }, needs_you: { count: needsYou }, pin_sections: { count: 0 } },
+      }),
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: '"manifest"',
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "test-generation",
+    },
+  });
+}
+
+test("collapsed tablet Board toggle carries the Needs You badge and count only while hidden with attention waiting", async () => {
+  const originalMedia = window.matchMedia;
+  window.matchMedia = (query) =>
+    ({ matches: query === MOBILE_QUERY || query === TABLET_QUERY, media: query }) as MediaQueryList;
   try {
+    const attentionSample = render(<Badge count={3} tone="attention" />);
+    const attentionBadgeClass = attentionSample.container.firstElementChild?.className;
+    attentionSample.unmount();
+
+    const user = userEvent.setup();
+    setNeedsYouCount(3);
+    workspaceStore.getState().openPane("doc", { ref: "tablet_badge" });
+    render(<StackHost railSlot={<TabletRailActionSlot />} />);
+    await screen.findByText(/doc pane: tablet_badge /);
+
+    const expandedToggle = within(screen.getByTestId("board-column")).getByTestId("board-toggle");
+    expect(expandedToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(within(expandedToggle).queryByText("3")).toBeNull();
+    expect(expandedToggle.getAttribute("aria-label")).not.toMatch(/\d/);
+
+    await user.click(expandedToggle);
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    const collapsedToggle = within(screen.getByTestId("topbar")).getByTestId("board-toggle");
+    expect(collapsedToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(within(collapsedToggle).getByText("3").className).toBe(attentionBadgeClass);
+    expect(within(screen.getByTestId("topbar")).getByRole("button", { name: /\b3\b/ })).toBe(collapsedToggle);
+
+    act(() => setNeedsYouCount(0));
+    expect(within(collapsedToggle).queryByText("3")).toBeNull();
+    expect(within(collapsedToggle).queryByText("0")).toBeNull();
+    expect(collapsedToggle.getAttribute("aria-label")).not.toMatch(/\d/);
+
+    act(() => setNeedsYouCount(2));
+    expect(within(collapsedToggle).getByText("2").className).toBe(attentionBadgeClass);
+    expect(within(screen.getByTestId("topbar")).getByRole("button", { name: /\b2\b/ })).toBe(collapsedToggle);
+
+    await user.click(collapsedToggle);
+    const reopenedToggle = within(screen.getByTestId("board-column")).getByTestId("board-toggle");
+    expect(reopenedToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(within(reopenedToggle).queryByText("2")).toBeNull();
+    expect(reopenedToggle.getAttribute("aria-label")).not.toMatch(/\d/);
+  } finally {
+    window.matchMedia = originalMedia;
+  }
+});
+
+test.each(["phone", "tablet to phone"])("a slide discards the leaving scroller after %s layout", async (layout) => {
+  const slides = installSlideAnimations();
+  const originalMedia = window.matchMedia;
+  const tablet = new EventTarget();
+  const tabletMedia = Object.assign(tablet, { matches: true, media: TABLET_QUERY });
+  if (layout === "tablet to phone") {
+    window.matchMedia = (query) =>
+      (query === TABLET_QUERY ? tabletMedia : { matches: query === MOBILE_QUERY, media: query }) as MediaQueryList;
+  }
+  try {
+    const user = userEvent.setup();
     workspaceStore.getState().openPane("doc", { ref: "scrolled_from" });
-    render(<StackHost />);
+    render(<StackHost railSlot={<TabletRailActionSlot />} />);
     await screen.findByText(/doc pane: scrolled_from /);
     const offsets = scrollOffsetsForTests();
     if (!offsets) throw new Error("StackHost did not expose its scroll offsets");
@@ -1962,6 +2470,30 @@ test("a slide away from a scrolled pane keeps the discarded pane's scroller out 
       scroller.dispatchEvent(new Event("scroll"));
     });
     expect(offsets.get(scroller)).toEqual([48, 0]);
+
+    if (layout === "tablet to phone") {
+      expect(screen.getByTestId("board-column")).toBeTruthy();
+      await user.click(screen.getByTestId("board-toggle"));
+      expect(screen.queryByTestId("board-column")).toBeNull();
+      expect(paneScroller("scrolled_from")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(48);
+      expect(offsets.get(scroller)).toEqual([48, 0]);
+
+      await user.click(screen.getByTestId("board-toggle"));
+      expect(screen.getByTestId("board-column")).toBeTruthy();
+      expect(paneScroller("scrolled_from")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(48);
+      expect(offsets.get(scroller)).toEqual([48, 0]);
+
+      await act(async () => {
+        tabletMedia.matches = false;
+        tabletMedia.dispatchEvent(Object.assign(new Event("change"), { matches: false }));
+      });
+      expect(screen.queryByTestId("board-column")).toBeNull();
+      expect(paneScroller("scrolled_from")).toBe(scroller);
+      expect(scroller.scrollTop).toBe(48);
+      expect(offsets.get(scroller)).toEqual([48, 0]);
+    }
 
     await showDoc("scrolled_to");
     expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
@@ -1986,5 +2518,1081 @@ test("a slide away from a scrolled pane keeps the discarded pane's scroller out 
     expect(offsets.has(scroller)).toBe(false);
   } finally {
     slides.restore();
+    window.matchMedia = originalMedia;
+  }
+});
+
+test("picking from the open tablet board replaces without sliding, while non-board steps still push", async () => {
+  const slides = installSlideAnimations();
+  const restoreViewport = installMobileViewport([MOBILE_QUERY, TABLET_QUERY]);
+  try {
+    const user = userEvent.setup();
+    workspaceStore.getState().openPane("session", { ref: "local:board_a" });
+    render(
+      <StackHost
+        railSlot={
+          <div>
+            <TabletRailActionSlot />
+            <button type="button" onClick={() => openSessionByRef("local:board_b")}>
+              Board session B
+            </button>
+            <div
+              role="treeitem"
+              aria-selected={false}
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") openSessionByRef("local:board_c");
+              }}
+            >
+              Board session C
+            </div>
+          </div>
+        }
+      />,
+    );
+    await screen.findByRole("heading", { name: "local:board_a" });
+    const board = screen.getByTestId("board-column");
+
+    // Pointer pick from the open tablet board replaces without a push slide.
+    await user.click(within(board).getByRole("button", { name: "Board session B" }));
+    await screen.findByRole("heading", { name: "local:board_b" });
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+
+    // Keyboard Enter inside the board replaces without a push slide too.
+    const itemC = within(board).getByRole("treeitem", { name: "Board session C" });
+    itemC.focus();
+    await user.keyboard("{Enter}");
+    await screen.findByRole("heading", { name: "local:board_c" });
+    expect(leavingFrames()).toEqual([]);
+    expect(stackBody().hasAttribute("data-stack-transition")).toBe(false);
+
+    // A non-board forward navigation after a board pick still pushes.
+    await showDoc("from_pane");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    expect(leavingFrames()).toHaveLength(1);
+    await slides.finish();
+
+    // Board input followed by input inside the pane column still pushes.
+    itemC.focus();
+    await user.keyboard("{ArrowDown}");
+    await user.click(screen.getByRole("button", { name: "clicks: 0" }));
+    await showDoc("after_pane_input");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    await slides.finish();
+
+    // Collapsing the board from inside board-column clears board input so the next push runs.
+    await user.click(within(board).getByTestId("board-toggle"));
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    await showDoc("after_collapse");
+    expect(stackBody().getAttribute("data-stack-transition")).toBe("push");
+    await slides.finish();
+  } finally {
+    slides.restore();
+    restoreViewport();
+  }
+});
+
+// --- floating top bar ----------------------------------------------------
+
+function registerScrollablePaneForTests(id: "session" | "sessionZoom" | "transcript" | "doc") {
+  return registerPaneForTests({
+    id,
+    component: lazy(() =>
+      Promise.resolve({
+        default: () => (
+          <div data-reading-scroll-host="" style={{ height: "100%" }}>
+            <div data-testid="pane-scroll" style={{ height: "100%", overflowY: "auto" }}>
+              <div style={{ height: 2400 }} />
+            </div>
+          </div>
+        ),
+      }),
+    ),
+    title: () => id,
+  });
+}
+
+test.each([
+  { paneType: "session" as const, params: { ref: "local:a" }, collapses: true },
+  {
+    paneType: "sessionZoom" as const,
+    params: { ref: "local:leaf", source: { type: "session", params: { ref: "local:a" } }, edges: [] },
+    collapses: true,
+  },
+  { paneType: "transcript" as const, params: { ref: "local:job" }, collapses: true },
+  { paneType: "doc" as const, params: { ref: "ref_doc" }, collapses: false },
+])(
+  "scrolling a $paneType pane collapses=$collapses the top bar and scrolling up reveals it",
+  async ({ paneType, params, collapses }) => {
+    window.history.replaceState({}, "", "/");
+    const restorePane = registerScrollablePaneForTests(paneType);
+    try {
+      const host = await act(async () => render(<StackHost routeDeferred />));
+      await act(async () => {
+        workspaceStore.getState().openPane(paneType, params);
+      });
+      const bar = screen.getByTestId("topbar");
+      expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+      const scroller = await screen.findByTestId("pane-scroll");
+      act(() => {
+        scroller.scrollTop = 200;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+      if (collapses) {
+        await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+        act(() => {
+          scroller.scrollTop = 10;
+          scroller.dispatchEvent(new Event("scroll"));
+        });
+        await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+        if (paneType === "sessionZoom") {
+          fireEvent.scroll(scroller, { target: { scrollTop: 200 } });
+          expect(bar.getAttribute("data-collapsed")).toBe("true");
+          act(() => topNotesStore.getState().openAndFocus(params.ref));
+          expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+        }
+      } else {
+        expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+      }
+      host.unmount();
+    } finally {
+      restorePane();
+    }
+  },
+);
+
+test("floating top bar compensates scroll, ignores content height shifts, and resets on focus change", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerScrollablePaneForTests("session");
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:comp" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+
+    const scroller = await screen.findByTestId("pane-scroll");
+    let currentHeight = 2400;
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, get: () => currentHeight });
+
+    // Initial height observation (0 -> 2400) is position-neutral so initial
+    // scroll-to-bottom on open does not collapse the bar.
+    act(() => {
+      scroller.scrollTop = 200;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    // Downward gesture past barHeight + 12 collapses and compensates by -56.
+    act(() => {
+      scroller.scrollTop = 260;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(scroller.scrollTop).toBe(204);
+
+    // Content prepend/append shifts scrollHeight: position-neutral, stays collapsed.
+    currentHeight = 2800;
+    act(() => {
+      scroller.scrollTop = 604;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+
+    // Upward step >= 8px reveals and compensates by +56.
+    act(() => {
+      scroller.scrollTop = 594;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(scroller.scrollTop).toBe(650);
+
+    // Collapse again, then switch focus to another pane: solid bar returns.
+    act(() => {
+      scroller.scrollTop = 720;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+
+    await act(async () => {
+      workspaceStore.getState().openPane("doc", { ref: "after_float" });
+    });
+    await screen.findByText(/doc pane: after_float /);
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    host.unmount();
+  } finally {
+    restoreSession();
+  }
+});
+
+test("mobile notes tuck in the reading direction and return on reversal or explicit open", async () => {
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
+  window.history.replaceState({}, "", "/");
+  const restoreViewport = installMobileViewport();
+  const ref = "remote:mobile-notes";
+  const client = activityClient();
+  client.on("thread/read", ({ ref }) => {
+    const result = activityDetailsThread(ref, {
+      turns: [{ id: "t", status: "completed", itemsView: "full", items: [] }],
+    });
+    result.thread.evener.capabilities.sharedNotes = true;
+    return result;
+  });
+  connectionStore.getState().connect(client);
+  workspaceStore.getState().openPane("session", { ref });
+  try {
+    const host = render(
+      <ClientProvider client={client}>
+        <StackHost />
+      </ClientProvider>,
+    );
+    const notes = await screen.findByTestId("top-notes-panel");
+    Object.defineProperty(notes, "offsetHeight", { configurable: true, value: 44 });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const scroller = document.querySelector("[data-reading-scroll-host] > *");
+    if (!scroller) throw new Error("missing transcript scroller");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 2400 });
+    const scroll = (top: number) =>
+      act(() => {
+        scroller.scrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+
+    // The initial end landing can move again with the same measured height.
+    // Neither automatic offset establishes the reader's direction.
+    scroll(1800);
+    scroll(2400);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    fireEvent.touchStart(scroller, { touches: [{ clientY: 400 }] });
+    fireEvent.touchMove(scroller, { touches: [{ clientY: 420 }] });
+    scroll(2340);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    // A composited scroll can rebound after the viewport grows under the
+    // finger. The finger is still moving in the original direction.
+    scroll(2310);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    fireEvent.touchMove(scroller, { touches: [{ clientY: 400 }] });
+    scroll(2320);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    fireEvent.touchEnd(scroller);
+    fireEvent.wheel(scroller, { deltaY: -2320 });
+    scroll(0);
+
+    // Hiding the notes summary and floating the title preserves the reading line.
+    scroll(260);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(scroller.scrollTop).toBe(160);
+
+    // Another session's notes expanding leaves this session's floating bar alone.
+    act(() => {
+      topNotesStore.getState().setExpanded("local:other", true);
+    });
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    expect(scroller.scrollTop).toBe(160);
+
+    // A small reversal is neutral. Continuing upward restores Notes and navigation.
+    scroll(156);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    scroll(140);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(scroller.scrollTop).toBe(140);
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    scroll(124);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+
+    // Resuming the original direction tucks the summary. Explicit opening restores it.
+    scroll(140);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    act(() => {
+      topNotesStore.getState().setExpanded(ref, true);
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(scroller.scrollTop).toBe(240);
+
+    const editor = within(notes).getByRole<HTMLTextAreaElement>("textbox");
+    await userEvent.type(editor, "draft");
+    scroll(340);
+    expect(document.activeElement).toBe(editor);
+    expect(editor.value).toBe("draft");
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(scroller.scrollTop).toBe(340);
+
+    // Collapsing the notes leaves the bar solid until the next scroll decides.
+    act(() => {
+      topNotesStore.getState().setExpanded(ref, false);
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    scroll(400);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(scroller.scrollTop).toBe(300);
+    scroll(5);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(scroller.scrollTop).toBe(5);
+
+    // Opening at the latest turn can start the first reading gesture upward.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3600 });
+    scroll(2500);
+    scroll(2460);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(scroller.scrollTop).toBe(2360);
+    // Two small reverse steps still count when streaming moves the offset
+    // between them. The content shift itself contributes no travel.
+    scroll(2364);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 3900 });
+    scroll(2720);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    scroll(scroller.scrollTop + 4);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    scroll(0);
+    expect(scroller.scrollTop).toBe(0);
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    act(() =>
+      client.emitNotification({ method: "evener/sandbox/escalation/requested", params: testEscalation({ ref }) }),
+    );
+    const card = await screen.findByRole("group", { name: "Sandbox approval" });
+    scroll(260);
+    expect(notes.closest("[data-reading-overlay]")).toBeNull();
+    client.on("evener/sandbox/escalation/resolve", () => ({}));
+    await userEvent.click(within(card).getByRole("button", { name: "Deny" }));
+    await waitFor(() => expect(card.isConnected).toBe(false));
+    scroll(340);
+    expect(notes.closest("[data-reading-overlay]")).not.toBeNull();
+    scroll(0);
+
+    // A short history can have room for the summary alone. Keep its title
+    // above the reader throughout the reversal so the viewport stays fixed.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 500 });
+    scroll(100);
+    scroll(80);
+    expect(notes.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(scroller.scrollTop).toBe(36);
+    scroll(46);
+    expect(notes.closest("[data-notes-hidden]")).toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(scroller.scrollTop).toBe(46);
+    host.unmount();
+  } finally {
+    topNotesStore.getState().resetForTests();
+    restoreViewport();
+    vi.unstubAllGlobals();
+  }
+});
+
+// On 120Hz displays a slow upward drag moves fewer than 8px per frame. Upward
+// travel accumulates across consecutive frames until reaching 8px, and resets
+// whenever downward scrolling interrupts the run.
+test("floating top bar accumulates small upward scroll steps and resets on downward movement", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerScrollablePaneForTests("session");
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:slow-drag" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const scroller = await screen.findByTestId("pane-scroll");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 2400 });
+
+    const scrollTo = (top: number) => {
+      act(() => {
+        scroller.scrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+    };
+
+    // Initial height observation, then collapse downward (260 -> 204).
+    scrollTo(200);
+    scrollTo(260);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(scroller.scrollTop).toBe(204);
+
+    // Two 3px upward steps (6px total) stay below the 8px reveal threshold.
+    scrollTo(201);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    scrollTo(198);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+
+    // Reversing downward resets the upward run start before crossing 8px.
+    scrollTo(200);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+
+    // Two more 3px upward steps from 200 (6px) still stay collapsed even though
+    // the net distance from 204 is 10px.
+    scrollTo(197);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    scrollTo(194);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+
+    // A third 3px upward step crosses 8px (200 -> 191 = 9px), restoring the bar
+    // and compensating scroll by +56 (191 -> 247).
+    scrollTo(191);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(scroller.scrollTop).toBe(247);
+    host.unmount();
+  } finally {
+    restoreSession();
+  }
+});
+
+// Tablet persistent board column animates from the left edge symmetrically with
+// the desktop Overview sidebar: inert and non-interactive while exiting, one
+// visible toggle at all times, and clipped horizontally so no scrollbar appears.
+test("tablet board column slides out inert on collapse and slides in from the left on reopen", async () => {
+  const css = readModuleCss(import.meta.url, "StackHost.module.css");
+  const splitRule = css.match(/\.split\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(splitRule).toContain("position: relative");
+  expect(splitRule).toContain("overflow-x: clip");
+  const closingRule = css.match(/\.boardColumn\[data-motion="closing"\]\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(closingRule).toContain("position: absolute");
+  expect(closingRule).toContain("pointer-events: none");
+  expect(closingRule).toContain("z-index: var(--z-raised)");
+
+  const restoreViewport = installTabletMatchMedia();
+  try {
+    const user = userEvent.setup();
+    workspaceStore.getState().openPane("doc", { ref: "tablet_slide" });
+    render(
+      <MotionProvider>
+        <StackHost railSlot={<TabletRailActionSlot />} />
+      </MotionProvider>,
+    );
+    await screen.findByText(/doc pane: tablet_slide /);
+
+    const initialBoard = screen.getByTestId("board-column");
+    expect(initialBoard.hasAttribute("inert")).toBe(false);
+    expect(initialBoard.getAttribute("data-motion")).not.toBe("closing");
+
+    const expandedToggle = within(initialBoard).getByTestId("board-toggle");
+    expandedToggle.focus();
+    await user.keyboard("{Enter}");
+
+    // Under MotionProvider the exiting column stays mounted for the Slide exit,
+    // immediately marked inert and closing while the single live toggle lives in
+    // the top bar with restored focus.
+    const exitingBoard = screen.getByTestId("board-column");
+    expect(exitingBoard.hasAttribute("inert")).toBe(true);
+    expect(exitingBoard.getAttribute("aria-hidden")).toBe("true");
+    expect(exitingBoard.getAttribute("data-motion")).toBe("closing");
+    expect(screen.getAllByTestId("board-toggle")).toHaveLength(1);
+    const collapsedToggle = within(screen.getByTestId("topbar")).getByTestId("board-toggle");
+    expect(document.activeElement).toBe(collapsedToggle);
+
+    // Once the exit animation finishes, the column unmounts cleanly.
+    await waitFor(() => expect(screen.queryByTestId("board-column")).toBeNull());
+
+    // Reopening mounts the board sliding in from the left edge, live and
+    // interactive again, with the single toggle back inside the board.
+    // Activate synchronously: an awaited keyboard event can yield a frame, and
+    // the entrance animation advances past its -100% start before this read.
+    // The collapse above still exercises keyboard activation and focus return.
+    fireEvent.click(collapsedToggle);
+    const reopenedBoard = screen.getByTestId("board-column");
+    expect(reopenedBoard.hasAttribute("inert")).toBe(false);
+    expect(reopenedBoard.getAttribute("aria-hidden")).toBeNull();
+    expect(reopenedBoard.getAttribute("data-motion")).not.toBe("closing");
+    expect(reopenedBoard.getAttribute("style") ?? "").toContain("-100%");
+    expect(screen.getAllByTestId("board-toggle")).toHaveLength(1);
+    const reopenedToggle = within(reopenedBoard).getByTestId("board-toggle");
+    expect(document.activeElement).toBe(reopenedToggle);
+    await waitFor(() => {
+      expect(reopenedBoard.getAttribute("style") ?? "").not.toContain("-100%");
+    });
+  } finally {
+    cleanup();
+    restoreViewport();
+  }
+});
+
+test("tablet board column unmounts and reopens immediately without sliding under prefers-reduced-motion", async () => {
+  // motion/react emits a one-time dev warning when reduced motion is active.
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const restoreViewport = installTabletMatchMedia();
+  setReducedMotionPreference(true);
+  try {
+    const user = userEvent.setup();
+    workspaceStore.getState().openPane("doc", { ref: "tablet_reduced" });
+    render(
+      <MotionProvider>
+        <StackHost railSlot={<TabletRailActionSlot />} />
+      </MotionProvider>,
+    );
+    await screen.findByText(/doc pane: tablet_reduced /);
+
+    const expandedToggle = within(screen.getByTestId("board-column")).getByTestId("board-toggle");
+    expandedToggle.focus();
+    await user.keyboard("{Enter}");
+
+    // Under reduced motion the board skips exit animation and unmounts at once.
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    expect(document.activeElement).toBe(within(screen.getByTestId("topbar")).getByTestId("board-toggle"));
+
+    await user.keyboard("{Enter}");
+    const reopenedBoard = screen.getByTestId("board-column");
+    expect(reopenedBoard.getAttribute("style") ?? "").not.toContain("-100%");
+    expect(warn.mock.calls.every(([msg]) => typeof msg === "string" && msg.includes("reduced-motion-disabled"))).toBe(
+      true,
+    );
+  } finally {
+    cleanup();
+    warn.mockRestore();
+    restoreViewport();
+  }
+});
+
+test("browser top bar capsules use --radius-pane, omit empty clusters, and never transform the header", () => {
+  const css = readModuleCss(import.meta.url, "StackHost.module.css");
+  const collapsed = css.match(/\.topBarCollapsed\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(collapsed).toContain("position: absolute");
+  expect(collapsed).toContain("pointer-events: none");
+  expect(collapsed).not.toMatch(/\btransform\s*:/);
+  const capsules =
+    css.match(
+      /\.topBarCollapsed \.leading:not\(:empty\),\s*\.topBarCollapsed \.trailing:not\(:empty\)\s*\{([^}]*)\}/,
+    )?.[1] ?? "";
+  expect(capsules).toContain("border-radius: var(--radius-pill)");
+  expect(capsules).toContain("pointer-events: auto");
+});
+
+test("floated Overview opens outside the collapsed header and Escape restores focus to the header Overview button", async () => {
+  const restoreViewport = installMobileViewport();
+  const restoreSession = registerScrollablePaneForTests("session");
+  const client = activityClient();
+  connectionStore.getState().connect(client);
+  const user = userEvent.setup();
+  try {
+    await act(async () =>
+      render(
+        <ClientProvider client={client}>
+          <MotionProvider>
+            <StackHost routeDeferred />
+          </MotionProvider>
+        </ClientProvider>,
+      ),
+    );
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:floated-overview" });
+    });
+    const bar = screen.getByTestId("topbar");
+    const scroller = await screen.findByTestId("pane-scroll");
+    act(() => {
+      scroller.scrollTop = 200;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+
+    const overviewButton = within(bar).getByRole("button", { name: "Overview" });
+    await user.click(overviewButton);
+
+    const dialog = await screen.findByRole("dialog", { name: "Overview" });
+    // Rendered in StackHost's full-viewport activityOverlay sibling, never
+    // inside the collapsed header's blur-capsule containing block or paneColumn.
+    expect(document.body.contains(dialog)).toBe(true);
+    expect(bar.contains(dialog)).toBe(false);
+    expect(bar.parentElement?.contains(dialog)).toBe(false);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Overview" })).toBeNull());
+    expect(document.activeElement).toBe(overviewButton);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+  } finally {
+    cleanup();
+    restoreSession();
+    restoreViewport();
+  }
+});
+
+test("resizing across the tablet breakpoint keeps the mounted scroll body active for header collapse and saved offsets in both directions", async () => {
+  const originalMedia = window.matchMedia;
+  const originalWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  const tabletMedia = Object.assign(new EventTarget(), {
+    matches: true,
+    media: TABLET_QUERY,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+  });
+  const setViewport = async (width: number, tablet: boolean) => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+    await act(async () => {
+      tabletMedia.matches = tablet;
+      tabletMedia.dispatchEvent(Object.assign(new Event("change"), { matches: tablet }));
+      window.dispatchEvent(new Event("resize"));
+    });
+  };
+  window.matchMedia = ((query: string) =>
+    query === TABLET_QUERY
+      ? tabletMedia
+      : Object.assign(new EventTarget(), {
+          matches: query === MOBILE_QUERY,
+          media: query,
+          onchange: null,
+          addListener() {},
+          removeListener() {},
+        })) as typeof window.matchMedia;
+  const restoreSession = registerScrollablePaneForTests("session");
+  try {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+    const host = await act(async () =>
+      render(<StackHost routeDeferred railSlot={<div data-testid="board-scroll" />} />),
+    );
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:tablet-scroll" });
+    });
+    const bar = screen.getByTestId("topbar");
+    const body = stackBody();
+    const scroller = await screen.findByTestId("pane-scroll");
+    const offsets = scrollOffsetsForTests();
+    if (!offsets) throw new Error("StackHost did not expose its scroll offsets");
+
+    // 800px tablet: board scroll never collapses the header or writes reader offsets.
+    expect(screen.getByTestId("board-column")).toBeTruthy();
+    const boardScroller = screen.getByTestId("board-scroll");
+    act(() => {
+      boardScroller.scrollTop = 300;
+      boardScroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(offsets.has(boardScroller)).toBe(false);
+
+    // 800px tablet: scrolling the open session collapses the header and records offset.
+    act(() => {
+      scroller.scrollTop = 200;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(offsets.get(scroller)).toEqual([200, 0]);
+
+    // 800px tablet -> 400px phone: same mounted body & scroller keep responding.
+    await setViewport(400, false);
+    expect(screen.queryByTestId("board-column")).toBeNull();
+    expect(stackBody()).toBe(body);
+    expect(screen.getByTestId("pane-scroll")).toBe(scroller);
+    expect(scroller.scrollTop).toBe(200);
+    expect(offsets.get(scroller)).toEqual([200, 0]);
+
+    act(() => {
+      scroller.scrollTop = 10;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(offsets.get(scroller)).toEqual([10, 0]);
+
+    act(() => {
+      scroller.scrollTop = 240;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(offsets.get(scroller)).toEqual([240, 0]);
+
+    // 400px phone -> 800px tablet: same mounted body & scroller keep responding.
+    await setViewport(800, true);
+    expect(screen.getByTestId("board-column")).toBeTruthy();
+    expect(stackBody()).toBe(body);
+    expect(screen.getByTestId("pane-scroll")).toBe(scroller);
+    expect(scroller.scrollTop).toBe(240);
+    expect(offsets.get(scroller)).toEqual([240, 0]);
+
+    act(() => {
+      scroller.scrollTop = 10;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(offsets.get(scroller)).toEqual([10, 0]);
+
+    act(() => {
+      scroller.scrollTop = 180;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(offsets.get(scroller)).toEqual([180, 0]);
+
+    host.unmount();
+  } finally {
+    restoreSession();
+    window.matchMedia = originalMedia;
+    if (originalWidth) Object.defineProperty(window, "innerWidth", originalWidth);
+  }
+});
+
+test("scrolling a nested list inside a session pane leaves the top bar and nested scroll position untouched", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    component: lazy(() =>
+      Promise.resolve({
+        default: () => (
+          <div style={{ height: "100%" }}>
+            <div data-reading-scroll-host="" style={{ height: "100%" }}>
+              <div data-testid="pane-scroll" style={{ height: "100%", overflowY: "auto" }}>
+                <div style={{ height: 2400 }}>
+                  <div data-testid="nested-rail" style={{ maxHeight: 220, overflowY: "auto" }}>
+                    <div style={{ height: 800 }} />
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div data-composer="">
+              <div data-testid="nested-menu" style={{ maxHeight: 220, overflowY: "auto" }}>
+                <div style={{ height: 800 }} />
+              </div>
+            </div>
+          </div>
+        ),
+      }),
+    ),
+    title: () => "session",
+  });
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:nested" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const reader = await screen.findByTestId("pane-scroll");
+    const nestedMenu = screen.getByTestId("nested-menu");
+    const nestedRail = screen.getByTestId("nested-rail");
+
+    // Scrolling a nested composer menu or inline rail past barHeight + 12
+    // must never float the bar or rewrite the nested list's scrollTop.
+    act(() => {
+      nestedMenu.scrollTop = 140;
+      nestedMenu.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(nestedMenu.scrollTop).toBe(140);
+
+    act(() => {
+      nestedRail.scrollTop = 150;
+      nestedRail.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    expect(nestedRail.scrollTop).toBe(150);
+
+    // Scrolling the primary reading scroller still collapses and compensates.
+    act(() => {
+      reader.scrollTop = 260;
+      reader.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(reader.scrollTop).toBe(204);
+
+    // While collapsed, scrolling the nested menu upward must keep the bar
+    // collapsed and leave both scroll positions untouched.
+    act(() => {
+      nestedMenu.scrollTop = 120;
+      nestedMenu.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    expect(nestedMenu.scrollTop).toBe(120);
+    expect(reader.scrollTop).toBe(204);
+
+    // An upward gesture on the primary reading scroller still reveals the bar.
+    act(() => {
+      reader.scrollTop = 194;
+      reader.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(reader.scrollTop).toBe(250);
+    host.unmount();
+  } finally {
+    restoreSession();
+  }
+});
+
+test("near-bottom collapse compensates from the pre-flip scroll offset instead of post-layout clamped scrollTop", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerScrollablePaneForTests("session");
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:near-bottom" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const scroller = await screen.findByTestId("pane-scroll");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1000 });
+
+    // Simulate browser viewport growth on float: solid bar maxScroll is 500,
+    // collapsed bar grows the viewport by 56px so maxScroll clamps to 444.
+    let rawScrollTop = 0;
+    const maxScroll = () => (bar.getAttribute("data-collapsed") === "true" ? 444 : 500);
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => Math.min(rawScrollTop, maxScroll()),
+      set: (value: number) => {
+        rawScrollTop = Math.max(0, Math.min(value, maxScroll()));
+      },
+    });
+
+    // Initial height observation (0 -> 1000) is position-neutral.
+    act(() => {
+      scroller.scrollTop = 100;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    // Scroll within one barHeight of the bottom (490 of 500): on float the
+    // browser clamps scrollTop to 444 before useLayoutEffect runs, so
+    // compensation must compute 490 - 56 = 434 rather than 444 - 56 = 388.
+    act(() => {
+      scroller.scrollTop = 490;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    expect(scroller.scrollTop).toBe(434);
+
+    // Scrolling up 14px reveals and compensates from 420 -> 420 + 56 = 476.
+    act(() => {
+      scroller.scrollTop = 420;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(scroller.scrollTop).toBe(476);
+    host.unmount();
+  } finally {
+    restoreSession();
+  }
+});
+
+test("floating top bar collapse and reveal keep compensated TranscriptBody scrollTop without reflow undo", async () => {
+  window.history.replaceState({}, "", "/");
+  let topBar: HTMLElement | null = null;
+  let extraHeightOffset = 0;
+  const currentViewportHeight = () =>
+    (topBar?.getAttribute("data-collapsed") === "true" ? 556 : 500) + extraHeightOffset;
+  const geometry = installTranscriptGeometry(() => ({
+    width: 390,
+    viewportHeight: currentViewportHeight(),
+    rowHeights: [1200, 0],
+  }));
+  const frames = holdReaderFrames();
+  const model = {
+    ...makeTranscriptPreviewModel(),
+    ref: "local:floating-bar-reflow",
+    turns: [
+      {
+        id: "turn-1",
+        status: "completed" as const,
+        items: [
+          {
+            id: "entry-1",
+            turnId: "turn-1",
+            type: "userMessage" as const,
+            text: "hello",
+            status: "completed" as const,
+          },
+        ],
+      },
+    ],
+  };
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  const SessionPane = () => {
+    const listRef = useRef<VirtualListHandle>(null);
+    const flow = useTranscriptScroll({
+      ref: model.ref,
+      viewId: "floating-bar-reflow-view",
+      model,
+      listRef,
+      loadOlder: async () => {},
+      renderedRowCount: 2,
+    });
+    return (
+      <TranscriptBody
+        model={model}
+        config={config}
+        surface="live"
+        disclosureScope="live:floating-bar-reflow"
+        sessionRef={model.ref}
+        viewId="floating-bar-reflow-view"
+        followingBottom={flow.isFollowingBottom}
+        listRef={listRef}
+        onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
+      />
+    );
+  };
+  const restoreSession = registerPaneForTests({
+    id: "session",
+    component: lazy(() => Promise.resolve({ default: SessionPane })),
+    title: () => "session",
+  });
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: model.ref });
+    });
+    const bar = screen.getByTestId("topbar");
+    topBar = bar;
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 56 });
+    const list = await screen.findByTestId("transcript-virtual-list");
+    const scroller = list.firstElementChild as HTMLElement;
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(700);
+    // Deliver the native scroll event for the initial end landing (jsdom does not
+    // dispatch scroll events on programmatic scrollTop writes) and flush the
+    // virtualizer's one-frame mount reconciliation before scrolling away.
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => frames.release());
+
+    // The usable viewport can shrink after the first measured tail lands.
+    // Following the extended tail is still automatic positioning.
+    extraHeightOffset = -40;
+    act(() => {
+      scroller.scrollTop = 740;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    extraHeightOffset = 0;
+    act(() => {
+      scroller.scrollTop = 700;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(scroller.closest("[data-notes-hidden]")).toBeNull();
+
+    // A native scrollbar drag away from the settled end can deliver only
+    // scroll events. Its first movement still establishes the reading direction.
+    act(() => {
+      scroller.scrollTop = 300;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(300);
+    expect(scroller.closest("[data-notes-hidden]")).not.toBeNull();
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    // Downward scroll collapses the bar: viewportHeight grows by 56 on commit
+    // and StackHost shifts scrollTop by -56 (350 -> 294). TranscriptBody's
+    // viewport reflow must keep 294.
+    act(() => {
+      scroller.scrollTop = 350;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(294);
+
+    // Scroll to the bottom while collapsed (1200 - 556 = 644), then scroll up 15px (629):
+    // StackHost reveals the bar (viewportHeight shrinks 556 -> 500 on commit) and
+    // compensates +56 (629 -> 685). TranscriptBody's viewport reflow must keep 685
+    // (15px away from 700), never undoing to 629 or slamming back to the bottom.
+    act(() => {
+      scroller.scrollTop = 644;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(644);
+
+    act(() => {
+      scroller.scrollTop = 629;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(685);
+    expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+
+    // Control: scrolling back to the bottom collapses the bar to 644 (1200 - 556);
+    // an uncompensated viewport shrink (such as the keyboard opening) while
+    // following the bottom still re-pins the reader to the new end (1200 - 456 = 744).
+    act(() => {
+      scroller.scrollTop = 700;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(644);
+    extraHeightOffset = -100;
+    await act(async () => geometry.notify());
+    expect(scroller.scrollTop).toBe(744);
+
+    host.unmount();
+  } finally {
+    restoreSession();
+    geometry.restore();
+    frames.restore();
+  }
+});
+
+test("floating top bar ignores bottom and top elastic overscroll rebounds", async () => {
+  window.history.replaceState({}, "", "/");
+  const restoreSession = registerScrollablePaneForTests("session");
+  try {
+    const host = await act(async () => render(<StackHost routeDeferred />));
+    await act(async () => {
+      workspaceStore.getState().openPane("session", { ref: "local:overscroll" });
+    });
+    const bar = screen.getByTestId("topbar");
+    Object.defineProperty(bar, "offsetHeight", { configurable: true, value: 61 });
+    const scroller = await screen.findByTestId("pane-scroll");
+    const viewportHeight = () => (bar.getAttribute("data-collapsed") === "true" ? 784 : 723);
+    const maxScroll = () => 1227 - viewportHeight();
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1227 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, get: viewportHeight });
+
+    let liveScrollTop = 0;
+    const programmaticWrites: number[] = [];
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      get: () => liveScrollTop,
+      set: (value: number) => {
+        const clamped = Math.max(0, Math.min(value, maxScroll()));
+        programmaticWrites.push(clamped);
+        liveScrollTop = clamped;
+      },
+    });
+    const nativeScroll = (top: number) => {
+      act(() => {
+        liveScrollTop = top;
+        scroller.dispatchEvent(new Event("scroll"));
+      });
+    };
+
+    // Initial height baseline at top, then top elastic rubber-band and rebound stay solid.
+    nativeScroll(0);
+    for (const top of [-40, -70, -30, 0]) {
+      nativeScroll(top);
+      expect(bar.getAttribute("data-collapsed")).not.toBe("true");
+    }
+
+    // Scroll down to the bottom so the bar floats and settles at maxScroll (443).
+    nativeScroll(200);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).toBe("true"));
+    nativeScroll(443);
+    expect(bar.getAttribute("data-collapsed")).toBe("true");
+    programmaticWrites.length = 0;
+
+    // Bottom elastic overscroll past maxScroll and its rebound must not flip the
+    // bar or issue compensation writes.
+    for (const top of [483, 533, 513, 483, 458, 443]) {
+      nativeScroll(top);
+      expect(bar.getAttribute("data-collapsed")).toBe("true");
+    }
+    expect(programmaticWrites).toEqual([]);
+
+    // A genuine upward scroll inside [0, maxScroll] still reveals the bar and
+    // compensates scrollTop by +barHeight (430 -> 491).
+    nativeScroll(430);
+    await waitFor(() => expect(bar.getAttribute("data-collapsed")).not.toBe("true"));
+    expect(scroller.scrollTop).toBe(491);
+    host.unmount();
+  } finally {
+    restoreSession();
   }
 });

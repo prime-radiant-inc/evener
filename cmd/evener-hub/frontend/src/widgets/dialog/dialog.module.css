@@ -14,20 +14,38 @@
 
 .scrimFloat {
   composes: fade from "../../styles/motion.module.css";
+  --dialog-gutters: calc(var(--space-8) + var(--home-safe-left, 0px) + var(--home-safe-right, 0px));
+  padding-left: calc(var(--space-4) + var(--home-safe-left, 0px));
+  padding-right: calc(var(--space-4) + var(--home-safe-right, 0px));
 }
 
 .scrimEdge {
   composes: scrimSlide from "../../styles/motion.module.css";
 }
 
+/* The scrim paints the blur behind the whole sheet. Fixed dialogs nested in
+ * its content must remain anchored to the viewport. */
+:global(body[data-iphone-glass]) .scrim::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+}
+
 /* Shared panel chassis - Dialog and Sheet (via OverlayPanel) both start
  * from this, then add their own geometry/animation class on top. */
 .panel {
+  composes: panel from "../../styles/floatingSurface.module.css";
+  /* A nested sheet starts with its own dismiss action in its header. */
+  --overlay-header-actions-display: flex;
+  --overlay-actions-placement: inline;
+  --glass-layer-fill: var(--glass-panel);
+  --glass-layer-filter: none;
   position: relative;
   display: flex;
   flex-direction: column;
-  background: var(--surface-2);
-  box-shadow: var(--shadow-overlay);
   overflow: auto;
 }
 
@@ -38,17 +56,43 @@
   min-width: 0;
 }
 
+.headerWithActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3) var(--space-1) var(--space-4);
+}
+
+.headerActions {
+  display: var(--overlay-header-actions-display, flex);
+  flex: none;
+  align-items: center;
+}
+
+@container style(--overlay-actions-placement: edge) {
+  .headerActions {
+    position: absolute;
+    left: var(--overlay-actions-left, auto);
+    right: var(--overlay-actions-right, auto);
+    bottom: calc(var(--dock-clearance) + var(--space-3));
+    translate: var(--overlay-actions-offset) 0;
+    flex-direction: column;
+    border-radius: var(--radius-pill);
+    background: var(--glass-fill, var(--surface-1));
+    box-shadow: var(--glass-shadow);
+  }
+}
+
 .title {
+  composes: truncate from "../../styles/text.module.css";
   margin: 0;
+  color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-pane-title);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-display);
   line-height: var(--line-height-title);
-  color: var(--ink-hi);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .body {
@@ -72,60 +116,29 @@
   gap: var(--space-2);
 }
 
-/* Fixed at the panel's top-right regardless of DOM order - it is placed
- * LAST in markup (after body/footer) so FocusScope's initial "first
- * tabbable" focus lands on the dialog's own content, not this button; see
- * this task's report. */
-.closeButton {
+:global(body[data-iphone-glass]) .header,
+:global(body[data-iphone-glass]) .footer {
+  background: var(--glass-fill);
+  border-color: var(--glass-edge);
+}
+
+/* Positioning seat only: the close control itself is the shared IconButton,
+ * whose own square classes carry the desktop box and the phone tap floor.
+ * Fixed at the panel's top-right regardless of DOM order - it is placed LAST
+ * in markup (after body/footer) so FocusScope's initial "first tabbable"
+ * focus lands on the dialog's own content, not this button. */
+.closeSeat {
   position: absolute;
   top: var(--space-3);
   right: var(--space-3);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--ink-mid);
-  cursor: pointer;
-}
-
-.closeButton:hover {
-  background: var(--surface-1);
-  color: var(--ink-hi);
-}
-
-.closeButton:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
-}
-
-/* Touch target (FIX 5, real-phone measurement): a phone or any coarse
- * pointer needs the platform's 44px tap floor, the same treatment
- * Rail.module.css's own .actions button rule gets - .closeButton is a
- * plain <button>, not the shared IconButton widget (see OverlayPanel.tsx's
- * own comment on why), so it never inherited IconButton's own tap floor
- * (iconbutton.module.css). min-width/min-height, not
- * width/height, so this only ever grows the hit area beyond the 24px
- * glyph box, never changes its desktop sizing.
- */
-@media (max-width: 899px), (any-pointer: coarse) {
-  .closeButton {
-    min-width: var(--tap-min);
-    min-height: var(--tap-min);
-  }
 }
 
 /* --- dialog variant: centered, the Float recipe ---------------------- */
 
 .dialogVariant {
   composes: float from "../../styles/motion.module.css";
-  border-radius: var(--radius-pane);
-  min-width: 320px;
-  max-width: min(560px, calc(100vw - var(--space-8)));
+  min-width: min(320px, calc(100vw - var(--dialog-gutters)));
+  max-width: min(560px, calc(100vw - var(--dialog-gutters)));
   max-height: calc(100vh - var(--space-8));
 }
 
@@ -134,7 +147,6 @@
  * is meant to fill almost the whole viewport, not sit in a form-sized box. */
 .dialogVariantLarge {
   composes: float from "../../styles/motion.module.css";
-  border-radius: var(--radius-pane);
-  max-width: calc(100vw - var(--space-8));
+  max-width: calc(100vw - var(--dialog-gutters));
   max-height: calc(100vh - var(--space-8));
 }

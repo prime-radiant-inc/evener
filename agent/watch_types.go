@@ -36,9 +36,11 @@ const (
 	maxWatchProgressIntervalMS = 3600000
 	watchFrameMaxChars         = 4096
 	watchMessageMaxChars       = 2048
+	// watchEventExcerptMaxChars bounds an event-block excerpt in a frame: a
+	// communicate message or a pending question's text. Tighter than the frame's
+	// message cap because this is context for the wake, not the payload.
+	watchEventExcerptMaxChars  = 1000
 	watchTriggerMaxChars       = 1024
-	watchExcerptTailBytes      = 4096
-	watchExcerptMaxChars       = 4096
 	watchReadErrorMaxChars     = 256
 	watchTruncatedIndicator    = "\n[truncated]"
 	defaultWatchSendPendingCap = 32
@@ -227,6 +229,10 @@ type watchConfig struct {
 	hubCompletion      bool
 	hubTurnBound       bool
 	hubTurnID          string
+	// hubStatus is the status type this watch most recently learned, from a
+	// snapshot or a status notification. The next transition names it as
+	// previous_status; empty means the watch has not learned one yet.
+	hubStatus          string
 	hubSeen            map[string]bool
 	hubSuspended       bool
 	rosterRevision     uint64
@@ -356,7 +362,6 @@ type watchArgs struct {
 	SourceDelegateID     string
 	SourceGeneration     uint64
 	StableReceiver       bool
-	Clear                bool
 	// ResultTool is the watcher session's result tool name, which validation
 	// errors teach; empty means the default.
 	ResultTool string
@@ -418,9 +423,7 @@ type watchEventFilter struct {
 }
 
 type watchSendArgs struct {
-	To             string
-	Message        string
-	IncludeExcerpt bool
+	To string
 }
 
 type watchResult struct {
@@ -469,7 +472,6 @@ type watchSendDelivery struct {
 	allowAfterTerminalExpiry bool
 	send                     *watchSendArgs
 	deliveryID               string
-	message                  string
 	frame                    string
 	// ownMessageHops, when set, is how many of the receiving session's own
 	// messages the event descends from, and the frame leads with
@@ -490,6 +492,10 @@ type watchSendDelivery struct {
 	provenance *provenance.Causal
 	eventKind  events.EventKind
 	eventData  events.EventData
+	// hubObservation is what a hub watch observed about the watched session,
+	// rendered into the frame in place of an event payload. It is in-memory
+	// only: the durable WatchSendState keeps the rendered frame, never this.
+	hubObservation *hubObservationFrame
 	// endNotice marks the teardown frame a watch sends when it ends without ever
 	// having fired, so the durable state says what the trigger prose only implies.
 	endNotice bool

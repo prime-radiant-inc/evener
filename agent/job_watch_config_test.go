@@ -3,11 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
@@ -143,7 +141,7 @@ func TestConfigureWatchSendToMissingDelegateFailsTargetNotFound(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target: "caller",
 		Events: []string{"job.notification"},
-		Send:   &watchSendArgs{To: "dlg_missing_delegate", Message: "observe"},
+		Send:   &watchSendArgs{To: "dlg_missing_delegate"},
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
@@ -396,7 +394,7 @@ func TestConfigureWatchOutputMatchOnCallerCommunicateGivesRepairShape(t *testing
 	}
 	if !strings.Contains(err.Error(), `source="parent"`) ||
 		!strings.Contains(err.Error(), `events ["communicate"]`) ||
-		!strings.Contains(err.Error(), `communicate(end_turn=true)`) {
+		!strings.Contains(err.Error(), "`communicate` (`next=\"send_and_end_turn\"`)") {
 		t.Fatalf("error = %v, want communicate repair shape", err)
 	}
 }
@@ -409,7 +407,7 @@ func TestJobWatchSendToMainAliasFailsTargetNotFound(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "main", Message: "observe"},
+		Send:        &watchSendArgs{To: "main"},
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
@@ -429,7 +427,7 @@ func TestJobWatchSendToKnownShellJobFailsJobIDGuidance(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target:      watched.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: observer.JobID, Message: "observe"},
+		Send:        &watchSendArgs{To: observer.JobID},
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "job_id is a job/turn handle") {
@@ -448,7 +446,7 @@ func TestJobWatchSendToWatchedFailsV1TargetValidation(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target:      watched.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "watched", Message: "observe"},
+		Send:        &watchSendArgs{To: "watched"},
 	})
 
 	if err == nil || !strings.Contains(err.Error(), "watched is not a v1 delivery target") {
@@ -528,8 +526,11 @@ func TestClearWatchRemovesIt(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
-	_, _ = jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.clearWatchByID(res.WatchID); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	if jm.watchCount() != 0 {
@@ -727,29 +728,6 @@ func TestConfigureWatchRejectsEveryWithWildcardEvent(t *testing.T) {
 	}
 }
 
-func TestConfigureWatchRejectsIncludeExcerptOnSessionTargets(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-	for _, target := range []string{"caller", "*"} {
-		t.Run(target, func(t *testing.T) {
-			_, err := jm.configureWatch(watchArgs{
-				Target: target,
-				Events: []string{"job.notification"},
-				Send:   &watchSendArgs{To: "dlg_obs", IncludeExcerpt: true},
-			})
-			if err == nil {
-				t.Fatal("session target include_excerpt watch must error")
-			}
-			if !strings.Contains(err.Error(), "include_excerpt requires a concrete job target") {
-				t.Fatalf("error = %v, want include_excerpt concrete-target validation", err)
-			}
-			if jm.watchCount() != 0 {
-				t.Fatalf("watch count = %d, want 0", jm.watchCount())
-			}
-		})
-	}
-}
-
 func TestJobManagerCloseDurablyClearsActiveWatches(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -784,20 +762,24 @@ func TestClearWatchOnTerminalTargetIsIdempotent(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	watchRes, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
+		t.Fatalf("install watch: %v", err)
+	}
 	code := 0
 	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
 
-	// No watch is installed (a concrete watch auto-removes on terminal) and the
-	// target is terminal: clearing must be an idempotent no-op success, not
+	// The concrete watch auto-removed on terminal: clearing its watch_id
+	// repeatedly must be an idempotent no-op success, not
 	// target_terminal.
-	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+	res, err := jm.clearWatchByID(watchRes.WatchID)
 	if err != nil {
 		t.Fatalf("clear on terminal target: %v", err)
 	}
 	if res.Watching {
 		t.Fatalf("clear result Watching = true, want false")
 	}
-	res2, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+	res2, err := jm.clearWatchByID(watchRes.WatchID)
 	if err != nil {
 		t.Fatalf("second clear on terminal target: %v", err)
 	}
@@ -862,7 +844,7 @@ func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t 
 	args := watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	}
 	res, err := jm.configureWatch(args)
 	if err != nil {
@@ -886,14 +868,14 @@ func TestWatchIdempotentReconfigureWithDetachedPendingDoesNotRegisterNewWatch(t 
 	}
 	detached := &watchConfig{
 		target:     rec.JobID,
-		send:       &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		send:       &watchSendArgs{To: runtimeMessageAliasCaller},
 		generation: pendingKey.WatchGeneration,
 		pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{
 			pendingKey: {
 				Key:           pendingKey,
 				DeliveryID:    "watch_delivery_detached",
 				UpdateSeq:     1,
-				Message:       "observe",
+				Frame:         "observe",
 				TriggerReason: "output_match: ready",
 			},
 		},
@@ -1216,10 +1198,11 @@ func TestWatchHistoryRecordsClear(t *testing.T) {
 	jm.enqueue = func(jobNotification) {}
 	rec, _ := jm.createShell(createShellOpts{Command: "sleep 30"})
 	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+	res, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+	if _, err := jm.clearWatchByID(res.WatchID); err != nil {
 		t.Fatalf("clear: %v", err)
 	}
 	hist := jm.recentWatchSummaries()
@@ -1256,8 +1239,7 @@ func TestWatchHistoryCountsTerminalFlushDeliveries(t *testing.T) {
 
 // A parent observer's invalid watch configuration is rejected, and the repair
 // error names the watcher's own result tool so a session that renamed it is not
-// sent to a tool it does not have. The two errors' text is pinned whole in
-// testdata/watchrepair, since it is model-facing prose.
+// sent to a tool it does not have.
 func TestWatchRepairErrorsNameTheResultTool(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1281,22 +1263,31 @@ func TestWatchRepairErrorsNameTheResultTool(t *testing.T) {
 			}
 
 			// Name the tool the session actually has: the renamed case must not
-			// mention the default one at all. The whole-error goldens pin the
-			// rest of the repair text.
+			// mention the default one at all.
 			wantTool := "communicate"
 			if tc.resultTool != "" {
 				wantTool = tc.resultTool
 			}
-			if !strings.Contains(outputMatchErr.Error(), wantTool+"(end_turn=true)") {
+			if !strings.HasPrefix(outputMatchErr.Error(), "invalid_request:") {
+				t.Fatalf("output_match error = %v, want invalid_request", outputMatchErr)
+			}
+			if !strings.HasPrefix(eventFilterErr.Error(), "invalid_request:") {
+				t.Fatalf("event_filter error = %v, want invalid_request", eventFilterErr)
+			}
+			if !strings.Contains(outputMatchErr.Error(), "`"+wantTool+"` (`next=\"send_and_end_turn\"`)") {
 				t.Fatalf("output_match repair does not name %q: %s", wantTool, outputMatchErr)
 			}
-			if !strings.Contains(eventFilterErr.Error(), wantTool+"(end_turn=true)") {
+			if !strings.Contains(eventFilterErr.Error(), "`"+wantTool+"` (`next=\"send_and_end_turn\"`)") {
 				t.Fatalf("event_filter repair does not name %q: %s", wantTool, eventFilterErr)
 			}
-
-			agenttest.CheckGolden(t, filepath.Join("testdata", "watchrepair", tc.name+".md"),
-				[]byte(outputMatchErr.Error()+"\n\n"+eventFilterErr.Error()+"\n"), *updatePromptGoldens,
-				"Regenerate with `go test ./agent -run 'TestWatchRepairErrorsNameTheResultTool$' -count=1 -update-prompt` and read the diff.")
+			if tc.resultTool != "" {
+				if strings.Contains(outputMatchErr.Error(), "`communicate`") {
+					t.Fatalf("output_match repair mentions default tool despite rename: %s", outputMatchErr)
+				}
+				if strings.Contains(eventFilterErr.Error(), "`communicate`") {
+					t.Fatalf("event_filter repair mentions default tool despite rename: %s", eventFilterErr)
+				}
+			}
 		})
 	}
 }

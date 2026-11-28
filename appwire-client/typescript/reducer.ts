@@ -14,6 +14,7 @@ import {
   type HistorySignal,
   historyIsLive,
   invalidated,
+  MODEL_OUTPUT_ITEM_TYPES,
   type ModelExtras,
   mergeHistory,
   modelImageSessionRoute,
@@ -190,13 +191,6 @@ function upsertPendingEscalation(
   if (idx === -1) return [...escalations, incoming];
   return escalations.map((e, i) => (i === idx ? incoming : e));
 }
-
-// item/completed kinds that count as the model actually producing something
-// (design doc Component 1): assistant message, reasoning, tool call. A
-// systemMessage or userMessage item completing (a steer "are you stuck?"
-// completing its own systemMessage item, say) arrives mid-grind and must not
-// be mistaken for the retry's wait being over.
-const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandExecution"]);
 
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
@@ -473,11 +467,12 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         ...model,
         modelProvider: n.params.modelProvider,
         model: n.params.model,
-        // The frame names the provider itself, so the snapshot's separate
-        // provider instance would only be a second, staler name for it. Only
-        // cleared when a read set one, so a thread that never carried the key
-        // keeps its shape.
-        ...(model.modelProfile === undefined ? {} : { modelProfile: undefined }),
+        // The frame names the provider itself. Keep it as the identity's
+        // explicit split (modelProfile) as well: an equal provider/model pair
+        // still addresses a qualified catalog row, and dropping the provider
+        // would leave the running row unmarked until a snapshot supplied a
+        // profile again.
+        modelProfile: n.params.modelProvider,
         reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
         supportsReasoning: n.params.supportsReasoning ?? false,
         defaultReasoningEffort: n.params.defaultReasoningEffort,

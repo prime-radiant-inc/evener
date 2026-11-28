@@ -2,12 +2,21 @@
 .content {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
 .question {
-  font-size: var(--font-size-body);
+  font-family: var(--font-prose);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-title);
+  letter-spacing: var(--tracking-display);
   color: var(--ink-hi);
+  overflow-wrap: anywhere;
+  /* The base is semibold, so the widget's own semibold strong would not
+   * stand out: markdown bold opts into the bold token through the
+   * widget's documented host seam. */
+  --markdown-strong-weight: var(--font-weight-bold);
 }
 
 .options {
@@ -20,24 +29,17 @@
 }
 
 .option {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.label {
-  font-weight: var(--font-weight-medium);
-  color: var(--ink-hi);
-}
-
-.detail {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
+  overflow-wrap: break-word;
 }
 
 .note {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: helpCaption from "../../../../styles/help.module.css";
+  /* The why and if-unanswered notes render through the Markdown widget,
+   * whose root sets its own color and family and would otherwise shadow
+   * this host's muted caption treatment; the plain multi-select line is
+   * unaffected. */
+  --markdown-ink: var(--ink-mid);
+  --markdown-font: var(--font-sans);
 }
 
 .footer {
@@ -45,7 +47,3 @@
   color: var(--ink-low);
 }
 
-.fallback {
-  color: var(--ink-low);
-  font-size: var(--font-size-ui);
-}

@@ -30,6 +30,7 @@ import {
   emptyChoiceLabel,
   type LaunchConfigLayer,
   type LaunchConfigLayerName,
+  type LaunchConfigStore,
   type LaunchOption,
   PROMPT_COMPOSITE_SPECS,
   resolvedDefaultLabel,
@@ -42,6 +43,7 @@ import {
   Input,
   PathField,
   type PathFieldKind,
+  type PathFieldProps,
   RadioGroup,
   type RadioGroupOption,
   Select,
@@ -79,7 +81,7 @@ const BROWSABLE_PATH_KINDS: Record<string, PathFieldKind> = {
   outputFile: "outputFile",
 };
 
-function browsablePathKind(pathKind: string | undefined): PathFieldKind | undefined {
+export function browsablePathKind(pathKind: string | undefined): PathFieldKind | undefined {
   return BROWSABLE_PATH_KINDS[pathKind ?? ""];
 }
 
@@ -101,6 +103,31 @@ export const controllerLaunchFormPaths: LaunchFormPaths = {
   directory: directoryActions,
   complete: (prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles),
 };
+
+/** Binds the form's path picker to the selected host's launch-config gateway (component 07b). */
+export const launchFormPaths = (store: LaunchConfigStore): LaunchFormPaths => ({
+  directory: {
+    validatePath: (path, kind) => store.getState().validatePath(path, kind),
+    createDirectory: (path) => store.getState().createDirectory(path),
+  },
+  complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
+});
+
+/** Both launch-config panes narrow on this; project adds its read-only globalDefaults. */
+export type LoadState =
+  | { phase: "loading" }
+  | { phase: "error"; message: string }
+  | { phase: "ready"; options: LaunchOption[]; current: LaunchConfigLayer; globalDefaults?: LaunchConfigLayer };
+
+/** A PathField whose two filesystem helpers come from one LaunchFormPaths pair,
+ * which every launch, collection, marketplace, and directory-list form already
+ * holds. The kind still decides whether the directory actions are consulted. */
+export function PathFieldWithPaths({
+  paths,
+  ...props
+}: Omit<PathFieldProps, "directory" | "complete"> & { paths: LaunchFormPaths }) {
+  return <PathField directory={paths.directory} complete={paths.complete} {...props} />;
+}
 
 /** A path field: PathField in a FormRow, so the row's label, help, error, and
  * default hint all behave exactly as the plain-Input rows around it do. The
@@ -132,14 +159,13 @@ function PathFieldRow({
 }) {
   return (
     <FormRow label={label} htmlFor={fieldId} help={help} error={error}>
-      <PathField
+      <PathFieldWithPaths
         ariaLabel={label}
-        directory={paths.directory}
         id={fieldId}
         value={value}
         onChange={onChange}
         kind={kind}
-        complete={paths.complete}
+        paths={paths}
         placeholder={placeholder}
       />
       <DefaultHint text={globalDefaultHint} />

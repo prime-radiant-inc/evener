@@ -4,9 +4,11 @@ import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
+import { MotionProvider } from "../../motion";
+import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
 import { ClientProvider } from "../../shell/clientContext";
 import { StackHost } from "../../shell/mobile/StackHost";
 import { NeedsYouProvider } from "../../shell/NeedsYouProvider";
@@ -15,6 +17,7 @@ import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from
 import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { activitySummary } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import { ackAskUserCall } from "./composer/askDock/askDockTestUtils";
@@ -25,6 +28,7 @@ import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/fl
 import type { SessionPaneParams } from "./Session";
 import "./index";
 import { CommittedSession as Session } from "./testing/CommittedSession";
+import { replaceEditorText } from "./testing/editor";
 import { installMobileViewport } from "./testing/mobileViewport";
 import { installTranscriptGeometry } from "./transcript/transcriptReadingGeometryTestUtils";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
@@ -509,7 +513,9 @@ test("a focused draft stays visible and composition suppression clears without l
   expect(readDraft("ref_a")).toBe("keep this draft");
 });
 
-test("the measured attention stack becomes transcript end clearance", async ({ onTestFinished }) => {
+test("the measured attention control becomes transcript end clearance without growing for the new-content pill", async ({
+  onTestFinished,
+}) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(() => {
     vi.restoreAllMocks();
@@ -518,13 +524,13 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => attentionRead("ref_a"));
   installNeedsYouRows(["ref_a", "ref_b"]);
-  // Give the floating stack a measured height without disturbing the
-  // transcript's own rect-based geometry. It sits flush against the reader's
-  // own bottom edge (jsdom reports that edge at 0), so the clearance it needs
-  // is exactly its own 96 px.
+  // Give the floating attention slot a 96 px clearance and the full stack a
+  // taller 148 px box when New Content mounts above it. End clearance must stay
+  // pinned to Next's top (96 px) rather than growing when the pill appears.
   const originalRect = HTMLElement.prototype.getBoundingClientRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.dataset.testid === "flow-overlay-stack") return { top: -96, bottom: 0, height: 96 } as DOMRect;
+    if (this.dataset.testid === "flow-overlay-attention") return { top: -96, bottom: 0, height: 96 } as DOMRect;
+    if (this.dataset.testid === "flow-overlay-stack") return { top: -148, bottom: 0, height: 148 } as DOMRect;
     return originalRect.call(this);
   });
   const pane = attentionSession("clearance-pane");
@@ -547,9 +553,55 @@ test("the measured attention stack becomes transcript end clearance", async ({ o
   const clearance = screen.getByTestId("transcript-end-clearance");
   expect(clearance.style.height).toBe("96px");
   expect(clearance.closest('[data-row-id="live-edge"]')).toBeTruthy();
+  // The same measurement sizes the phone's composer reserve: the column
+  // publishes it so the end inset row takes the larger of the two reserves
+  // instead of stacking a second full composer band above the stack.
+  const reserveOwner = [...view.container.querySelectorAll<HTMLElement>("[style]")].find(
+    (node) => node.style.getPropertyValue("--overlay-clearance") !== "",
+  );
+  expect(reserveOwner?.style.getPropertyValue("--overlay-clearance")).toBe("96px");
   const pill = screen.getByTestId("flow-overlay-pill");
   const attention = screen.getByTestId("flow-overlay-attention");
   expect(pill.compareDocumentPosition(attention) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  view.unmount();
+});
+
+test("measures the phone footer and publishes --floating-chrome-height on the content column", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(installMobileViewport());
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const fake = connectReadyFakeClient();
+  fake.on("thread/read", () => attentionRead("ref_a"));
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (
+      typeof this.className === "string" &&
+      this.className.includes("footer") &&
+      this.querySelector?.('[data-testid="composer-form"]')
+    ) {
+      return { top: 611, bottom: 844, height: 233, width: 390, left: 0, right: 390 } as DOMRect;
+    }
+    return originalRect.call(this);
+  });
+  const pane = attentionSession("mobile-chrome-height-pane");
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  window.history.replaceState({}, "", "/s/ref_a");
+
+  const view = renderAttentionSession(fake, pane);
+  await screen.findByRole("textbox", { name: "Message" });
+  await flushPendingTurnsProjectionForTests();
+
+  await waitFor(() => {
+    const owner = [...view.container.querySelectorAll<HTMLElement>("[style]")].find(
+      (node) => node.style.getPropertyValue("--floating-chrome-height") !== "",
+    );
+    expect(owner?.style.getPropertyValue("--floating-chrome-height")).toBe("233px");
+  });
   view.unmount();
 });
 
@@ -601,7 +653,19 @@ test("a visible Next control mounts its slot without an empty pill slot above it
   expect(within(stack).queryByTestId("flow-overlay-pill")).toBeNull();
 });
 
-test("a visible pill mounts its slot without an empty attention slot below it", async () => {
+test("a visible pill mounts its slot without an empty attention slot below it or extra end clearance", async ({
+  onTestFinished,
+}) => {
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.testid === "flow-overlay-stack" || this.dataset.testid === "flow-overlay-pill") {
+      return { top: -56, bottom: 0, height: 56 } as DOMRect;
+    }
+    return originalRect.call(this);
+  });
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => attentionRead("ref_a"));
   const pane = attentionSession("pill-only-pane");
@@ -623,9 +687,11 @@ test("a visible pill mounts its slot without an empty attention slot below it", 
   expect(pillSlot.contains(screen.getByTestId("new-content-pill"))).toBe(true);
   // No needs-you queue and no manifest: the Next control has nothing to
   // offer, so its slot stays unmounted rather than padding the stack's
-  // measured height with an empty row and the flex gap it carries.
+  // measured height with an empty row and the flex gap it carries, and the
+  // scroll-to-latest pill reserves no trailing end clearance of its own.
   expect(screen.queryByTestId("next-needs-you")).toBeNull();
   expect(within(stack).queryByTestId("flow-overlay-attention")).toBeNull();
+  expect(screen.queryByTestId("transcript-end-clearance")).toBeNull();
   view.unmount();
 });
 
@@ -739,7 +805,7 @@ test("the measured clearance does not toggle New Content or move an end-followin
   let stackHeight = 0;
   const originalRect = HTMLElement.prototype.getBoundingClientRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.dataset.testid === "flow-overlay-stack") {
+    if (this.dataset.testid === "flow-overlay-attention") {
       return { top: -stackHeight, bottom: 0, height: stackHeight } as DOMRect;
     }
     return originalRect.call(this);
@@ -923,11 +989,10 @@ test("the mobile stack host offers attention navigation over its focused session
   await waitFor(() => expect(screen.getByTestId("next-needs-you-next")).toBeTruthy());
 });
 
-// The phone layout keeps one bottom surface: the composer's own control
-// row. The pane's status strip is gone there - its activity chips moved
-// into that row - so a landscape phone spends its height on content, and a
-// resting composer sheds its chips and attach instead of showing them.
-test("a mobile session pane keeps its activity chips on the composer's below-card line", async ({ onTestFinished }) => {
+// The phone layout leaves the bottom surface to the composer.
+test("the phone session opens its live Jobs count from Overview above a composer-only footer", async ({
+  onTestFinished,
+}) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   onTestFinished(() => {
     vi.restoreAllMocks();
@@ -936,49 +1001,47 @@ test("a mobile session pane keeps its activity chips on the composer's below-car
   onTestFinished(installMobileViewport());
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => attentionRead("ref_a"));
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    jobs: { known: true, active: 1, total: 3, completed: 2, failed: 0 },
+  }));
   const pane = attentionSession("mobile-chrome-pane");
   workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
   window.history.replaceState({}, "", "/s/ref_a");
 
   render(
     <ClientProvider client={fake}>
-      <NeedsYouProvider>
-        <StackHost />
-      </NeedsYouProvider>
+      <MotionProvider>
+        <NeedsYouProvider>
+          <StackHost />
+        </NeedsYouProvider>
+      </MotionProvider>
     </ClientProvider>,
   );
   await act(async () => await vi.dynamicImportSettled());
   const editor = await screen.findByRole("textbox", { name: "Message" });
-  // The composer's status chips render only once the pane's thread model
-  // hydrates, so wait for the transcript's own content before reading the
-  // control row.
+  // Wait for the transcript's content before reading the control row.
   await screen.findByText("attention content");
   await flushPendingTurnsProjectionForTests();
   act(() => editor.focus());
+  act(() => replaceEditorText(editor, "draft"));
 
   // No footer strip under the composer on a phone.
+  expect(screen.queryByTestId("pane-edge-footer")).toBeNull();
   expect(screen.queryByTestId("statusbar")).toBeNull();
 
-  // Focus engages the control row deterministically: the session open
-  // autofocuses this editor, but that races this read, so engage it here -
-  // attach and the status chrome ride inside the card. The activity line
-  // stays below the card, outside the form.
   const form = screen.getByTestId("composer-form");
   expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy();
-  expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
-
-  // Blurring the resting editor rests the row again: no attach and no
-  // activity line, which returns with the expanded card. Send stays (the
-  // actions slot never sheds), so the resting card remains a usable one-line
-  // composer. A real blur() moves focus off the editor, which the engagement
-  // reconcile reads; a synthetic blur event alone would leave activeElement
-  // on the editor.
-  act(() => {
-    editor.blur();
-  });
-  await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
-  expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
   expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
+
+  const user = userEvent.setup();
+  const overview = screen.getByRole("button", { name: "Overview" });
+  await user.click(overview);
+  const sidebar = await screen.findByTestId("activity-sidebar");
+  const jobs = await within(sidebar).findByRole("tab", { name: /Jobs, 1 of 3 running/ });
+  await user.click(jobs);
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref: "ref_a", tab: "jobs" });
+  await waitFor(() => expect(sidebar.contains(document.activeElement)).toBe(true));
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(document.activeElement).toBe(overview));
 });

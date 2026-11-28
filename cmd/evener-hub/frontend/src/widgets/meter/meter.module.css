@@ -14,6 +14,35 @@
   height: 100%;
   width: var(--fill);
   border-radius: var(--radius-pill);
+  background: var(--meter-tone);
+}
+
+.ring {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.ringSvg {
+  display: block;
+}
+
+.ringTrack {
+  fill: none;
+  stroke: var(--edge);
+}
+
+.ringFill {
+  fill: none;
+  stroke: var(--meter-tone);
+  stroke-linecap: round;
+}
+
+.ringFillEmpty {
+  stroke-opacity: 0;
 }
 
 /* --- tone -> token family --------------------------------------------
@@ -22,17 +51,17 @@
  * that allowlist exists for.
  */
 .fillNeutral {
-  background: var(--accent);
+  --meter-tone: var(--accent);
 }
 
 .fillAttention {
-  background: var(--attention);
+  --meter-tone: var(--attention);
 }
 
 .fillAlive {
-  background: var(--alive);
+  --meter-tone: var(--alive);
 }
 
 .fillDanger {
-  background: var(--danger);
+  --meter-tone: var(--danger);
 }

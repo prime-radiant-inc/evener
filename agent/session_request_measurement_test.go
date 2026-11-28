@@ -1,0 +1,403 @@
+package agent
+
+import (
+	"context"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/contextmgr"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
+)
+
+// pricedTurns returns n user turns of chars bytes each, so the char/4 fallback
+// prices a known amount and a saved count is easy to tell apart from it.
+func pricedTurns(n, chars int) []schema.Turn {
+	turns := make([]schema.Turn, n)
+	for i := range turns {
+		turns[i] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", chars)))
+	}
+	return turns
+}
+
+// prepareRoundRequest builds one real model request and returns the resident
+// history the round had when it was prepared: the prefix the provider's input
+// count describes.
+func prepareRoundRequest(t *testing.T, sess *Session) []schema.Turn {
+	t.Helper()
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 0, &timings); err != nil {
+		t.Fatalf("prepare model request: %v", err)
+	}
+	return currentHistory(t, sess)
+}
+
+// meterWithNoSavedCount returns what a session that never recorded an input
+// count reads over turns: the char/4 fallback.
+func meterWithNoSavedCount(profile *provider.Profile, turns []schema.Turn) int {
+	return contextmgr.NewManager(profile, nil, nil).EstimateUsage(turns, 0).Used
+}
+
+// TestRequestMeasurementAnchorsTheCountToTheDispatchedPrefix pins which history
+// a live reply's input count belongs to: the prefix the request was prepared
+// from, not whatever history holds when the reply settles. A turn accepted while
+// the call is in flight was not part of the request, so the count must not claim
+// to cover it — the reader prices it as a delta instead.
+func TestRequestMeasurementAnchorsTheCountToTheDispatchedPrefix(t *testing.T) {
+	sess := newSession(t)
+	profile := sess.currentProfile()
+	sess.mu.Lock()
+	sess.history = pricedTurns(3, 40)
+	sess.mu.Unlock()
+	dispatched := prepareRoundRequest(t, sess)
+	if len(dispatched) < 2 {
+		t.Fatalf("fixture prepared a request over %d turns; the append proof needs a multi-turn prefix", len(dispatched))
+	}
+
+	appended := pricedTurns(2, 40)
+	sess.mu.Lock()
+	sess.history = append(sess.history, appended...)
+	sess.mu.Unlock()
+
+	sess.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: 600}}, llm.Request{}, profile)
+
+	if got := sess.contextMgr.LastInputTokens(); got != 600 {
+		t.Fatalf("LastInputTokens = %d, want 600: an ordinary append keeps the count", got)
+	}
+	want := 600 + meterWithNoSavedCount(profile, appended)
+	if got := sess.contextMgr.EstimateUsage(currentHistory(t, sess), 0).Used; got != want {
+		t.Fatalf("context meter after two turns landed mid-flight = %d, want %d (the saved count plus the appended delta): the count was anchored to the post-append history", got, want)
+	}
+}
+
+// TestRequestMeasurementDropsTheCountWhenHistoryIsRewrittenInFlight pins the
+// snapshot half of compaction safety: a fold or repair that rewrites history
+// while the reply streams makes the pre-rewrite count describe a conversation
+// that no longer exists. Pairing it with the rewritten prefix would make the
+// context meter price the new history from an unrelated count.
+func TestRequestMeasurementDropsTheCountWhenHistoryIsRewrittenInFlight(t *testing.T) {
+	sess := newSession(t)
+	profile := sess.currentProfile()
+	sess.mu.Lock()
+	sess.history = pricedTurns(4, 40)
+	sess.mu.Unlock()
+	dispatched := prepareRoundRequest(t, sess)
+	if len(dispatched) < 2 {
+		t.Fatalf("fixture prepared a request over %d turns; the rewrite proof needs a multi-turn prefix", len(dispatched))
+	}
+
+	// Rewrite an EARLIER turn in place and keep the measured boundary turn
+	// where it is: the length and the prefix anchor both still hold, so only
+	// the rewrite marker itself can tell the count no longer applies.
+	rewritten := append([]schema.Turn{}, dispatched...)
+	rewritten[0] = schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("y", 40)))
+	sess.mu.Lock()
+	sess.history = rewritten
+	sess.bumpHistoryRevisionLocked()
+	sess.mu.Unlock()
+
+	sess.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: 600}}, llm.Request{}, profile)
+
+	if got := sess.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("LastInputTokens = %d, want 0: a count measured before the rewrite must not be charged to the rewritten history", got)
+	}
+	if got, want := sess.contextMgr.EstimateUsage(rewritten, 0).Used, meterWithNoSavedCount(profile, rewritten); got != want {
+		t.Fatalf("context meter after the rewrite = %d, want the %d a session with no saved count reads", got, want)
+	}
+}
+
+// TestRequestMeasurementDropsTheCountWhenRequestOverheadChanges pins the other
+// half of the request shape: a saved count covers the system prompt and tool
+// definitions the request was built with. When either changes while the call is
+// in flight, the count belongs to a smaller (or different) request and must not
+// be charged to the shape the session will send next.
+func TestRequestMeasurementDropsTheCountWhenRequestOverheadChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*Session)
+	}{
+		{
+			name: "system prompt",
+			change: func(s *Session) {
+				s.mu.Lock()
+				s.cachedSystemPrompt += "\n\ncontext that joined mid-flight"
+				s.mu.Unlock()
+			},
+		},
+		{
+			name: "tool definitions",
+			change: func(s *Session) {
+				s.registerTool("mid_flight_tool", "advertised while the reply streamed", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+					return nil, nil
+				})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newSession(t)
+			profile := sess.currentProfile()
+			prepareRoundRequest(t, sess)
+			tc.change(sess)
+
+			sess.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: 600}}, llm.Request{}, profile)
+
+			if got := sess.contextMgr.LastInputTokens(); got != 0 {
+				t.Fatalf("LastInputTokens = %d, want 0: the count was measured against a different request shape than the session now sends", got)
+			}
+		})
+	}
+}
+
+// TestRequestMeasurementDropsTheCountAfterAModelSwitch is the target half of
+// the same rule: the count belongs to the model, instance, and protocol that
+// produced it, so a switch during the call discards it.
+func TestRequestMeasurementDropsTheCountAfterAModelSwitch(t *testing.T) {
+	sess := newSession(t)
+	profile := sess.currentProfile()
+	prepareRoundRequest(t, sess)
+	sess.contextMgr.SetProfile(NewOpenAIProfile("gpt-5.2-mini"))
+
+	sess.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: 600}}, llm.Request{}, profile)
+
+	if got := sess.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("LastInputTokens = %d, want 0: a count from another target was recorded", got)
+	}
+}
+
+// lateCountStrategy runs a seam after the wrapped strategy's fold layers have
+// returned. The compaction layer clears the saved count itself, so only a count
+// recorded after that clear — a reply settling between the fold and its
+// publication — is non-zero at publication time.
+type lateCountStrategy struct {
+	contextmgr.Strategy
+	record func()
+}
+
+func (s lateCountStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+	err := s.Strategy.ManageContext(ctx, history, sysPromptChars, emitFn)
+	s.record()
+	return err
+}
+
+// TestFoldPublicationClearsTheRecordedInputCount pins the publication half: a
+// count that lands after the compaction layer finished describes the prefix the
+// fold is about to replace, so the publication drops it. Recording the count
+// before the fold instead would prove nothing — the compaction layer clears it
+// first, so the publication's own clear would look redundant.
+func TestFoldPublicationClearsTheRecordedInputCount(t *testing.T) {
+	sess := compactAtSession(t, 0)
+	preFoldLen := len(currentHistory(t, sess))
+	// Pressure above the default 0.90 trigger, so the request-time fold really
+	// rewrites history instead of publishing it unchanged.
+	forcePressureAbove(t, sess, 0.91)
+	settled := 0
+	sess.strategy = lateCountStrategy{Strategy: sess.strategy, record: func() {
+		if got := sess.contextMgr.LastInputTokens(); got != 0 {
+			t.Errorf("compaction layer left the count at %d; the seam must record after the layer has cleared it", got)
+		}
+		sess.contextMgr.RecordInputTokens(900, preFoldLen, "")
+		settled++
+	}}
+
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 1, &timings); err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	folded := currentHistory(t, sess)
+	if !hasCheckpoint(folded) {
+		t.Fatal("fixture published no checkpoint, so no fold rewrote history")
+	}
+	if settled == 0 {
+		t.Fatal("the request-time fold never ran the settle seam, so this proof is vacuous")
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("LastInputTokens after a fold that rewrote history = %d, want 0: a count that settled mid-fold outlived the publication", got)
+	}
+	profile := sess.currentProfile()
+	if got, want := sess.contextMgr.EstimateUsage(folded, 0).Used, meterWithNoSavedCount(profile, folded); got != want {
+		t.Fatalf("context meter after the fold = %d, want the %d a session with no saved count reads", got, want)
+	}
+}
+
+// TestRequestMeasurementSurvivesAnUnchangedRequestTimeFold pins the guard: the
+// default strategy folds before EVERY request, and a fold that finds nothing to
+// fold still publishes the same history. Clearing the saved count there would
+// wipe the provider's measurement before every request, so the full-history
+// estimate and the pressure meter would fall back to char/4 each round.
+func TestRequestMeasurementSurvivesAnUnchangedRequestTimeFold(t *testing.T) {
+	sess := compactAtSession(t, 0)
+	history := currentHistory(t, sess)
+	sess.contextMgr.RecordInputTokens(900, len(history), "")
+
+	var timings events.RoundTimings
+	_, _, _, req, _, _, err := sess.prepareModelRequestWithError(context.Background(), 1, &timings)
+	if err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	presented := currentHistory(t, sess)
+	if hasCheckpoint(presented) || !reflect.DeepEqual(history, presented) {
+		t.Fatalf("fixture rewrote history (checkpoint=%v), so the unchanged-publication proof is vacuous", hasCheckpoint(presented))
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != 900 {
+		t.Fatalf("LastInputTokens after an unchanged request-time fold = %d, want the saved 900", got)
+	}
+	if got := req.FullHistoryInputTokensEstimate; got < 900 {
+		t.Fatalf("FullHistoryInputTokensEstimate = %d, want at least the saved 900: the count was wiped before the request was built", got)
+	}
+}
+
+// TestRequestMeasurementRecordsLiveTurns drives the whole pipeline twice: each
+// round's count is recorded against the prefix it dispatched, so the reply the
+// round appended afterwards is priced on top of it, and the persisted meta names
+// that prefix rather than the post-reply history.
+func TestRequestMeasurementRecordsLiveTurns(t *testing.T) {
+	sess := newSession(t, withStateDir(t.TempDir()), withSteps(
+		func(llm.Request) llm.Response {
+			resp := agenttest.FinalResponse("first reply")
+			resp.Usage.InputTokens = 600
+			return resp
+		},
+		func(llm.Request) llm.Response {
+			resp := agenttest.FinalResponse("second reply")
+			resp.Usage.InputTokens = 5000
+			return resp
+		},
+	))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter; only fires on a genuine hang.
+	defer cancel()
+
+	for _, want := range []int{600, 5000} {
+		if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+		if got := sess.contextMgr.LastInputTokens(); got != want {
+			t.Fatalf("LastInputTokens = %d, want %d", got, want)
+		}
+		resident := currentHistory(t, sess)
+		if got := sess.contextMgr.EstimateUsage(resident, 0).Used; got <= want {
+			t.Fatalf("context meter = %d, want more than the saved %d: the reply appended after the dispatched prefix was not priced", got, want)
+		}
+	}
+
+	resident := currentHistory(t, sess)
+	meta := sess.Meta()
+	if meta.LastInputTokens != 5000 {
+		t.Fatalf("meta LastInputTokens = %d, want 5000", meta.LastInputTokens)
+	}
+	if meta.LastInputMeasuredLen == nil {
+		t.Fatal("meta persisted no measured length")
+	}
+	if *meta.LastInputMeasuredLen >= len(resident) {
+		t.Fatalf("meta LastInputMeasuredLen = %d over a %d-turn history: the persisted prefix covers the reply appended after dispatch", *meta.LastInputMeasuredLen, len(resident))
+	}
+	if meta.LastInputAnchor == "" {
+		t.Fatal("meta persisted no prefix anchor")
+	}
+}
+
+// capturedMeasurementLen reports the prefix length the round captured for its
+// reply's input count: the turns the provider is about to see.
+func capturedMeasurementLen(t *testing.T, sess *Session) int {
+	t.Helper()
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if !sess.requestMeasurement.ok {
+		t.Fatal("the round captured no request measurement")
+	}
+	return sess.requestMeasurement.length
+}
+
+// TestRequestMeasurementFollowsTheDelegateSnapshot pins the delegate half of the
+// advance: a leased round projects the controller's own later snapshot, which
+// can hold a turn that landed after the round's history copy. The reply's count
+// covers that turn, so the saved prefix must move up with the request. Left on
+// the pre-snapshot length, the reader prices the turn a second time as a delta.
+func TestRequestMeasurementFollowsTheDelegateSnapshot(t *testing.T) {
+	runtime := newSession(t, withStateDir(t.TempDir()))
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_measurement", "")
+	lease := delegateLease{delegateID: "dlg_measurement", generation: 1}
+	runtime.delegateController = c
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = runtime
+	c.live[lease.delegateID].binding.runtime = runtime
+	c.mu.Unlock()
+
+	// Land a turn after the round's history copy and before the controller's
+	// snapshot, so the projected request presents a turn the round copy lacks.
+	// No skill obligation is pending, so no rebuild runs: this exercise isolates
+	// the delegate-snapshot advance from the skill-rebuild one.
+	const marker = "turn appended after the round history copy"
+	var once sync.Once
+	updateSessionTestConfig(runtime, func(cfg *testConfig) {
+		cfg.afterModelHistorySnapshot = func() {
+			once.Do(func() {
+				runtime.appendTurn(schema.TurnUserInput, llm.User(marker))
+			})
+		}
+	})
+
+	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings); err != nil {
+		t.Fatalf("prepare delegate model request: %v", err)
+	}
+	source, ok := runtime.takeRoundFallbackSource()
+	if !ok {
+		t.Fatal("prepareModelRequestWithError recorded no fallback source")
+	}
+	if got := countMessageText(runtime.requestMessages(source.system, expandHistory(source.turns, source.scope)), marker); got != 1 {
+		t.Fatalf("the projected request presents the between-snapshots turn %d times, want 1: the fixture never exercised the delegate snapshot", got)
+	}
+	if got, want := capturedMeasurementLen(t, runtime), len(source.turns); got != want {
+		t.Fatalf("saved measured length = %d, want the %d-turn prefix the request presents: the count stayed on the pre-snapshot prefix", got, want)
+	}
+}
+
+// TestRequestMeasurementFollowsASkillRebuild pins the rebuild half of the
+// advance: a skill reload notification appended after the request was built
+// joins the rebuilt request, so the saved prefix must move up with it.
+func TestRequestMeasurementFollowsASkillRebuild(t *testing.T) {
+	sess := newSession(t, withStateDir(t.TempDir()))
+	// An obligation whose identity the session cannot follow appends a typed
+	// failure notification and rebuilds the request around it.
+	sess.mu.Lock()
+	sess.skillLifecycle.Obligations = append(sess.skillLifecycle.Obligations, schema.SkillDeliveryObligation{
+		InvocationID: "inv-measurement-rebuild",
+		Route:        "model_tool",
+	})
+	sess.skillLifecycle.Revision++
+	sess.mu.Unlock()
+
+	var timings events.RoundTimings
+	if _, _, _, _, _, _, err := sess.prepareModelRequestWithError(context.Background(), 1, &timings); err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	source, ok := sess.takeRoundFallbackSource()
+	if !ok {
+		t.Fatal("prepareModelRequestWithError recorded no fallback source")
+	}
+	carried := false
+	for _, turn := range source.turns {
+		if turn.SkillState == nil {
+			continue
+		}
+		for _, outcome := range turn.SkillState.Outcomes {
+			if outcome.InvocationID == "inv-measurement-rebuild" && outcome.Status == "failed" {
+				carried = true
+			}
+		}
+	}
+	if !carried {
+		t.Fatal("the rebuilt request carries no failed outcome for inv-measurement-rebuild: the rebuild never ran, so this proof is vacuous")
+	}
+	if got, want := capturedMeasurementLen(t, sess), len(source.turns); got != want {
+		t.Fatalf("saved measured length = %d, want the %d-turn prefix the rebuilt request presents: the count stayed on the pre-rebuild prefix", got, want)
+	}
+}

@@ -5,7 +5,7 @@
 // inline runs are joined with nothing, the same way Find reads the rendered
 // DOM. This module stays free of the transcript's renderers so the palette's
 // search can share it.
-import { fenceLanguage, type ItemModel, pendingTextJoined } from "@evener/appwire-client";
+import { fenceLanguage, type ItemModel, joinedReasoningParagraphs, pendingTextJoined } from "@evener/appwire-client";
 import type { Token } from "marked";
 import { splitMarkdownSegments } from "../../../widgets/markdown/segments";
 import { closeOpenMarkdown } from "../../../widgets/markdown/streaming";
@@ -76,7 +76,11 @@ function read(tokens: readonly Token[], into: string[]): void {
   }
 }
 
-function markdownAsRead(source: string, live: boolean): string {
+/** A Markdown source read as its rendered page reads: formatting marks gone,
+ * a link's label without its address, code and authored HTML kept as written.
+ * Shared with the palette and with thought summaries, which render Markdown
+ * too. */
+export function markdownAsRead(source: string, live = false): string {
   const into: string[] = [];
   const closed = live ? closeOpenMarkdown(source) : source;
   // The renderer segments closed diagrams while keeping an unfinished live
@@ -92,13 +96,25 @@ function markdownAsRead(source: string, live: boolean): string {
 }
 
 /** A message's text as its row shows it, or null for an item Find does not
- * search. A reply renders as Markdown, so it is read as the page reads; a
- * prompt is shown as typed. */
+ * search. Both replies and prompts render as Markdown, so both are read as
+ * the page reads. */
 export function messageAsShown(item: ItemModel): string | null {
   if (item.type === "agentMessage") {
     const live = item.status === "inProgress";
     const source = live ? pendingTextJoined(item.pendingText ?? []) : item.text;
     return source ? markdownAsRead(source, live) : null;
   }
-  return item.type === "userMessage" ? item.text : null;
+  if (item.type === "userMessage") {
+    return item.text ? markdownAsRead(item.text) : null;
+  }
+  return null;
+}
+
+/** A thought's summaries as its row reads them: one string per rendered
+ * paragraph, Markdown formatting gone. A live thought is rendered with its
+ * unclosed tail closed, exactly as ThinkBlock's live body does; settled text
+ * keeps its markers literal. Shared with the palette. */
+export function reasoningSummariesAsRead(item: ItemModel, live = item.status === "inProgress"): string[] {
+  const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
+  return paragraphs.map((paragraph, index) => markdownAsRead(paragraph, live && index === paragraphs.length - 1));
 }

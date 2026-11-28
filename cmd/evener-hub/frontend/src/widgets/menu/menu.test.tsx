@@ -531,6 +531,40 @@ test("a pinch zoom that caps the popup leaves the menu open", async () => {
   }
 });
 
+// The visible viewport can be a panned sub-rect of the layout viewport.
+// Placement runs in the sub-rect's coordinates and is translated back, so a
+// trigger near its edge stays where the reader sees it instead of being
+// clamped against layout area nobody can see.
+test("a panned visual viewport places the menu in layout coordinates", async () => {
+  const user = userEvent.setup();
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 400;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 500, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // The trigger sits 100 into the visible region, which starts at 400.
+    expect(screen.getByRole("menu").style.top).toBe("532px"); // 500 + 28 + 4
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  }
+});
+
 // One window resize can reach the widget twice: the observer delivers the rail
 // that shrank, and a second box delivers the popup re-placed beside it. The
 // second delivery must not be read as a fresh layout change - it is the same
@@ -986,6 +1020,26 @@ test("the trigger announces its popup state via aria-haspopup/aria-expanded", as
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
 });
 
+test("the trigger exposes its open state as data-open for callers' CSS", async () => {
+  const user = userEvent.setup();
+  render(
+    <div>
+      <Menu trigger="Actions" items={items()} />
+      <button type="button">Elsewhere</button>
+    </div>,
+  );
+  const trigger = screen.getByRole("button", { name: "Actions" });
+  expect(trigger.getAttribute("data-open")).toBe("false");
+  await user.click(trigger);
+  expect(trigger.getAttribute("data-open")).toBe("true");
+  await user.keyboard("{Escape}");
+  expect(trigger.getAttribute("data-open")).toBe("false");
+  await user.click(trigger);
+  expect(trigger.getAttribute("data-open")).toBe("true");
+  await user.click(screen.getByRole("button", { name: "Elsewhere" }));
+  expect(trigger.getAttribute("data-open")).toBe("false");
+});
+
 // --- fix-wave: role=menu accessible name (Important) -------------------
 // A menu with no accessible name announces as just "menu" to a screen
 // reader - indistinguishable from any other menu on the page. Labelling
@@ -1066,6 +1120,35 @@ test("ArrowDown/ArrowUp roving skips disabled items", async () => {
   expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Delete" }));
   await user.keyboard("{ArrowUp}");
   expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+});
+
+test("ArrowLeft/ArrowRight do not rove: the menu's key map is vertical-only", async () => {
+  const user = userEvent.setup();
+  render(<Menu trigger="Actions" items={items()} />);
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+  await user.keyboard("{ArrowRight}");
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+  await user.keyboard("{ArrowLeft}");
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+});
+
+test("navigation keys are a no-op when every item is disabled", async () => {
+  const user = userEvent.setup();
+  render(
+    <Menu
+      trigger="Actions"
+      items={items({
+        rename: { disabled: true },
+        duplicate: { disabled: true },
+        delete: { disabled: true },
+      })}
+    />,
+  );
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  const before = document.activeElement;
+  await user.keyboard("{ArrowDown}{ArrowUp}{Home}{End}");
+  expect(document.activeElement).toBe(before);
 });
 
 test("Enter activates the focused item and closes the menu", async () => {
@@ -3252,7 +3335,7 @@ test("a scrolled visual viewport places the popup in the reader's visible region
 // padding, which slides the composer and this trigger down. No window
 // `resize` fires for it, so a menu listening only on the window stayed at the
 // coordinates it measured while the keyboard was still up.
-test("a visual-viewport resize re-anchors the menu to the trigger it moved", async () => {
+test("the keyboard restoring the document's pan re-anchors the menu and a reader scroll still closes it", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   const fakeViewport = new EventTarget() as EventTarget & {
@@ -3262,17 +3345,14 @@ test("a visual-viewport resize re-anchors the menu to the trigger it moved", asy
     offsetTop: number;
   };
   fakeViewport.width = 400;
-  fakeViewport.height = 400;
+  fakeViewport.height = 484;
   fakeViewport.offsetLeft = 0;
-  fakeViewport.offsetTop = 0;
+  fakeViewport.offsetTop = 328;
   vi.stubGlobal("visualViewport", fakeViewport);
+  vi.stubGlobal("scrollY", 328);
   const { flush } = captureFrames();
-  let triggerTop = 300;
-  // The layout viewport has to be tall enough to CONTAIN the panned visual
-  // viewport: a 400px visible area whose top sits 100px down ends at 500, so a
-  // 400px layout viewport could never report this pan. 600 leaves the offset
-  // reachable, and the placement still reads the visual viewport's 400px height.
-  Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
+  let triggerTop = 398;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 812 });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -3280,20 +3360,28 @@ test("a visual-viewport resize re-anchors the menu to the trigger it moved", asy
   });
   stubPopupLayoutBox(window, 160, 120);
   try {
-    render(<Menu trigger="Actions" items={items()} />);
+    render(<ComposerLikeSurface />);
+    await user.click(screen.getByRole("textbox"));
     await user.click(screen.getByRole("button", { name: "Actions" }));
-    expect(screen.getByRole("menu").style.top).toBe("176px"); // flipped above
+    expect(screen.getByRole("menu").style.top).toBe("430px");
 
-    // The keyboard's inset lands: the composer and its trigger slide down, and
-    // only the visual viewport reports it.
-    triggerTop = 500;
-    fakeViewport.height = 800;
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    // WebKit restores the pan it applied to reveal the active editor. It
+    // delivers a document scroll between the visual viewport events.
+    triggerTop = 726;
+    fakeViewport.height = 812;
+    fakeViewport.offsetTop = 0;
+    vi.stubGlobal("scrollY", 0);
     fakeViewport.dispatchEvent(new Event("resize"));
+    fireEvent.scroll(document);
+    fakeViewport.dispatchEvent(new Event("scroll"));
     flush();
 
-    expect(screen.getByRole("menu")).toBeTruthy();
-    expect(screen.getByRole("menu").style.top).toBe("532px"); // follows the trigger
+    expect(screen.getByRole("menu").style.top).toBe("602px");
+    expect(screen.getAllByRole("menuitem")[0]).toBe(document.activeElement);
+    triggerTop -= 20;
+    vi.stubGlobal("scrollY", 20);
+    fireEvent.scroll(document);
+    expect(screen.queryByRole("menu")).toBeNull();
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -6870,19 +6958,13 @@ test("a fractional correction that carries the content still keeps the menu open
   }
 });
 
-test("keeps the menu trigger and items at the narrow-viewport tap floor", () => {
+test("composes the shared tap floor on the trigger, its icon, and the items", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "menu.module.css"), "utf8");
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.trigger\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
-    ),
-  );
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{[\\s\\S]*?\\.item\\s*\\{[^}]*min-height:\\s*var\\(--tap-min\\)`,
-    ),
-  );
+  const rule = (selector: string) => new RegExp(`${escapeRegExp(selector)}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+  expect(rule(".trigger")).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
+  expect(rule(".triggerIcon")).toContain('composes: tapFloorWidth from "../../styles/tapfloor.module.css"');
+  expect(rule(".item")).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
 });
 
 // jsdom does not evaluate real CSS animations or media queries - see the

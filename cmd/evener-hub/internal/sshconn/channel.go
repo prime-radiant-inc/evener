@@ -66,8 +66,8 @@ func (c *Channel) Preflight() Preflight {
 // ProtocolVersion, ServerInfo, SourceID, and the peer's advertised Features.
 // appwire.Client keeps its own Features copy privately, so attach reads
 // ProtocolVersion/SourceID/Features here (reached by host name through
-// Manager.ChannelIfAttached and the remoteHostHandshakeForChannel closure, not
-// through Manager.HandshakeIfAttached) rather than re-running the
+// Manager.ChannelIfAttached and the remoteHostHandshakeForChannel closure)
+// rather than re-running the
 // connection-scoped initialize. ServerInfo is carried but not consumed: its
 // Version is the hub's package constant, not its build identity, so HubVersion
 // stays preflight-owned.

@@ -156,7 +156,7 @@ func (e *malformedBudgetError) Error() string { return e.reason }
 
 // readTimingBudgetFile parses the budget. A missing file is the deliberate
 // no-baseline warn state and yields an empty object.
-func readTimingBudgetFile(path string) (*jsonValue, error) {
+func readTimingBudgetFile(path string) (any, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return newJSONObject(), nil
@@ -202,7 +202,7 @@ func compareTimingBudget(o timingCompareOptions, stdout, stderr io.Writer) int {
 			"FAIL  MALFORMED BUDGET: testing-budget.json " + what + " (" + o.budgetPath + ")",
 		}, 1)
 	}
-	budget, err := readTimingBudgetFile(o.budgetPath)
+	rawBudget, err := readTimingBudgetFile(o.budgetPath)
 	if err != nil {
 		if malformed, ok := errors.AsType[*malformedBudgetError](err); ok {
 			return failMalformed(malformed.reason)
@@ -212,30 +212,35 @@ func compareTimingBudget(o timingCompareOptions, stdout, stderr io.Writer) int {
 	}
 	// A budget whose top level is not an object is a broken config, not an
 	// empty one: every field read below would otherwise crash.
-	if budget.kind != jsonObject {
-		return failMalformed("must be a JSON object (got " + budget.typeName() + ")")
+	budget, isObject := rawBudget.(*jsonObject)
+	if !isObject {
+		return failMalformed("must be a JSON object (got " + typeName(rawBudget) + ")")
 	}
 
 	// The per-test ceiling map is hand-edited, so a test named twice must fail
-	// naming the collision. The re-parse is structural: only the LAST
-	// perTestCeiling object is the one json.load kept.
-	if ceilingObj, ok := budget.member("perTestCeiling"); ok && ceilingObj.kind == jsonObject {
+	// naming the collision. The scan walks the LAST perTestCeiling object, the
+	// one a JSON parser keeps.
+	ceilingsAny, hasCeilings := budget.member("perTestCeiling")
+	ceilingObj, ceilingsIsObject := ceilingsAny.(*jsonObject)
+	if hasCeilings && ceilingsIsObject {
 		seen := map[string]bool{}
-		for _, m := range ceilingObj.obj {
+		for _, m := range ceilingObj.members {
 			if seen[m.key] {
-				return failMalformed("perTestCeiling[" + jsonQuote(m.key) + "] more than once")
+				return failMalformed("perTestCeiling[" + strconv.Quote(m.key) + "] more than once")
 			}
 			seen[m.key] = true
 		}
 	}
 
-	packagesObj, hasPackages := budget.member("packages")
-	if hasPackages && packagesObj.kind != jsonObject {
-		return failMalformed("packages must be an object mapping each package to its budget seconds (got " + packagesObj.typeName() + ")")
+	packagesAny, hasPackages := budget.member("packages")
+	packagesObj, packagesIsObject := packagesAny.(*jsonObject)
+	if hasPackages && !packagesIsObject {
+		return failMalformed("packages must be an object mapping each package to its budget seconds (got " + typeName(packagesAny) + ")")
 	}
-	wallObj, hasWallPackages := budget.member("wallPackages")
-	if hasWallPackages && wallObj.kind != jsonObject {
-		return failMalformed("wallPackages must be an object mapping each package to its wall seconds (got " + wallObj.typeName() + ")")
+	wallAny, hasWallPackages := budget.member("wallPackages")
+	wallObj, wallIsObject := wallAny.(*jsonObject)
+	if hasWallPackages && !wallIsObject {
+		return failMalformed("wallPackages must be an object mapping each package to its wall seconds (got " + typeName(wallAny) + ")")
 	}
 	if !hasPackages {
 		packagesObj = newJSONObject()
@@ -245,23 +250,13 @@ func compareTimingBudget(o timingCompareOptions, stdout, stderr io.Writer) int {
 	}
 
 	// Every package value must be a usable number, not only the map's type.
-	packages := map[string]float64{}
-	wallPackages := map[string]float64{}
-	for _, group := range []struct {
-		what string
-		obj  *jsonValue
-		into map[string]float64
-	}{
-		{"packages", packagesObj, packages},
-		{"wallPackages", wallObj, wallPackages},
-	} {
-		for _, m := range group.obj.obj {
-			if problem := secondsError(m.value); problem != "" {
-				return failMalformed(group.what + "[" + jsonQuote(m.key) + "] must be a number of seconds (" + problem + ")")
-			}
-			f, _ := m.value.float()
-			group.into[m.key] = f
-		}
+	packages, problem := secondsMap(packagesObj)
+	if problem != "" {
+		return failMalformed("packages" + problem)
+	}
+	wallPackages, problem := secondsMap(wallObj)
+	if problem != "" {
+		return failMalformed("wallPackages" + problem)
 	}
 
 	// The flat ceiling cannot tell a present null from an absent key, so test
@@ -269,32 +264,29 @@ func compareTimingBudget(o timingCompareOptions, stdout, stderr io.Writer) int {
 	// would silently disarm the ceiling.
 	ceiling := timingDefaultCeiling
 	if flat, ok := budget.member("perTestCeilingSeconds"); ok {
-		if problem := secondsError(flat); problem != "" {
+		value, problem := secondsValue(flat)
+		if problem != "" {
 			return failMalformed("perTestCeilingSeconds must be a number of seconds (" + problem + ")")
 		}
-		ceiling, _ = flat.float()
+		ceiling = value
 	}
 
-	ceilingObj, hasCeilings := budget.member("perTestCeiling")
-	if hasCeilings && ceilingObj.kind != jsonObject {
-		return failMalformed("perTestCeiling must be an object mapping each test name to its ceiling seconds (got " + ceilingObj.typeName() + ")")
+	if hasCeilings && !ceilingsIsObject {
+		return failMalformed("perTestCeiling must be an object mapping each test name to its ceiling seconds (got " + typeName(ceilingsAny) + ")")
 	}
 	perTestCeilings := map[string]float64{}
 	if hasCeilings {
-		for _, m := range ceilingObj.obj {
-			if problem := secondsError(m.value); problem != "" {
-				return failMalformed("perTestCeiling[" + jsonQuote(m.key) + "] must be a number of seconds (" + problem + ")")
-			}
-			f, _ := m.value.float()
-			perTestCeilings[m.key] = f
+		ceilings, problem := secondsMap(ceilingObj)
+		if problem != "" {
+			return failMalformed("perTestCeiling" + problem)
 		}
+		perTestCeilings = ceilings
 	}
 
 	noBaseline := len(packages) == 0 && len(wallPackages) == 0
-	hadMetric := false
-	if metric, ok := budget.member("metric"); ok && metric.kind == jsonString && metric.str == timingCPUMetric {
-		hadMetric = true
-	}
+	metric, _ := budget.member("metric")
+	metricName, isString := metric.(string)
+	hadMetric := isString && metricName == timingCPUMetric
 	staleUnits := !noBaseline && !hadMetric
 
 	c := &timingComparator{
@@ -374,15 +366,25 @@ func compareTimingBudget(o timingCompareOptions, stdout, stderr io.Writer) int {
 	}
 
 	if o.bless {
-		budget.set("packages", blessedBudget(packagesObj, measurement.cpus, o.blessFull))
-		budget.set("wallPackages", blessedBudget(wallObj, measurement.sums, o.blessFull))
+		blessedPackages, err := blessedBudget(packagesObj, measurement.cpus, o.blessFull)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "evener-dev timing-compare: blessing packages: %v\n", err)
+			return 1
+		}
+		blessedWall, err := blessedBudget(wallObj, measurement.sums, o.blessFull)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "evener-dev timing-compare: blessing wallPackages: %v\n", err)
+			return 1
+		}
+		budget.set("packages", blessedPackages)
+		budget.set("wallPackages", blessedWall)
 		if o.blessFull || hadMetric {
-			budget.set("metric", newJSONString(timingCPUMetric))
+			budget.set("metric", timingCPUMetric)
 		}
 		if !budget.has("perTestCeilingSeconds") {
-			budget.set("perTestCeilingSeconds", newJSONNumber(timingDefaultCeiling))
+			budget.set("perTestCeilingSeconds", budgetNumber(timingDefaultCeiling))
 		}
-		if err := os.WriteFile(o.budgetPath, []byte(budget.jsonString()+"\n"), 0o644); err != nil {
+		if err := writeTimingBudget(o.budgetPath, budget); err != nil {
 			_, _ = fmt.Fprintf(stderr, "evener-dev timing-compare: writing %s: %v\n", o.budgetPath, err)
 			return 1
 		}
@@ -507,11 +509,11 @@ func testCeiling(name string, ceilings map[string]float64) (string, float64, boo
 // name. A narrowed bless preserves an entry it did not measure; a full bless
 // drops it, because go list enumerated every package and the entry is a package
 // gone from the tree.
-func blessedBudget(recorded *jsonValue, measured map[string]float64, full bool) *jsonValue {
-	recordedValues := map[string]*jsonValue{}
+func blessedBudget(recorded *jsonObject, measured map[string]float64, full bool) (*jsonObject, error) {
+	recordedValues := map[string]any{}
 	var order []string
-	if recorded != nil && recorded.kind == jsonObject {
-		for _, m := range recorded.obj {
+	if recorded != nil {
+		for _, m := range recorded.members {
 			if _, ok := recordedValues[m.key]; !ok {
 				order = append(order, m.key)
 			}
@@ -534,14 +536,17 @@ func blessedBudget(recorded *jsonValue, measured map[string]float64, full bool) 
 			if pkg != timingWebKey && seconds < timingGoBudgetFloor {
 				seconds = timingGoBudgetFloor
 			}
-			out.obj = append(out.obj, jsonMember{key: pkg, value: newJSONNumber(seconds)})
+			if math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+				return nil, fmt.Errorf("package %s: cannot write a non-finite budget", pkg)
+			}
+			out.members = append(out.members, jsonMember{key: pkg, value: budgetNumber(seconds)})
 			continue
 		}
 		if !full {
-			out.obj = append(out.obj, jsonMember{key: pkg, value: recordedValues[pkg]})
+			out.members = append(out.members, jsonMember{key: pkg, value: recordedValues[pkg]})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // timingRound2 rounds to two decimals the way Python's round(x, 2) does: the

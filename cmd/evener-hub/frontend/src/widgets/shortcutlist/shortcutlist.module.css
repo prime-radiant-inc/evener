@@ -18,6 +18,26 @@
   justify-self: end;
 }
 
+/* One action's bindings: presses and the "or" between alternatives sit on one
+   line with KeyHint's own gap. */
+.sequences {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.or {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+/* An action with no effective chord (the cheatsheet's "Unbound"). */
+.unbound {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
 .label {
   margin: 0;
   color: var(--ink-mid);

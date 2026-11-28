@@ -90,7 +90,7 @@ func TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		call.RespondToolCall("communicate", map[string]any{"end_turn": true, "message": "runbook-result-" + filename, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
+		call.RespondToolCall("communicate", map[string]any{"next": "send_and_end_turn", "message": "runbook-result-" + filename, "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []string{}}})
 		select {
 		case err := <-done:
 			if err != nil {

@@ -142,9 +142,7 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 		OutputMatch:        "(?i)ready",
 		ProgressIntervalMS: minWatchProgressIntervalMS,
 		Send: &watchSendArgs{
-			To:             runtimeMessageAliasCaller,
-			Message:        rwlpTexts[r.intn(len(rwlpTexts))],
-			IncludeExcerpt: r.bool(),
+			To: runtimeMessageAliasCaller,
 		},
 	})
 	if err != nil || !sidecar.Watching {
@@ -260,7 +258,7 @@ func rwlpRunManagerProgram(t *testing.T, r *rwlpReader) {
 	catchupSend, err := jm.configureWatch(watchArgs{
 		Target:      terminal.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "terminal observer"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil || !catchupSend.TerminalCatchup || catchupSend.Watching || !catchupSend.Fired || catchupSend.WatchID == "" {
 		t.Fatalf("terminal send catch-up = (%+v, %v), want detached pending send", catchupSend, err)
@@ -354,9 +352,7 @@ func rwlpRunRestoreRetryProgram(t *testing.T, r *rwlpReader) {
 		Target:      rec.JobID,
 		OutputMatch: "ready",
 		Send: &watchSendArgs{
-			To:             runtimeMessageAliasCaller,
-			Message:        "rwlp restore " + rwlpTexts[r.intn(len(rwlpTexts))],
-			IncludeExcerpt: r.bool(),
+			To: runtimeMessageAliasCaller,
 		},
 	})
 	if err != nil || !watch.Watching {

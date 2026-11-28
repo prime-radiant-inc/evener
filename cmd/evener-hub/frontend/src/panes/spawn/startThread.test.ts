@@ -1,10 +1,17 @@
 // @vitest-environment node
 
 import type { Thread, ThreadCapabilities, ThreadStartResponse } from "@evener/appwire-client";
+import { ClientNotReadyError, ConnectionClosedError, RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, test } from "vitest";
 
-import { startThread } from "./startThread";
+import {
+  buildThreadStartParams,
+  classifyStartFailure,
+  formatStartFailureToast,
+  spawnRequestFingerprint,
+  startThread,
+} from "./startThread";
 
 // startThread never reads capabilities; all-false is a representative default.
 const NO_CAPABILITIES: ThreadCapabilities = {
@@ -276,4 +283,181 @@ test("choosing Manager sends manager:true on thread/start", async () => {
   const params = fake.calls[0]?.params as Record<string, unknown>;
   expect(params.manager).toBe(true);
   expect(result.ref).toBe("local:boss");
+});
+
+test("buildThreadStartParams excludes clientMutationId and startThread sends it only when supplied", async () => {
+  const req = { cwd: "/tmp/p", prompt: "hello", clientMutationId: "mut-123" };
+  expect(buildThreadStartParams(req)).toEqual({
+    cwd: "/tmp/p",
+    input: [{ type: "text", text: "hello" }],
+  });
+  expect("clientMutationId" in buildThreadStartParams(req)).toBe(false);
+
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:idem"));
+  await startThread(fake, { cwd: "/tmp/p", prompt: "hello" });
+  await startThread(fake, req);
+
+  expect(fake.calls[0]?.params).toEqual({
+    cwd: "/tmp/p",
+    input: [{ type: "text", text: "hello" }],
+  });
+  expect("clientMutationId" in ((fake.calls[0]?.params ?? {}) as Record<string, unknown>)).toBe(false);
+  expect((fake.calls[1]?.params as Record<string, unknown> | undefined)?.clientMutationId).toBe("mut-123");
+});
+
+test("spawnRequestFingerprint omits clientMutationId and raw attachment bytes while detecting same-length image edits", () => {
+  const imageA = "A".repeat(4096);
+  const imageB = `${"A".repeat(4095)}B`;
+  const fpA = spawnRequestFingerprint({
+    cwd: "/tmp/p",
+    prompt: "look [image 1]",
+    attachments: [{ marker: 1, mediaType: "image/png", data: imageA, name: "shot.png" }],
+    clientMutationId: "mut-1",
+  });
+  const fpB = spawnRequestFingerprint({
+    cwd: "/tmp/p",
+    prompt: "look [image 1]",
+    attachments: [{ marker: 1, mediaType: "image/png", data: imageB, name: "shot.png" }],
+  });
+  expect(fpA).not.toContain(imageA);
+  expect(fpA).not.toBe(fpB);
+});
+
+const START_FAILURE_TIMEOUT = new RequestTimeoutError('AppwireClient: "thread/start" timed out after 180000ms');
+const START_FAILURE_DROPPED = new Error("AppwireClient: socket closed (code 1006)");
+const START_FAILURE_NOT_SENT = new Error('AppwireClient: cannot call "thread/start" while state is "reconnecting"');
+const START_FAILURE_NOT_ACCEPTED = new WireError("sentinel-not-accepted", -32602, {
+  evenerErrorInfo: "invalidParams",
+  mutationOutcome: "notAccepted",
+});
+const START_FAILURE_BLOCKED = new WireError("sentinel-blocked", -32000, {
+  evenerErrorInfo: "mutationOutcomeUnknown",
+  mutationOutcome: "unknown",
+  retryDisposition: "blocked",
+});
+const START_FAILURE_PARTIAL = new WireError("sentinel-partial-turn", -32014, {
+  evenerErrorInfo: "sessionUnavailable",
+});
+
+test.each([
+  [
+    "pre-dispatch timeout",
+    START_FAILURE_TIMEOUT,
+    { startDispatched: false, retryablePendingStart: false },
+    { kind: "failed", clearPendingStart: false, retryable: false },
+  ],
+  [
+    "pre-dispatch notAccepted",
+    START_FAILURE_NOT_ACCEPTED,
+    { startDispatched: false, retryablePendingStart: false },
+    { kind: "failed", clearPendingStart: false, retryable: false },
+  ],
+  [
+    "dispatched notAccepted",
+    START_FAILURE_NOT_ACCEPTED,
+    { startDispatched: true, retryablePendingStart: true },
+    { kind: "failed", clearPendingStart: true, retryable: false },
+  ],
+  [
+    "dispatched blocked",
+    START_FAILURE_BLOCKED,
+    { startDispatched: true, retryablePendingStart: true },
+    { kind: "failed", clearPendingStart: true, retryable: false },
+  ],
+  [
+    "dispatched reconnecting (not sent)",
+    START_FAILURE_NOT_SENT,
+    { startDispatched: true, retryablePendingStart: true },
+    { kind: "failed", clearPendingStart: false, retryable: false },
+  ],
+  [
+    "dispatched ConnectionClosedError",
+    new ConnectionClosedError("AppwireClient: closed"),
+    { startDispatched: true, retryablePendingStart: true },
+    { kind: "failed", clearPendingStart: false, retryable: false },
+  ],
+  [
+    "dispatched ClientNotReadyError",
+    new ClientNotReadyError("not ready"),
+    { startDispatched: true, retryablePendingStart: true },
+    { kind: "failed", clearPendingStart: false, retryable: false },
+  ],
+  [
+    "dispatched timeout (keyed)",
+    START_FAILURE_TIMEOUT,
+    { startDispatched: true, retryablePendingStart: true },
+    { kind: "uncertain-timeout", clearPendingStart: false, retryable: true },
+  ],
+  [
+    "dispatched timeout (keyless)",
+    START_FAILURE_TIMEOUT,
+    { startDispatched: true, retryablePendingStart: false },
+    { kind: "uncertain-timeout", clearPendingStart: false, retryable: false },
+  ],
+  [
+    "dispatched dropped socket (keyed)",
+    START_FAILURE_DROPPED,
+    { startDispatched: true, retryablePendingStart: true },
+    { kind: "uncertain-disconnected", clearPendingStart: false, retryable: true },
+  ],
+  [
+    "dispatched dropped socket (keyless)",
+    START_FAILURE_DROPPED,
+    { startDispatched: true, retryablePendingStart: false },
+    { kind: "uncertain-disconnected", clearPendingStart: false, retryable: false },
+  ],
+  [
+    "dispatched post-spawn WireError (keyed)",
+    START_FAILURE_PARTIAL,
+    { startDispatched: true, retryablePendingStart: true },
+    { kind: "uncertain-partial", clearPendingStart: false, retryable: true },
+  ],
+  [
+    "dispatched WireError (keyless)",
+    START_FAILURE_PARTIAL,
+    { startDispatched: true, retryablePendingStart: false },
+    { kind: "failed", clearPendingStart: false, retryable: false },
+  ],
+  [
+    "dispatched opaque error (keyed)",
+    new Error("opaque"),
+    { startDispatched: true, retryablePendingStart: true },
+    { kind: "uncertain", clearPendingStart: false, retryable: true },
+  ],
+  [
+    "dispatched opaque error (keyless)",
+    new Error("opaque"),
+    { startDispatched: true, retryablePendingStart: false },
+    { kind: "failed", clearPendingStart: false, retryable: false },
+  ],
+] as const)("classifyStartFailure classifies %s", (_label, err, context, expected) => {
+  expect(classifyStartFailure(err, context)).toEqual(expected);
+});
+
+test("formatStartFailureToast preserves server sentinels and avoids raw transport text or generic fallback", () => {
+  const partialMsg = formatStartFailureToast(
+    classifyStartFailure(START_FAILURE_PARTIAL, { startDispatched: true, retryablePendingStart: true }),
+    START_FAILURE_PARTIAL,
+  );
+  expect(partialMsg).toContain("sentinel-partial-turn");
+
+  const timeoutMsg = formatStartFailureToast(
+    classifyStartFailure(START_FAILURE_TIMEOUT, { startDispatched: true, retryablePendingStart: true }),
+    START_FAILURE_TIMEOUT,
+  );
+  expect(timeoutMsg).not.toMatch(/AppwireClient|timed out after 180000ms/);
+
+  const droppedMsg = formatStartFailureToast(
+    classifyStartFailure(START_FAILURE_DROPPED, { startDispatched: true, retryablePendingStart: true }),
+    START_FAILURE_DROPPED,
+  );
+  expect(droppedMsg).not.toMatch(/AppwireClient|code 1006/);
+
+  const genericMsg = formatStartFailureToast(
+    classifyStartFailure(new TypeError("internal"), { startDispatched: false, retryablePendingStart: false }),
+    new TypeError("internal"),
+  );
+  expect(timeoutMsg).not.toBe(genericMsg);
+  expect(droppedMsg).not.toBe(genericMsg);
 });

@@ -13,10 +13,13 @@ import { createPortal } from "react-dom";
 import { LayerFocusScope } from "../focusscope";
 import { ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { firstEnabledIndex, lastEnabledIndex, useRovingRadio } from "../internal/rovingRadio";
 import { useDismissOnOutsidePress } from "../internal/useDismissOnOutsidePress";
+import { useEscapeToClose } from "../internal/useEscapeToClose";
 import { useOwnedDocument } from "../internal/useOwnedDocument";
 import { usePresence } from "../internal/usePresence";
 import { watchViewport } from "../internal/viewportWatch";
+import { positionFromVisibleViewport, rectInVisibleViewport, visibleViewportBounds } from "../internal/visibleViewport";
 // Flip-then-clamp overlay placement, shared verbatim with the Popover
 // primitive (§3.4). computeMenuPosition/resolveAxis/EDGE_MARGIN/TRIGGER_GAP
 // were extracted from here into widgets/popover/computePosition.ts so Menu
@@ -164,15 +167,6 @@ function triggerVisibleOnScreen(element: HTMLElement, ownerWindow: Window): bool
   return intersectsRegion(rect, visibleRegionAround(element, ownerWindow, rect));
 }
 
-/** The window's visible region: the VISUAL viewport where there is one, and the
- * layout viewport where there is not (jsdom, and any engine predating it), the
- * two being one region there. */
-function visibleViewportBounds(ownerWindow: Window): { left: number; top: number; width: number; height: number } {
-  const viewport = ownerWindow.visualViewport;
-  if (!viewport) return { left: 0, top: 0, width: ownerWindow.innerWidth, height: ownerWindow.innerHeight };
-  return { left: viewport.offsetLeft, top: viewport.offsetTop, width: viewport.width, height: viewport.height };
-}
-
 function visibleRegionAround(element: HTMLElement, ownerWindow: Window, rect: DOMRect): VisibleRegion {
   if (rect.width <= 0 || rect.height <= 0) return { left: 0, top: 0, right: 0, bottom: 0 };
   const bounds = visibleViewportBounds(ownerWindow);
@@ -262,13 +256,9 @@ const CLAMP_ROUNDING = 1;
 // difference within this distance is the reading, not the view.
 const CLIP_ROUNDING = 1;
 
-function firstEnabledIndex(items: readonly MenuEntry[]): number {
-  return items.findIndex(isActionable);
-}
-
 /** The id of the first entry roving focus can land on, if the list has one. */
 function firstEnabledId(items: readonly MenuEntry[]): string | undefined {
-  return items[firstEnabledIndex(items)]?.id;
+  return items[firstEnabledIndex(items, isActionable)]?.id;
 }
 
 /** Scroll `popup` the least that brings `row` back inside its scrollport, and
@@ -760,26 +750,6 @@ function itemAt(items: MenuEntry[], i: number): MenuEntry {
   return item;
 }
 
-function lastEnabledIndex(items: MenuEntry[]): number {
-  for (let i = items.length - 1; i >= 0; i--) {
-    if (isActionable(itemAt(items, i))) return i;
-  }
-  return -1;
-}
-
-// Next enabled index stepping by `delta` (+1/-1) from `from`, wrapping
-// around the ends. Returns `from` unchanged if every item is disabled.
-function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): number {
-  const n = items.length;
-  if (n === 0) return -1;
-  let i = from;
-  for (let step = 0; step < n; step++) {
-    i = (i + delta + n) % n;
-    if (isActionable(itemAt(items, i))) return i;
-  }
-  return from;
-}
-
 // MenuPosition, EDGE_MARGIN, TRIGGER_GAP, resolveAxis, and computeMenuPosition
 // now live in widgets/popover/computePosition.ts (imported above), shared with
 // the Popover primitive - see that module and this file's import comment.
@@ -814,6 +784,13 @@ function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): numb
  * its own chrome's "..." menu, an unrelated pane - leaves the trigger's rect
  * exactly where it was, so the menu stays open (kata: the session's "..."
  * menu must survive transcript scrolling).
+ *
+ * The trigger carries `data-open="true"` while the popup is open and
+ * `data-open="false"` otherwise. That attribute is the trigger's public
+ * open-state hook for callers whose own CSS must follow it (see
+ * shell/rail/RailRow.module.css, which keeps a row's actions revealed while
+ * its menu is open), so a caller never mirrors this state in React or keys
+ * its selectors on `aria-expanded`.
  */
 export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "default" }: MenuProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -841,6 +818,15 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const ownerDocument = useOwnedDocument(rootRef, mounted);
   const itemRefs = useRef<(HTMLLIElement | null)[]>([]);
   const triggerId = useId();
+  // The menu's key map is the shared roving one in its vertical-only mode:
+  // ArrowUp/Down, Home, and End, skipping separators and disabled rows.
+  // Activation (Enter/Space) and dismissals (Escape, Tab) stay local.
+  const moveFocus = useRovingRadio({
+    items,
+    onMove: (index) => focusIndex(index, true),
+    mode: "menu",
+    isEnabled: isActionable,
+  });
 
   // Resolve the tracked id against the list as it is NOW. The id may name an
   // entry this render no longer has (the caller removed it) or one that has
@@ -849,7 +835,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const indexOfActive = useCallback(() => {
     const index = items.findIndex((entry) => !isSeparator(entry) && entry.id === activeId);
     if (index !== -1 && isActionable(itemAt(items, index))) return index;
-    return firstEnabledIndex(items);
+    return firstEnabledIndex(items, isActionable);
   }, [items, activeId]);
 
   // Opens with a naive, unflipped position (left-aligned to the trigger,
@@ -915,6 +901,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     },
     [ownerDocument],
   );
+
+  // Escape closes the menu and stops there, so an enclosing overlay does not
+  // also close.
+  const handleEscape = useEscapeToClose(closeMenu);
 
   // Lay the trigger out of sight and the menu must still give focus back to
   // it - the reader was on it a moment ago - but the scope's restore is a
@@ -1000,7 +990,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // resize itself runs would have overwritten it before the clamp arrived. It
   // is consumed by the next scroll, so it can only ever excuse the one
   // correction that resize caused.
-  const anchoredTriggerRef = useRef<{ left: number; top: number } | null>(null);
+  const anchoredTriggerRef = useRef<{
+    left: number;
+    top: number;
+    documentTop: number;
+    viewportTop: number;
+    viewportHeight: number;
+  } | null>(null);
   const grewBeforeScrollRef = useRef(false);
   const lastViewportHeightRef = useRef(0);
   const observedViewportHeightRef = useRef(0);
@@ -1213,7 +1209,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // clamp against that window's edges, not the opener's.
     const ownerWindow = ownerWindowOf(ownerDocument);
     const triggerRect = triggerEl.getBoundingClientRect();
-    anchoredTriggerRef.current = { left: triggerRect.left, top: triggerRect.top };
     // The popup's own size is its untransformed layout box (offset*), not its
     // rect: this runs in the commit that mounts it, while the entrance still
     // holds it at its scaled-down `from` keyframe, and a rect would place a
@@ -1228,13 +1223,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // flip-then-clamp math unchanged. Without a visual viewport the two are
     // the same region and the translation is zero.
     const visible = visibleViewportBounds(ownerWindow);
-    const localTriggerRect = {
-      ...triggerRect,
-      left: triggerRect.left - visible.left,
-      right: triggerRect.right - visible.left,
-      top: triggerRect.top - visible.top,
-      bottom: triggerRect.bottom - visible.top,
-    } as DOMRect;
+    anchoredTriggerRef.current = {
+      left: triggerRect.left,
+      top: triggerRect.top,
+      documentTop: triggerRect.top + ownerWindow.scrollY,
+      viewportTop: visible.top,
+      viewportHeight: visible.height,
+    };
+    const localTriggerRect = rectInVisibleViewport(triggerRect, visible);
     // The stylesheet caps the popup at 100dvh minus both margins, which is the
     // LAYOUT viewport. After a pinch zoom the visible area can be half of that,
     // so the popup keeps a height it cannot show: it is placed at the visible
@@ -1327,7 +1323,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // mutation that changes nothing about placement (a text node elsewhere in
     // the same scroller), and a state write per notification would re-render
     // the open popup on every one of them.
-    const next = { left: placed.left + visible.left, top: placed.top + visible.top };
+    const next = positionFromVisibleViewport(placed, visible);
     setPosition((current) =>
       current !== null && current.left === next.left && current.top === next.top ? current : next,
     );
@@ -1609,6 +1605,8 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   }
 
   function handleMenuKeyDown(event: KeyboardEvent<HTMLUListElement>) {
+    // Escape is the shared close gesture, consumed before the switch below.
+    if (handleEscape(event)) return;
     // Roving and activation both start from the item that is actually
     // focused, resolved against the list as it is NOW - not from a stored
     // index. See activeId's own comment: an index written before the caller
@@ -1622,38 +1620,20 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // then be open with focus outside it and Escape would no longer reach the
     // popup. preventDefault alone does not stop that: the enclosing handler is
     // looking at the key, not at the default action.
-    const handled = ["ArrowDown", "ArrowUp", "Home", "End", "Enter", " ", "Escape"];
+    const handled = ["ArrowDown", "ArrowUp", "Home", "End", "Enter", " "];
     if (handled.includes(event.key)) event.stopPropagation();
     switch (event.key) {
       case "ArrowDown":
-        event.preventDefault();
-        // From the popup ITSELF there is no row to step away from: that is the
-        // state a removed focused row leaves behind (see the recovery effect),
-        // and the APG's own answer for a menu holding focus is its first item.
-        // Stepping from the roving id instead would skip whichever row the id
-        // resolution names, because that resolution is where a step from
-        // "nothing" would have arrived.
-        if (focused === -1) {
-          focusIndex(firstEnabledIndex(items), true);
-          break;
-        }
-        focusIndex(stepEnabledIndex(items, current, 1), true);
-        break;
       case "ArrowUp":
-        event.preventDefault();
-        if (focused === -1) {
-          focusIndex(lastEnabledIndex(items), true);
-          break;
-        }
-        focusIndex(stepEnabledIndex(items, current, -1), true);
-        break;
       case "Home":
-        event.preventDefault();
-        focusIndex(firstEnabledIndex(items), true);
-        break;
       case "End":
         event.preventDefault();
-        focusIndex(lastEnabledIndex(items), true);
+        // From the popup ITSELF there is no row to step away from: that is the
+        // state a removed focused row leaves behind (see the recovery effect).
+        // The shared hook's forward keys land on the first enabled row and its
+        // backward keys on the last, which is the APG's own answer for a menu
+        // holding focus.
+        moveFocus(event, focused);
         break;
       case "Enter":
       case " ": {
@@ -1682,16 +1662,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         }
         break;
       }
-      case "Escape":
-        // This handler only exists in the tree while the menu is open
-        // (it's on the popup <ul>, which {isOpen && ...} gates), so
-        // reaching this case always means there's a popup here to close -
-        // stop the event from also reaching an enclosing overlay (e.g. a
-        // Dialog this menu is nested in).
-        event.preventDefault();
-        event.stopPropagation();
-        closeMenu();
-        break;
       case "Tab":
         // Tab is FocusScope's job while focus sits on a TABBABLE menu item, and
         // its trap wraps at the ends of that list. Two states are not one of
@@ -1715,7 +1685,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // the popup (see the case above) until the reader picks a row.
         if (focused === -1) {
           event.preventDefault();
-          focusIndex(event.shiftKey ? lastEnabledIndex(items) : firstEnabledIndex(items), true);
+          focusIndex(
+            event.shiftKey ? lastEnabledIndex(items, isActionable) : firstEnabledIndex(items, isActionable),
+            true,
+          );
         } else if (!isActionable(itemAt(items, focused))) {
           event.preventDefault();
           focusIndex(indexOfActive(), true);
@@ -1826,7 +1799,22 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // the narrowest of them as well.
         const stillOnScreen =
           rect !== undefined && triggerRef.current !== null && triggerVisibleOnScreen(triggerRef.current, ownerWindow);
-        if (cause !== "scrolled" && stillOnScreen) placeNowAndAfterLayout();
+        // WebKit restores the pan that revealed the editor as the keyboard
+        // closes. The trigger stays at its document position and moves on
+        // screen by exactly the pan the growing visual viewport gave back.
+        const visual = ownerWindow.visualViewport;
+        const returnedPan = anchored && visual ? anchored.viewportTop - visual.offsetTop : 0;
+        const restoredPagePan =
+          (nodeType === 9 || target === ownerWindow) &&
+          anchored &&
+          rect &&
+          visual &&
+          returnedPan > 0 &&
+          visual.height > anchored.viewportHeight &&
+          rect.left === anchored.left &&
+          Math.abs(rect.top - anchored.top - returnedPan) <= CLAMP_ROUNDING &&
+          Math.abs(rect.top + ownerWindow.scrollY - anchored.documentTop) <= CLAMP_ROUNDING;
+        if ((restoredPagePan || cause !== "scrolled") && stillOnScreen) placeNowAndAfterLayout();
         // The growth fallback reads "an unchanged rect since the last
         // placement" as "the browser clamped, and nobody moved the trigger".
         // That reading is only worth keeping while the trigger is somewhere a
@@ -2214,6 +2202,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={isOpen}
+        data-open={isOpen ? "true" : "false"}
         onClick={handleTriggerClick}
         onKeyDown={handleTriggerKeyDown}
       >

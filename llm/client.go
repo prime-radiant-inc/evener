@@ -147,6 +147,33 @@ func (c *Client) Resolve(ref string) (registry.Resolved, error) {
 	return c.Registry().Resolve(ref)
 }
 
+// withRegistryAuthenticator binds the resolved scheme's registered
+// authenticator to the client registry's state root, unless the caller already
+// scoped one for that scheme. A record-backed authenticator reads one root, so
+// without the binding a client whose registry resolved an instance under its
+// own root would authenticate against whatever root the process-global default
+// last named. Schemes that are not record-backed, a caller's explicit scope,
+// and a registry without a root all keep their current behavior.
+func (c *Client) withRegistryAuthenticator(ctx context.Context, res registry.Resolved) context.Context {
+	scheme := res.Transport.Auth
+	if scheme == "" || AuthenticatorOverrideFor(ctx, scheme) != nil {
+		return ctx
+	}
+	root := c.Registry().StateRoot()
+	if root == "" {
+		return ctx
+	}
+	registered, ok := AuthenticatorFor(scheme)
+	if !ok {
+		return ctx
+	}
+	binder, ok := registered.(StateRootAuthenticator)
+	if !ok {
+		return ctx
+	}
+	return WithScopedAuthenticator(ctx, scheme, binder.WithStateRoot(root))
+}
+
 // CanServe reports whether provider/model would dispatch: an override is
 // registered under the name, or the reference resolves (spec §7.3: every
 // model resolves except an id off the Codex allowlist).
@@ -355,7 +382,14 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		return t.protocol.Complete(c.withHasher(ctx), req, t.res)
 	}
 	handler := applyMiddlewareComplete(base, c.middlewareSnapshot())
-	resp, err := handler(ctx, req)
+	var rotation authRotation
+	if t.resolved && t.override == nil {
+		ctx = c.withRegistryAuthenticator(ctx, t.res)
+		rotation = authRotationFor(ctx, t.res)
+	}
+	resp, err := retryOnAuthRotation(ctx, rotation, t.res, func() (Response, error) {
+		return handler(ctx, req)
+	}, nil)
 	resp.Provider = t.name
 	err = RewriteErrorProvider(err, t.name)
 	return resp, err
@@ -411,7 +445,18 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		return st, err
 	}
 	handler := applyMiddlewareStream(base, c.middlewareSnapshot())
-	st, err := handler(ctx, req)
+	var rotation authRotation
+	if t.resolved && t.override == nil {
+		ctx = c.withRegistryAuthenticator(ctx, t.res)
+		rotation = authRotationFor(ctx, t.res)
+	}
+	st, err := retryOnAuthRotation(ctx, rotation, t.res, func() (Stream, error) {
+		return handler(ctx, req)
+	}, func(st Stream) {
+		if st != nil {
+			_ = st.Close()
+		}
+	})
 	if err != nil {
 		return nil, RewriteErrorProvider(err, t.name)
 	}
@@ -461,6 +506,22 @@ type ModelListing struct {
 	Models []registry.Resolved
 }
 
+// ModelNotAvailableError reports a launch naming a model the instance's
+// authoritative roster does not list. Available names every model the roster
+// offers, so the caller can tell the user what to choose instead.
+type ModelNotAvailableError struct {
+	Instance  string
+	Model     string
+	Available []string
+}
+
+func (e *ModelNotAvailableError) Error() string {
+	if len(e.Available) == 0 {
+		return fmt.Sprintf("%s does not list %q and offers no models", e.Instance, e.Model)
+	}
+	return fmt.Sprintf("%s does not list %q; available models: %s", e.Instance, e.Model, strings.Join(e.Available, ", "))
+}
+
 // LiveModelLister is the optional override interface for adapters that serve
 // a live model listing. An override that does not implement it cannot list
 // models under its instance name, even when the registry knows that name.
@@ -481,6 +542,7 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 	// string (upper case, surrounding whitespace), or the listing is
 	// fetched and then silently dropped under the wrong key.
 	instance = normalizeProviderName(instance)
+	authoritative := !c.isOverride(instance) && c.Registry().LiveListingAuthoritative(instance)
 	rows, live, err := c.listLive(ctx, instance)
 	if err != nil {
 		if c.isOverride(instance) {
@@ -503,17 +565,25 @@ func (c *Client) Models(ctx context.Context, instance string) (ModelListing, err
 	}
 	if !c.LiveListingUsable(instance, rows) {
 		if c.hasRegistry {
-			c.Registry().ApplyLive(instance, nil)
+			c.Registry().ApplyLiveListing(instance, registry.LiveListing{Authoritative: authoritative})
+		}
+		if authoritative {
+			// The account answered and offers nothing Evener can dispatch:
+			// the bundled rows are not this subscription's catalog.
+			return ModelListing{Live: true}, nil
 		}
 		return c.resolveFallbackListing(instance, true)
 	}
 	if !c.hasRegistry {
+		if authoritative {
+			return ModelListing{Live: true, Usable: true, Models: standaloneRows(instance, rows)}, nil
+		}
 		return c.resolveFallbackListing(instance, true)
 	}
 	// Only a client that owns its registry records what an instance's
 	// transport said. A client without WithRegistry resolves against the
 	// process-wide EmbeddedRegistry shared by every bare client.
-	c.Registry().ApplyLive(instance, rows)
+	c.Registry().ApplyLiveListing(instance, registry.LiveListing{Rows: rows, Authoritative: authoritative})
 	return c.resolveListing(instance)
 }
 
@@ -527,7 +597,7 @@ func (c *Client) LiveListingUsable(instance string, rows []registry.Model) bool 
 		if !registry.IsChatModelID(listed.ID) || listed.Hidden {
 			continue
 		}
-		static, err := c.Registry().ResolveLiveCandidate(instance + "/" + listed.ID)
+		static, err := c.Registry().ResolveLiveCandidateListing(instance + "/" + listed.ID)
 		if err != nil {
 			if errors.Is(err, registry.ErrModelDisabled) {
 				continue
@@ -547,6 +617,21 @@ func (c *Client) LiveListingUsable(instance string, rows []registry.Model) bool 
 		}
 	}
 	return false
+}
+
+// ListingProvesUnavailable reports whether listing is proof that the instance
+// serves no model: its account-owned roster answered successfully and offered
+// no usable row. A failed fetch (Live false) and a non-authoritative fallback
+// prove nothing about availability.
+func (c *Client) ListingProvesUnavailable(instance string, listing ModelListing) bool {
+	if c == nil || !listing.Live || listing.Usable {
+		return false
+	}
+	instance = normalizeProviderName(instance)
+	if c.isOverride(instance) {
+		return false
+	}
+	return c.Registry().LiveListingAuthoritative(instance)
 }
 
 // isOverride reports whether name is a registered adapter override.
@@ -624,9 +709,18 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 	if err != nil {
 		return nil, false, &ConfigurationError{Message: err.Error()}
 	}
-	p, ok := ProtocolFor(res.Protocol)
+	ctx = c.withRegistryAuthenticator(ctx, res)
+	// A Copilot instance's roster is parsed by the Chat Completions listing
+	// parser whatever generation protocol the user configured: the transport's
+	// auth scheme owns the account's picker/policy filter and per-row routing,
+	// and the parser reads the resolved transport's own models URL.
+	listingProtocol := res.Protocol
+	if res.Transport.Auth == registry.AuthOAuthGitHubCopilot {
+		listingProtocol = registry.ProtocolOpenAIChat
+	}
+	p, ok := ProtocolFor(listingProtocol)
 	if !ok {
-		return nil, false, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered", instance, res.Protocol)}
+		return nil, false, &ConfigurationError{Message: fmt.Sprintf("%s: protocol %q is not registered", instance, listingProtocol)}
 	}
 	opCtx, op := c.beginProviderOperation(ctx)
 	rows, err := p.ListModels(opCtx, res)
@@ -645,15 +739,16 @@ func (c *Client) listLive(ctx context.Context, instance string) ([]registry.Mode
 // after the caller applied the live rows -- and filters by the §5
 // visibility rule. A lookup failure is an error, not an empty
 // listing: swallowing it would silently drop a fetched live listing
-// under a mismatched key.
+// under a mismatched key. Rows resolve at facts depth, so displaying the roster
+// runs no credential command (spec §10.1).
 func (c *Client) resolveListing(instance string) (ModelListing, error) {
 	ids, err := c.Registry().ModelIDs(instance)
-	return c.resolveListingIDs(instance, true, true, ids, err, c.Registry().Resolve)
+	return c.resolveListingIDs(instance, true, true, ids, err, c.Registry().ResolveListing)
 }
 
 func (c *Client) resolveFallbackListing(instance string, live bool) (ModelListing, error) {
 	ids, err := c.Registry().FallbackModelIDs(instance)
-	return c.resolveListingIDs(instance, live, false, ids, err, c.Registry().ResolveFallback)
+	return c.resolveListingIDs(instance, live, false, ids, err, c.Registry().ResolveFallbackListing)
 }
 
 func (c *Client) resolveListingIDs(instance string, live, usable bool, ids []string, err error, resolveModel func(string) (registry.Resolved, error)) (ModelListing, error) {

@@ -322,12 +322,19 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if err := r.openDurableState(); err != nil {
 		return err
 	}
+	// Detached restoring children belong to the hub, not to a caller: shutdown
+	// cancels their claims and waits for each child to be reaped.
+	defer r.resumeLocks.Close()
 	closeHosts, err := r.connectHosts()
 	if err != nil {
 		return err
 	}
 	defer closeHosts()
-	web, closeWeb := r.buildWeb(appwireTrace)
+	// The hub resolves its own name once: the sign-in origin announced below
+	// and the local source label the session-start picker shows must agree.
+	// A hostname failure is non-fatal; the picker falls back to "this host".
+	localHostName, localHostNameErr := hubHostname()
+	web, closeWeb := r.buildWeb(appwireTrace, localHostName)
 	defer closeWeb()
 	r.wireNavigationInvalidation(web)
 
@@ -356,7 +363,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			log.Info(fmt.Sprintf("retire endpoint: %v", removeErr))
 		}
 	}()
-	announceHub(stderr, record, r.runDir, r.hubStateRoot, r.authToken)
+	announceHub(stderr, record, r.runDir, r.hubStateRoot, r.authToken, func() (string, error) {
+		return localHostName, localHostNameErr
+	})
 	if err := deps.serve(ctx, srv); err != nil {
 		log.Info(fmt.Sprintf("%v", err))
 		return err
@@ -396,7 +405,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 func openHostOpsStore(stateRoot string, stderr io.Writer, retention hostops.RetentionPolicy) (*hostops.Store, error) {
 	log := componentlog.NewWriter("hub", stderr)
 	storePath := hostops.StorePath(stateRoot)
-	store, err := hostops.OpenWithRetention(storePath, retention)
+	store, err := hostops.Open(storePath, retention)
 	if err != nil {
 		return nil, fmt.Errorf("host operation store: %w", err)
 	}

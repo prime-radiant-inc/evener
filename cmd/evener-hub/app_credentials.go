@@ -21,6 +21,7 @@ const (
 	credentialTestEndpointMessage      = "The provider endpoint could not be reached. Check the endpoint and network connection."
 	credentialTestConfigurationMessage = "Provider configuration could not be loaded. Check the instance settings."
 	credentialTestUnsupportedMessage   = "This provider does not support harmless credential verification."
+	credentialTestNoModelsMessage      = "The credentials work, but the account offers no models Evener can use. Check the subscription or plan."
 	credentialTestSupersededMessage    = "Credentials changed while this check was running. Refresh and check again."
 )
 
@@ -31,8 +32,8 @@ type credentialProbeClient interface {
 	// runCredentialTest validates an asserted endpoint fingerprint against it -
 	// not against the hub's own registry - because it is what the model-list
 	// call resolves the name through - and binds that same registry's state
-	// root to the request (see withScopedCodexAuth), so a client loaded from a
-	// custom root reads that root's Codex record.
+	// root to the request (see withScopedOAuthAuth), so a client loaded from a
+	// custom root reads that root's OAuth records.
 	Registry() *registry.Registry
 }
 
@@ -210,7 +211,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 		}
 	}
 
-	probeCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), credentialTestTimeout)
+	probeCtx, cancel := context.WithTimeout(withScopedOAuthAuth(ctx, client.Registry()), credentialTestTimeout)
 	defer cancel()
 	listing, err := client.Models(probeCtx, name)
 	// The probe read the credential this instance had when it started, and
@@ -231,6 +232,9 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 	}
 	if !listing.Live {
 		return credentialTestResponse(name, appwire.AuthTestStatusUnsupported, credentialTestUnsupportedMessage), nil
+	}
+	if !listing.Usable && client.Registry().LiveListingAuthoritative(name) {
+		return credentialTestResponse(name, appwire.AuthTestStatusUnsupported, credentialTestNoModelsMessage), nil
 	}
 	return credentialTestResponse(name, appwire.AuthTestStatusSuccess, credentialTestSuccessMessage), nil
 }

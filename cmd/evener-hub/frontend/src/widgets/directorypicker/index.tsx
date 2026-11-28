@@ -2,12 +2,21 @@ import { basename, childrenPrefix, friendlyErrorMessage, parentOf } from "@evene
 import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "../button";
-import { OverlayPanel } from "../dialog/OverlayPanel";
+import { Chevron } from "../chevron";
+import { Dialog } from "../dialog";
+import { Disclosure } from "../disclosure";
+import { EmptyState } from "../emptystate";
+import { InlineNotice } from "../inlinenotice";
 import { ownerDocumentOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
+import { useDirectoryListing } from "../internal/useDirectoryListing";
 import { usePortalDocument } from "../internal/usePortalDocument";
+import { ListRow } from "../listrow";
+import { Loader } from "../loader";
 import { ToolIcon } from "../toolicon";
 import styles from "./directorypicker.module.css";
+
+const EMPTY_FOLDERS_MESSAGE = "No subfolders to display.";
 
 export interface DirectoryPickerProps {
   value: string;
@@ -32,7 +41,8 @@ const CLASS = {
   input: requireClass(styles.input, "directorypicker.module.css", "input"),
   listHeading: requireClass(styles.listHeading, "directorypicker.module.css", "listHeading"),
   folders: requireClass(styles.folders, "directorypicker.module.css", "folders"),
-  row: requireClass(styles.row, "directorypicker.module.css", "row"),
+  rowGlyph: requireClass(styles.rowGlyph, "directorypicker.module.css", "rowGlyph"),
+  rowLabel: requireClass(styles.rowLabel, "directorypicker.module.css", "rowLabel"),
   path: requireClass(styles.path, "directorypicker.module.css", "path"),
   footer: requireClass(styles.footer, "directorypicker.module.css", "footer"),
   destination: requireClass(styles.destination, "directorypicker.module.css", "destination"),
@@ -61,14 +71,13 @@ export function DirectoryPicker({
   const [current, setCurrent] = useState(initialPath);
   const [typed, setTyped] = useState(initialPath);
   const [pathEdited, setPathEdited] = useState(false);
-  const [entries, setEntries] = useState<string[] | null>(null);
   const [initialCanonical, setInitialCanonical] = useState<{ id: number; path: string } | null>(null);
   const [validatedInput, setValidatedInput] = useState<string | null>(null);
-  const [recents, setRecents] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [earlierOpen, setEarlierOpen] = useState(false);
   const request = useRef(0);
   const mounted = useRef(true);
   const pathInput = useRef<HTMLInputElement>(null);
@@ -84,6 +93,12 @@ export function DirectoryPicker({
   // the shared portal seam re-renders before paint once it attaches.
   const hostRef = useRef<HTMLSpanElement>(null);
   const panelDocument = usePortalDocument(hostRef);
+  // Selection requires an existing directory, so the picker validates before
+  // asking for children; a listed directory's own failure renders in place of
+  // the list.
+  const listing = useDirectoryListing({ complete, listRecents, entriesOnError: "null" });
+  const { entries, recents } = listing;
+  const error = formError ?? listing.error;
 
   async function browse(path: string, preserveFocusedInput = false) {
     // Rows disappear during navigation. Keep focus on a persistent control
@@ -92,8 +107,8 @@ export function DirectoryPicker({
     const id = ++request.current;
     setPathEdited(false);
     setValidatedInput(null);
-    setEntries(null);
-    setError(null);
+    setFormError(null);
+    listing.invalidate();
     setCreating(false);
     try {
       const result = await validatePath(path.trim(), "dir");
@@ -101,7 +116,7 @@ export function DirectoryPicker({
       // Selection requires an existing directory; New folder explicitly creates
       // a child before it becomes a selectable destination.
       if (!result.valid) {
-        setError(result.error || "This path is not a directory.");
+        setFormError(result.error || "This path is not a directory.");
         return;
       }
       const canonical = result.path || path.trim();
@@ -111,10 +126,9 @@ export function DirectoryPicker({
       if (preserveFocusedInput) setInitialCanonical({ id, path: canonical });
       else setTyped(canonical);
       setValidatedInput(path);
-      const children = await complete(childrenPrefix(canonical), false);
-      if (mounted.current && request.current === id) setEntries(children);
+      listing.browse(childrenPrefix(canonical));
     } catch (err) {
-      if (mounted.current && request.current === id) setError(friendlyErrorMessage(err));
+      if (mounted.current && request.current === id) setFormError(friendlyErrorMessage(err));
     }
   }
 
@@ -125,12 +139,6 @@ export function DirectoryPicker({
   useEffect(() => {
     mounted.current = true;
     void browse(initialPath, true);
-    listRecents?.().then(
-      (paths) => {
-        if (mounted.current) setRecents([...new Set(paths)]);
-      },
-      () => {},
-    );
     return () => {
       mounted.current = false;
       request.current++;
@@ -178,23 +186,23 @@ export function DirectoryPicker({
     if (!ready) return;
     const name = folderName.trim();
     if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
-      setError("Enter a folder name without slashes.");
+      setFormError("Enter a folder name without slashes.");
       return;
     }
     const path = `${childrenPrefix(current)}${name}`;
     if (entries?.includes(path)) {
-      setError("A folder with this name already exists.");
+      setFormError("A folder with this name already exists.");
       return;
     }
     setBusy(true);
-    setError(null);
+    setFormError(null);
     try {
       await createDirectory(path);
       if (!mounted.current) return;
       // Creation is complete; browsing owns validation and listing independently.
       void browse(path);
     } catch (err) {
-      if (mounted.current) setError(friendlyErrorMessage(err));
+      if (mounted.current) setFormError(friendlyErrorMessage(err));
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -203,7 +211,7 @@ export function DirectoryPicker({
   // Built only when the portal renders: the first render exists to attach the
   // host marker, and constructing this tree there would throw it away.
   const renderPanel = () => (
-    <OverlayPanel
+    <Dialog
       open
       onClose={onClose}
       title="Choose directory"
@@ -232,23 +240,23 @@ export function DirectoryPicker({
         <aside className={CLASS.recents} aria-label={listRecents ? "Recent directories" : "Locations"}>
           {listRecents && <h3>Recent</h3>}
           {recents.map((path) => (
-            <button
-              className={CLASS.row}
-              type="button"
+            <ListRow
               key={path}
+              variant="plain"
+              label={basename(path) || "/"}
+              meta={parentOf(path)}
               // The sidebar truncates this text, so the full path rides on
               // hover for sighted users; aria-label already carries it for
               // assistive tech.
               title={path}
               disabled={busy}
               aria-label={`Open recent ${path}`}
-              onClick={() => void browse(path)}
-            >
-              <strong>{basename(path) || "/"}</strong>
-              <span className={CLASS.path}>{parentOf(path)}</span>
-            </button>
+              onSelect={() => void browse(path)}
+            />
           ))}
-          {listRecents && recents.length === 0 && <p className={CLASS.status}>No recent directories.</p>}
+          {listRecents && recents.length === 0 && (
+            <EmptyState title="No recent directories." size="compact" reason="empty" />
+          )}
           <h3>Locations</h3>
           <Button variant="quiet" disabled={busy} onClick={() => void browse("~")}>
             Home
@@ -262,21 +270,25 @@ export function DirectoryPicker({
               disabled={busy || current === "/"}
               onClick={() => void browse(parentOf(current))}
             >
-              ↑
+              <Chevron direction="up" />
             </Button>
             <nav className={CLASS.crumbs} aria-label="Directory breadcrumbs">
               <Button variant="quiet" disabled={busy} onClick={() => void browse("/")}>
                 /
               </Button>
               {crumbs.length > 3 && (
-                <details>
-                  <summary aria-label="Earlier directories">…</summary>
+                <Disclosure
+                  summary="…"
+                  summaryAriaLabel={() => "Earlier directories"}
+                  open={earlierOpen}
+                  onOpenChange={setEarlierOpen}
+                >
                   {crumbs.slice(0, -3).map((crumb) => (
                     <Button key={crumb.path} variant="quiet" disabled={busy} onClick={() => void browse(crumb.path)}>
                       {crumb.label}
                     </Button>
                   ))}
-                </details>
+                </Disclosure>
               )}
               {crumbs.slice(-3).map((crumb) => (
                 <Button variant="quiet" key={crumb.path} disabled={busy} onClick={() => void browse(crumb.path)}>
@@ -315,12 +327,12 @@ export function DirectoryPicker({
                 request.current++;
                 setTyped(event.target.value);
                 setPathEdited(true);
-                setEntries(null);
+                listing.invalidate();
                 setValidatedInput(null);
                 // Editing Path closes creation without moving focus away.
                 wasCreating.current = false;
                 setCreating(false);
-                setError(null);
+                setFormError(null);
               }}
             />
             <Button ref={goButton} variant="secondary" type="submit" disabled={busy || !typed.trim()}>
@@ -336,7 +348,7 @@ export function DirectoryPicker({
               onClick={() => {
                 setCreating(true);
                 setFolderName("");
-                setError(null);
+                setFormError(null);
               }}
             >
               New folder
@@ -360,7 +372,7 @@ export function DirectoryPicker({
                   disabled={busy}
                   onClick={() => {
                     setCreating(false);
-                    setError(null);
+                    setFormError(null);
                   }}
                 >
                   Cancel new folder
@@ -371,50 +383,49 @@ export function DirectoryPicker({
               </div>
             </form>
           )}
-          {error && (
-            <p className={CLASS.status} role="alert">
-              {error}
-            </p>
-          )}
+          {error && <InlineNotice tone="danger">{error}</InlineNotice>}
           <section
             className={CLASS.folders}
             aria-label="Folders"
             aria-busy={!pathEdited && entries === null && error === null}
           >
+            <div role="status" data-state={entries !== null && entries.length === 0 ? "empty" : undefined}>
+              {entries !== null && entries.length === 0 && (
+                <EmptyState title={EMPTY_FOLDERS_MESSAGE} size="compact" reason="empty" />
+              )}
+            </div>
             {pathEdited ? (
               <p className={CLASS.status} role="status" data-state="edited">
                 Press Go to browse this path.
               </p>
             ) : entries === null ? (
-              !error && (
-                <p className={CLASS.status} role="status" data-state="loading">
-                  Loading directories…
-                </p>
-              )
-            ) : entries.length === 0 ? (
-              <p className={CLASS.status} role="status" data-state="empty">
-                No subfolders to display.
-              </p>
+              !error && <Loader label="Loading directories…" />
             ) : (
+              entries.length > 0 &&
               entries.map((path) => (
-                <button
-                  type="button"
-                  className={CLASS.row}
-                  disabled={busy}
-                  aria-label={`Open ${path}`}
+                <ListRow
                   key={path}
-                  onClick={() => void browse(path)}
-                >
-                  <DirectoryIcon />
-                  <span>{basename(path)}</span>
-                  <span aria-hidden="true">›</span>
-                </button>
+                  variant="plain"
+                  leading={
+                    <span className={CLASS.rowGlyph}>
+                      <DirectoryIcon />
+                    </span>
+                  }
+                  label={<span className={CLASS.rowLabel}>{basename(path)}</span>}
+                  // The drill glyph is row content: ListRow's trailing slot is
+                  // for a real control, and a decorative mark there would sit
+                  // outside the row's single click target.
+                  value={<Chevron direction="right" />}
+                  aria-label={`Open ${path}`}
+                  disabled={busy}
+                  onSelect={() => void browse(path)}
+                />
               ))
             )}
           </section>
         </div>
       </div>
-    </OverlayPanel>
+    </Dialog>
   );
 
   return (

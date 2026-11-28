@@ -57,11 +57,11 @@ function levelSection(entries: Entry[]): NativeStackHeaderItemMenuSubmenu {
 }
 
 describe("the Session's ⋯ menu (spec 8.1)", () => {
-	it("is one menu under the ellipsis.circle symbol, labelled Session actions", () => {
+	it("is one menu under the ellipsis symbol, labelled Session actions", () => {
 		const item = only(menu().items);
 		expect(item.label).toMatch(/\S/);
 		expect(item.accessibilityLabel).toBe(item.label);
-		expect(item.icon).toEqual({ type: "sfSymbol", name: "ellipsis.circle" });
+		expect(item.icon).toEqual({ type: "sfSymbol", name: "ellipsis" });
 	});
 
 	it("lists every item in order when every condition holds", () => {

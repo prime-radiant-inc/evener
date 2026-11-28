@@ -74,10 +74,9 @@ func TestDelegateRuntimeReclaim_RefusesSubtreeUnderLaneHandoff(t *testing.T) {
 	}
 }
 
-// TestSubtreeLaneHandoffAllowsReclaimingClose covers the other side: a
-// capacity reclamation keeps c.reclaiming set across its terminal teardowns,
-// and the evicted coordinator's own close-time lane cleanup must still acquire
-// the handoff for its child lanes. Independent handoffs are refused later by
+// TestSubtreeLaneHandoffAllowsReclaimingClose covers the other side: while a
+// reclamation claim is held, a session close racing it must still acquire the
+// handoff for its own child lanes. Independent handoffs are refused later by
 // the quiescence snapshot, which still sees the claim as active.
 func TestSubtreeLaneHandoffAllowsReclaimingClose(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
@@ -98,11 +97,12 @@ func TestSubtreeLaneHandoffAllowsReclaimingClose(t *testing.T) {
 	c.mu.Unlock()
 }
 
-// TestCapacityReclaimUnlocksKeptChildLane covers the full path the fence
-// exception exists for: capacity eviction tears down a coordinator whose
-// close-time lane cleanup must still unlock a dirty child lane while the
-// subtree is marked reclaiming.
-func TestCapacityReclaimUnlocksKeptChildLane(t *testing.T) {
+// TestCapacityReclaimKeepsChildLaneLocked covers the residency-only contract on
+// a real isolation lane: capacity reclamation releases the runtime without
+// touching the delegate's lane. The lane stays registered and locked with its
+// dirty contents intact, because the delegate it belongs to is still resumable
+// and its next cold restore runs in that lane.
+func TestCapacityReclaimKeepsChildLaneLocked(t *testing.T) {
 	r := newWorktreeRepo(t)
 	childID, lanePath, _ := r.seedIsolationLane(t)
 	const parentID = "dlg_parent_reclaim"
@@ -135,14 +135,20 @@ func TestCapacityReclaimUnlocksKeptChildLane(t *testing.T) {
 	seedDelegateReclaimRuntimeSession(t, c, parentID, "", time.Unix(20, 0).UTC(), false, false, parentSess)
 	c.maxRetainedTerminal = 1
 
+	if registered, locked, reason := r.laneLocked(t, lanePath); !registered || !locked {
+		t.Fatalf("fixture: child lane registered=%t locked=%t (%q) before reclamation", registered, locked, reason)
+	}
 	if err := r.s.reclaimDelegateRuntimeCapacity(1); err != nil {
 		t.Fatalf("reclaim capacity: %v", err)
 	}
-	if _, locked, reason := r.laneLocked(t, lanePath); locked {
-		t.Fatalf("kept child lane stayed locked with %q after the coordinator's close-time cleanup", reason)
+	if registered, locked, reason := r.laneLocked(t, lanePath); !registered || !locked {
+		t.Fatalf("residency-only reclamation deregistered or unlocked the kept child lane (registered=%t locked=%t, %q)", registered, locked, reason)
 	}
 	if _, err := os.Stat(lanePath); err != nil {
 		t.Fatalf("dirty child lane was removed instead of kept: %v", err)
+	}
+	if aggregate := delegateAggregateSnapshot(t, c, childID); !aggregate.Resumable {
+		t.Fatalf("child delegate lost resumability across reclamation: %+v", aggregate)
 	}
 }
 
@@ -174,7 +180,7 @@ func TestDelegateRuntimeReclaim_SubtreeWithANeverRunMemberIsRefused(t *testing.T
 	}
 }
 
-func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
+func TestDelegateRuntimeReclaim_ReleasesPostorderAfterUnlock(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	c.maxRetainedTerminal = 2
 	parent := seedDelegateReclaimRuntime(t, c, "dlg_parent", "", time.Unix(10, 0).UTC(), false, false)
@@ -626,22 +632,37 @@ func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
 func claimSettledIdleSubtree(t *testing.T, tree *delegateTreeController, delegateID string, members ...*Session) *delegateRuntimeReclamationClaim {
 	t.Helper()
 	var claim *delegateRuntimeReclamationClaim
-	testwait.Until(t, "subtree of "+delegateID+" to settle with no delegate attention owed", func() bool {
+	testwait.UntilSeen(t, "subtree of "+delegateID+" to settle with no delegate attention owed", func() (bool, string) {
+		// One pass over the members, so the detail describes the reads that
+		// blocked this poll rather than a later observation of them. An input
+		// in flight holds the claim too, so it counts as unsettled here instead
+		// of being discovered by a refused claim.
+		var blocked []string
 		for _, member := range members {
 			owed, err := member.pendingDelegateAttentionIDs()
 			if err != nil {
 				t.Fatalf("pendingDelegateAttentionIDs(%s): %v", member.id, err)
 			}
-			if len(owed) != 0 || !member.idleReleasePregatesClear() {
-				return false
+			pregates := member.idleReleasePregatesClear()
+			inputs := member.inputsInFlight.Load()
+			if len(owed) == 0 && pregates && inputs == 0 {
+				continue
 			}
+			blocked = append(blocked, fmt.Sprintf("%s owed=%v pregatesClear=%v inputsInFlight=%d",
+				member.id, owed, pregates, inputs))
+		}
+		if len(blocked) != 0 {
+			return false, strings.Join(blocked, "; ")
 		}
 		var err error
 		claim, _, err = tree.ClaimIdleRuntimeRelease(delegateID)
 		if err != nil {
 			t.Fatalf("ClaimIdleRuntimeRelease: %v", err)
 		}
-		return claim != nil
+		if claim != nil {
+			return true, ""
+		}
+		return false, "every member settled, so the release claim itself was refused"
 	})
 	return claim
 }
@@ -676,33 +697,29 @@ func driveWideSubtreeIdleRelease(t *testing.T, wideChildren, limit int, parkDead
 
 	workspace := t.TempDir()
 	// The adapter scripts the parent's turn as ONE response carrying
-	// every delegate spawn; each later step is an identical finish. The
-	// spawns all fire inside the parent's first turn, so the tree's SHAPE
-	// is fixed before any follow-up call happens: the parent's post-tool
-	// call and each child's first call consume the interchangeable finish
-	// steps in whatever global order they race, and each ends its
-	// member's turn. Spawning from a finished parent is not an option
-	// (its lease is spent), and spawning one-at-a-time across turns lets
-	// the parent eat a child's finish step — the one-response spawn wave
-	// avoids both.
-	steps := []func(req llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			calls := make([]llm.ToolCallData, wideChildren)
-			for i := range calls {
-				calls[i] = llm.ToolCallData{
-					ID:        fmt.Sprintf("call_spawn_child_%d", i),
-					Name:      "delegate",
-					Arguments: json.RawMessage(`{"prompt":"wide child sentinel task","delegation_allowance":0}`),
-					Type:      "function",
-				}
+	// every delegate spawn. The spawns all fire inside the parent's first
+	// turn, so the tree's SHAPE is fixed before any follow-up call
+	// happens. Every later turn is answered by executionAdapter's
+	// exhausted-script fallback, a terminal communicate: the parent's
+	// post-tool call and each child's first call end their member's turn
+	// in whatever global order they race, and a wake that presents a
+	// report ends it with a result tool call rather than bare text.
+	// Spawning from a finished parent is not an option (its lease is
+	// spent), and spawning one-at-a-time across turns lets the parent eat
+	// a child's finish — the one-response spawn wave avoids both.
+	adapter := &executionAdapter{}
+	adapter.script(func(context.Context) (llm.Response, error) {
+		calls := make([]llm.ToolCallData, wideChildren)
+		for i := range calls {
+			calls[i] = llm.ToolCallData{
+				ID:        fmt.Sprintf("call_spawn_child_%d", i),
+				Name:      "delegate",
+				Arguments: json.RawMessage(`{"prompt":"wide child sentinel task","delegation_allowance":0}`),
+				Type:      "function",
 			}
-			return agenttest.ToolCallResponse(calls...)
-		},
-	}
-	for range wideChildren + 1 {
-		steps = append(steps, func(llm.Request) llm.Response { return agenttest.FinalResponse("member done") })
-	}
-	adapter := newFakeAdapter("openai", steps...)
+		}
+		return agenttest.ToolCallResponse(calls...), nil
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))
@@ -1546,11 +1563,10 @@ func TestDelegateIdleRelease_FiredArmIsNeverInstalled(t *testing.T) {
 
 // TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue: the idle
 // release pre-gate must refuse on the same session-local residue retirement
-// refuses on — a delegate-delivery parcel the pump has not consumed, restore
-// side effects still settling on the manager's children, and a manager that
-// has begun closing — because a teardown through any of them would abandon
-// work mid-flight. Each refusal re-arms the retry, so the settled runtime
-// still releases through the timer, never through a forced teardown.
+// refuses on — a delegate-delivery parcel the pump has not consumed and a
+// manager that has begun closing — because a teardown through either would
+// abandon work mid-flight. Each refusal re-arms the retry, so the settled
+// runtime still releases through the timer, never through a forced teardown.
 func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) {
 	t.Parallel()
 	workspace := t.TempDir()
@@ -1616,21 +1632,7 @@ func TestDelegateIdleRelease_PregateRefusesLocalRetirementResidue(t *testing.T) 
 	runtime.pendingDelegateDeliveries = nil
 	runtime.delegateDeliveryMu.Unlock()
 
-	// Residue 2: restore side effects still settling on this manager.
-	runtime.subagents.mu.Lock()
-	runtime.subagents.activeRestoreSideEffects++
-	runtime.subagents.mu.Unlock()
-	if runtime.releaseIdleRuntimeAfterFinalize() {
-		t.Fatal("release succeeded with restore side effects settling; the pre-gate must refuse")
-	}
-	if !stillResident() {
-		t.Fatal("refused release released the runtime anyway")
-	}
-	runtime.subagents.mu.Lock()
-	runtime.subagents.activeRestoreSideEffects--
-	runtime.subagents.mu.Unlock()
-
-	// Residue 3: the manager has begun closing.
+	// Residue 2: the manager has begun closing.
 	runtime.subagents.mu.Lock()
 	runtime.subagents.closing = true
 	runtime.subagents.mu.Unlock()

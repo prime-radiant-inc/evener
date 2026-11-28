@@ -112,7 +112,7 @@ func (a *activityRelayAdapter) Complete(ctx context.Context, req llm.Request) (l
 		case <-ctx.Done():
 			return llm.Response{}, ctx.Err()
 		}
-		return activityRelayTool("communicate", map[string]any{"message": "activity producer delivery", "end_turn": false}), nil
+		return activityRelayTool("communicate", map[string]any{"message": "activity producer delivery", "next": "send_and_continue"}), nil
 	}
 	<-ctx.Done()
 	return llm.Response{}, ctx.Err()
@@ -373,14 +373,14 @@ func testSessionActivityRelay(t *testing.T, checkpoint func(activityRelayFixture
 	if err != nil {
 		t.Fatal(err)
 	}
-	projection, err := buildNavigationProjection(navigation.Inputs)
+	projection, err := buildNavigationProjection(t.Context(), navigation.Inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rootFound := false
 	for _, project := range navigation.Inputs.Tree.Projects {
 		for _, tier := range []string{"current", "recent", "archived"} {
-			page, err := projection.ProjectPage(project.Key, tier, 0, 0)
+			page, err := projection.ProjectPage("", project.Key, tier, 0, 0)
 			if err != nil {
 				t.Fatal(err)
 			}

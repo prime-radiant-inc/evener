@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
@@ -221,7 +222,7 @@ func TestDegradedDelegateSpawnFailureReleasesItsScratchLease(t *testing.T) {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
-			sandboxProber:       sandbox.FakeProber{Facts: sbxNoBackendFacts(home)},
+			sandboxProber:       sandboxtest.FakeProber{Facts: sbxNoBackendFacts(home)},
 			childClientFactory:  func() *llm.Client { return nil },
 		},
 	}))
@@ -461,7 +462,7 @@ func newNoBackendDelegateSession(t *testing.T) *Session {
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
-			sandboxProber:       sandbox.FakeProber{Facts: sbxNoBackendFacts(t.TempDir())},
+			sandboxProber:       sandboxtest.FakeProber{Facts: sbxNoBackendFacts(t.TempDir())},
 		},
 	})
 	if err != nil {

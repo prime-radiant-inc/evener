@@ -21,8 +21,8 @@ func TestNewWriterEmitsFormatVersionTwoAndSemanticEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("hello")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -95,8 +95,8 @@ func TestOpenWriterToleratesOnlyIncompleteFinalLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok"))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("ok")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -150,7 +150,7 @@ func TestTranscriptAuthorshipStrictRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(turn); err != nil {
+	if _, err := w.Record(turn, RecordOptions{Door: DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -199,11 +199,11 @@ func TestResumeWriter_BlankLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.Message{
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.Message{
 		Role:    llm.RoleUser,
 		Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hello"}},
-	})); err != nil {
-		t.Fatalf("Append: %v", err)
+	}), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"maps"
 	"reflect"
 	"regexp"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/modelavailability"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -106,7 +108,7 @@ func TestSchemaWaitKnobs(t *testing.T) {
 		name string
 		def  func() map[string]any
 	}{
-		{"delegate", func() map[string]any { return DefDelegate(nil).Parameters }},
+		{"delegate", func() map[string]any { return DefDelegate().Parameters }},
 		{"shell", func() map[string]any { return DefShell().Parameters }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,11 +177,27 @@ func TestDefShellHasExecutionMode(t *testing.T) {
 	if _, exists := props["background"]; exists {
 		t.Fatal("legacy background property is still exposed")
 	}
+
+	noDetachProps := DefShellWithDetach(false).Parameters["properties"].(map[string]any)
+	noDetachMode, ok := noDetachProps["mode"].(map[string]any)
+	if !ok {
+		t.Fatal("DefShellWithDetach(false) missing mode property")
+	}
+	wantNoDetach := []any{"foreground", "background"}
+	if got := noDetachMode["enum"]; !reflect.DeepEqual(got, wantNoDetach) {
+		t.Fatalf("DefShellWithDetach(false) mode enum = %#v, want %#v", got, wantNoDetach)
+	}
+	if desc, _ := noDetachMode["description"].(string); strings.TrimSpace(desc) == "" {
+		t.Fatal("DefShellWithDetach(false) mode description is empty")
+	}
 }
 
 func TestDefDelegateParamsAndEnum(t *testing.T) {
 	agentTypes := []string{"explorer", "implementer"}
-	def := DefDelegate(agentTypes)
+	def := DefDelegateWithResultTool(agentTypes, DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	}, DefaultResultToolName)
 	if def.Name != "delegate" {
 		t.Fatalf("name = %q, want delegate", def.Name)
 	}
@@ -241,7 +259,7 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 // schema shape the whole job-control surface follows — type integer, no
 // minimum/maximum/default keywords (absent/0 = no grant).
 func TestDefDelegateHasDelegationAllowance(t *testing.T) {
-	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	props := DefDelegate().Parameters["properties"].(map[string]any)
 	da, ok := props["delegation_allowance"]
 	if !ok {
 		t.Fatalf("DefDelegate missing param delegation_allowance")
@@ -265,7 +283,10 @@ func TestDefDelegateHasDelegationAllowance(t *testing.T) {
 }
 
 func TestDefDelegateHasWatchParent(t *testing.T) {
-	def := DefDelegate([]string{"subagent"})
+	def := DefDelegateWithResultTool([]string{"subagent"}, DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	}, DefaultResultToolName)
 	props := def.Parameters["properties"].(map[string]any)
 	watchParent, ok := props["watch_parent"].(map[string]any)
 	if !ok {
@@ -274,7 +295,10 @@ func TestDefDelegateHasWatchParent(t *testing.T) {
 	if got, _ := watchParent["type"].(string); got != "boolean" {
 		t.Fatalf("watch_parent type = %q, want boolean", got)
 	}
-	for _, want := range []string{"watch_parent=true", "job_watch(source=\"parent\")", "communicate(end_turn=true)"} {
+	if desc, _ := watchParent["description"].(string); strings.TrimSpace(desc) == "" {
+		t.Fatal("watch_parent description is empty")
+	}
+	for _, want := range []string{"watch_parent=true", "next=\"send_and_end_turn\"", "next=\"log_quietly_and_end_turn\""} {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("delegate description = %q, want %q", def.Description, want)
 		}
@@ -286,7 +310,7 @@ func TestDefDelegateHasWatchParent(t *testing.T) {
 // documenting the no-escalation floor (you may only pick a box at least as
 // restrictive as your own) so the model self-selects a legal request.
 func TestDefDelegateHasSandboxParams(t *testing.T) {
-	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	props := DefDelegate().Parameters["properties"].(map[string]any)
 
 	sb, ok := props["sandbox"].(map[string]any)
 	if !ok {
@@ -327,13 +351,13 @@ func TestDefDelegateHasSandboxParams(t *testing.T) {
 	if _, hasNet := props["sandbox_net"]; hasNet {
 		t.Fatal("DefDelegate must not expose a separate sandbox_net param")
 	}
-	if _, hasOneOf := DefDelegate(nil).Parameters["oneOf"]; hasOneOf {
+	if _, hasOneOf := DefDelegate().Parameters["oneOf"]; hasOneOf {
 		t.Fatal("DefDelegate must not carry a oneOf constraint")
 	}
 }
 
 func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
-	def := DefDelegate(nil)
+	def := DefDelegate()
 	props := def.Parameters["properties"].(map[string]any)
 	at := props["agent_type"].(map[string]any)
 	if _, ok := at["enum"]; ok {
@@ -342,7 +366,7 @@ func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
 }
 
 func TestDefDelegateResultSchemaDescriptionIncludesResumeFailureShape(t *testing.T) {
-	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	props := DefDelegate().Parameters["properties"].(map[string]any)
 	desc := props["result_schema"].(map[string]any)["description"].(string)
 	for _, want := range []string{"resumed", "structured_result", "structured_result_reason"} {
 		if !strings.Contains(desc, want) {
@@ -375,8 +399,12 @@ func TestDefDelegateSendShape(t *testing.T) {
 	if _, ok := props["on_idle"]; ok {
 		t.Fatalf("delegate_send must not expose on_idle")
 	}
-	if !strings.Contains(def.Description, "started/resumed automatically") {
-		t.Fatalf("delegate_send description must explain automatic idle restart: %q", def.Description)
+	if !strings.Contains(def.Description, "dlg_...") {
+		t.Fatalf("delegate_send description must name dlg_... target format: %q", def.Description)
+	}
+	renamed := DefDelegateSendNamed("submit_report")
+	if !strings.Contains(renamed.Description, "submit_report") || strings.Contains(renamed.Description, DefaultResultToolName) {
+		t.Fatalf("DefDelegateSendNamed did not propagate result tool name: %q", renamed.Description)
 	}
 	combined := def.Description + "\n" + props["to"].(map[string]any)["description"].(string)
 	for _, banned := range []string{"job_send_message", "watched", "main"} {
@@ -416,7 +444,7 @@ func TestDefTaskListEffortEnumIncludesInherit(t *testing.T) {
 // A schema narrower than the handler rejected a spawn at "max" at argument
 // validation even though createDelegate validates against the full vocabulary.
 func TestDefDelegateEffortEnumMatchesHandlerVocabulary(t *testing.T) {
-	def := DefDelegate(nil)
+	def := DefDelegate()
 	props := def.Parameters["properties"].(map[string]any)
 	want := llm.AcceptedReasoningEfforts()
 
@@ -591,9 +619,168 @@ func TestOptionalJobInspectionToolsAreNonStrict(t *testing.T) {
 	}
 }
 
+// TestDefCommunicateSchemaNextEnumSurface pins the unified communicate schema:
+// message (required), next (optional enum defaulting to send_and_end_turn), and
+// output (optional), while end_turn and end_reason are gone. Every calling
+// convention the runtime accepts (reply, progress update, quiet wait/ack) must
+// pass JSON-schema validation, while {} and unknown/wrongly typed arguments
+// argument must not.
+func TestDefCommunicateSchemaNextEnumSurface(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		def  llm.ToolDefinition
+	}{
+		{name: "default name", def: DefCommunicate()},
+		{name: "renamed", def: DefCommunicateNamed("submit_report")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			def := tc.def
+			if def.Strict == nil || *def.Strict {
+				t.Fatalf("Strict = %v, want an explicit false so optional properties stay optional", def.Strict)
+			}
+			if got := def.Parameters["type"]; got != "object" {
+				t.Fatalf("parameters.type = %v, want object", got)
+			}
+			if got := def.Parameters["additionalProperties"]; got != false {
+				t.Fatalf("parameters.additionalProperties = %v, want false", got)
+			}
+			props, ok := def.Parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("parameters.properties = %T, want map[string]any", def.Parameters["properties"])
+			}
+			if got, want := slices.Sorted(maps.Keys(props)), []string{"message", "next", "output"}; !slices.Equal(got, want) {
+				t.Fatalf("properties = %v, want %v (no end_turn or end_reason)", got, want)
+			}
+
+			nextProp, _ := props["next"].(map[string]any)
+			if nextProp["type"] != "string" {
+				t.Errorf("next.type = %v, want string", nextProp["type"])
+			}
+			if nextProp["default"] != CommunicateNextSendAndEndTurn {
+				t.Errorf("next.default = %v, want %q", nextProp["default"], CommunicateNextSendAndEndTurn)
+			}
+			wantNextEnum := []string{CommunicateNextSendAndEndTurn, CommunicateNextSendAndContinue, CommunicateNextLogQuietlyAndEndTurn}
+			if nextEnum, _ := nextProp["enum"].([]string); !slices.Equal(nextEnum, wantNextEnum) {
+				t.Errorf("next.enum = %v, want %v", nextEnum, wantNextEnum)
+			}
+
+			output, _ := props["output"].(map[string]any)
+			if output["type"] != "object" {
+				t.Errorf("output.type = %v, want object", output["type"])
+			}
+			if output["additionalProperties"] != false {
+				t.Errorf("output.additionalProperties = %v, want false", output["additionalProperties"])
+			}
+			outProps, _ := output["properties"].(map[string]any)
+			if got, want := slices.Sorted(maps.Keys(outProps)), []string{"artifacts", "data", "message"}; !slices.Equal(got, want) {
+				t.Errorf("output.properties = %v, want %v", got, want)
+			}
+			if req := schemaRequiredNames(output); len(req) > 0 {
+				t.Errorf("output.required = %v, want none so an empty output envelope validates", req)
+			}
+			if req := schemaRequiredNames(def.Parameters); !slices.Equal(req, []string{"message"}) {
+				t.Errorf("top-level required = %v, want [message]", req)
+			}
+
+			schema, err := compileSchema(def.Parameters)
+			if err != nil {
+				t.Fatalf("compile parameters: %v", err)
+			}
+			for _, args := range []map[string]any{
+				{"message": "hi"},
+				{"message": "hi", "next": CommunicateNextSendAndContinue},
+				{"message": "hi", "next": CommunicateNextSendAndEndTurn},
+				{"message": "waiting on go test", "next": CommunicateNextLogQuietlyAndEndTurn},
+				{"message": "hi", "output": map[string]any{"data": map[string]any{"k": 1}}},
+				{"message": "hi", "output": map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}}},
+			} {
+				if err := schema.Validate(args); err != nil {
+					t.Errorf("valid call %v rejected: %v", args, err)
+				}
+			}
+			for _, args := range []map[string]any{
+				{},
+				{"output": map[string]any{}},
+				{"message": "hi", "end_turn": true},
+				{"message": "hi", "end_reason": "done"},
+				{"message": "hi", "next": "invalid"},
+				{"message": 3},
+				{"message": "hi", "next": true},
+				{"output": "nope"},
+				{"output": map[string]any{"artifacts": []any{1}}},
+			} {
+				if err := schema.Validate(args); err == nil {
+					t.Errorf("invalid call %v accepted", args)
+				}
+			}
+		})
+	}
+}
+
+// TestWithCommunicateDelegateUpdatesClonesWithoutMutatingBase verifies that
+// delegate adaptation clones the schema maps without mutating the caller's
+// definition and preserves the next enum/default and output schema.
+func TestWithCommunicateDelegateUpdatesClonesWithoutMutatingBase(t *testing.T) {
+	base := DefCommunicate()
+	origBaseDesc := base.Description
+	origBaseNextDesc := base.Parameters["properties"].(map[string]any)["next"].(map[string]any)["description"].(string)
+	origBaseMsgDesc := base.Parameters["properties"].(map[string]any)["message"].(map[string]any)["description"].(string)
+
+	dlg := WithCommunicateDelegateUpdates(base)
+
+	if base.Description != origBaseDesc {
+		t.Fatalf("WithCommunicateDelegateUpdates mutated caller description")
+	}
+	baseProps := base.Parameters["properties"].(map[string]any)
+	if got := baseProps["next"].(map[string]any)["description"].(string); got != origBaseNextDesc {
+		t.Fatalf("WithCommunicateDelegateUpdates mutated caller next.description")
+	}
+	if got := baseProps["message"].(map[string]any)["description"].(string); got != origBaseMsgDesc {
+		t.Fatalf("WithCommunicateDelegateUpdates mutated caller message.description")
+	}
+	if dlg.Description == "" || dlg.Description == base.Description {
+		t.Fatalf("WithCommunicateDelegateUpdates did not adapt tool description: %q", dlg.Description)
+	}
+	dlgProps := dlg.Parameters["properties"].(map[string]any)
+	dlgNext := dlgProps["next"].(map[string]any)
+	if dlgNext["default"] != CommunicateNextSendAndEndTurn {
+		t.Errorf("delegate next.default = %v, want %q", dlgNext["default"], CommunicateNextSendAndEndTurn)
+	}
+	if nextEnum, _ := dlgNext["enum"].([]string); !slices.Equal(nextEnum, schema.CommunicateNextValues) {
+		t.Errorf("delegate next.enum = %v, want %v", nextEnum, schema.CommunicateNextValues)
+	}
+	if !reflect.DeepEqual(dlgProps["output"], baseProps["output"]) {
+		t.Errorf("delegate output schema drifted from base")
+	}
+}
+
+// schemaRequiredNames reads a schema's required list as []string, treating a
+// missing or null entry as none. Schemas built in Go hold []string while a
+// JSON round-tripped one holds []any.
+func schemaRequiredNames(schema map[string]any) []string {
+	raw, ok := schema["required"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return []string{fmt.Sprintf("%v", v)}
+	}
+}
+
 func TestJobListDescriptionKeepsObserverCommunicateGuidance(t *testing.T) {
 	def := DefJobList()
-	if !strings.Contains(def.Description, "communicate(end_turn=true)") {
+	if !strings.Contains(def.Description, `next="send_and_end_turn"`) {
 		t.Fatalf("%s description = %q, want observer sidecar communicate report path", def.Name, def.Description)
 	}
 	if !strings.Contains(def.Description, "audit or diagnosis") {
@@ -620,7 +807,7 @@ func TestDefJobWatchRequiresOperationAndWatchIDForClear(t *testing.T) {
 
 func TestDefJobWatchDescriptionIncludesImplicitDeliveryContract(t *testing.T) {
 	def := DefJobWatch([]string{"communicate"})
-	for _, want := range []string{"source you can observe", "`dlg_...`", "Delivery is implicit", "communicate(end_turn=true)"} {
+	for _, want := range []string{"source you can observe", "`dlg_...`", "Delivery is implicit", `next="send_and_end_turn"`, `next="log_quietly_and_end_turn"`} {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("job_watch description = %q, want %q", def.Description, want)
 		}
@@ -804,8 +991,7 @@ func TestDefManageWorktreeShape(t *testing.T) {
 }
 
 // TestDefManageWorktreeDescriptionCarriesUsagePolicy asserts the description
-// carries spec §2's usage-policy paragraph: worktrees are for isolated,
-// parallel, or risky work, not ordinary branch creation/switching.
+// states worktrees are for isolated, parallel, or risky work.
 func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
 	def := DefManageWorktree()
 	desc := strings.ToLower(def.Description)
@@ -814,12 +1000,6 @@ func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
 		if !strings.Contains(desc, phrase) {
 			t.Errorf("description missing usage-policy phrase %q; got: %s", phrase, def.Description)
 		}
-	}
-	if !strings.Contains(desc, "not") || !strings.Contains(desc, "ordinary") {
-		t.Errorf("description must say this is not for ordinary branch work; got: %s", def.Description)
-	}
-	if !strings.Contains(desc, "plain git") && !strings.Contains(desc, "git commands") {
-		t.Errorf("description must point to plain git commands for ordinary branch work; got: %s", def.Description)
 	}
 }
 
@@ -878,8 +1058,9 @@ func TestDefAskUserSchema(t *testing.T) {
 // parameter (0-10, default 0) so the model can request surrounding lines, per
 // the contract-surface rule that a new model-facing param is documented in the
 // same commit that adds it.
-// TestDefReadFileSliceParamsDocumented pins the offset/limit prose: offset is
-// a 1-based start line, limit is a line count, and the default limit is 2000
+// TestDefReadFileSliceParamsDocumented pins the offset/limit semantics: offset
+// is a 1-based start line that also accepts negative tail reads, and limit
+// defaults to DefaultReadLines lines with limit=1 returning a single long line uncut
 // (matching LocalExecutionEnvironment.ReadFile's actual defaults).
 func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	def := DefReadFile()
@@ -897,14 +1078,58 @@ func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	}
 	offsetDesc, _ := offset["description"].(string)
 	limitDesc, _ := limit["description"].(string)
-	if !strings.Contains(offsetDesc, "1-based") {
-		t.Errorf("offset description should document it's a 1-based start line, got: %q", offsetDesc)
+	if !strings.Contains(offsetDesc, "1-based") || !strings.Contains(offsetDesc, "negative") {
+		t.Errorf("offset description should document a 1-based start line and negative tail reads, got: %q", offsetDesc)
 	}
-	if !strings.Contains(limitDesc, "line count") {
-		t.Errorf("limit description should document it's a line count, got: %q", limitDesc)
+	if !descriptionMentions(limitDesc, 2000) || !descriptionMentions(limitDesc, execenv.DefaultReadLines) || !strings.Contains(limitDesc, "48 KB") || !strings.Contains(limitDesc, "uncut") {
+		t.Errorf("limit description should document the default of %d (~48 KB cap) and the limit=1 uncut escape, got: %q", execenv.DefaultReadLines, limitDesc)
 	}
-	if !strings.Contains(limitDesc, "2000") {
-		t.Errorf("limit description should document the default of 2000, got: %q", limitDesc)
+}
+
+// TestDefReadFileVariantsExposeSharedParameters pins the one shared schema
+// contract across all three vision regimes and memory_read: every variant
+// carries file_path, offset, limit, and pages with a non-empty description, so
+// a session can pass a PDF page selector no matter which regime it selected.
+// vision_prompt presence follows the regime, and memory_read keeps scope.
+func TestDefReadFileVariantsExposeSharedParameters(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		def        llm.ToolDefinition
+		wantVision bool
+	}{
+		{"read_file", DefReadFile(), true},
+		{"read_file-native-vision", DefReadFileNativeVision(), false},
+		{"read_file-pdf-vision-only", DefReadFilePDFVisionOnly(), true},
+		{"memory_read", DefMemoryRead(), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if tc.def.Parameters["additionalProperties"] != false {
+				t.Fatalf("%s additionalProperties = %v, want false", tc.name, tc.def.Parameters["additionalProperties"])
+			}
+			required(t, tc.def, tc.name, []string{"file_path"})
+			props, ok := tc.def.Parameters["properties"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s properties = %T, want map[string]any", tc.name, tc.def.Parameters["properties"])
+			}
+			for _, paramName := range []string{"file_path", "offset", "limit", "pages"} {
+				param, ok := props[paramName].(map[string]any)
+				if !ok {
+					t.Fatalf("%s missing the %q property", tc.name, paramName)
+				}
+				desc, _ := param["description"].(string)
+				if strings.TrimSpace(desc) == "" {
+					t.Errorf("%s %q carries no description", tc.name, paramName)
+				}
+			}
+			if _, hasVision := props["vision_prompt"]; hasVision != tc.wantVision {
+				t.Errorf("%s vision_prompt present = %v, want %v", tc.name, hasVision, tc.wantVision)
+			}
+			if tc.name == "memory_read" {
+				required(t, tc.def, tc.name, []string{"scope"})
+			}
+		})
 	}
 }
 
@@ -997,10 +1222,7 @@ func TestDefGrepMaxResultsParam(t *testing.T) {
 	// Pin the default the way TestDefGrepContextLinesParam pins its range
 	// and default. Deriving the pin from
 	// execenv.DefaultGrepMaxResults — the constant every implementation site
-	// shares — keeps the advertised prose from drifting off the enforced
-	// default. The cap's own wording is prompt prose: it is pinned whole, as
-	// the memory_search description built from DefGrep, by the memoryprompt
-	// goldens, and never by substring here.
+	// shares — keeps the advertised default from drifting off the enforced one.
 	if !descriptionMentions(desc, execenv.DefaultGrepMaxResults) {
 		t.Errorf("max_results description should document the default of %d, got: %q", execenv.DefaultGrepMaxResults, desc)
 	}
@@ -1057,11 +1279,11 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 	defs := []llm.ToolDefinition{
 		DefReadFile(), DefWriteFile(), DefListDir(), DefEditFile(), DefShell(),
-		DefDelegate(nil), DefDelegateWithSandbox(nil, DelegateSandboxSchema{}),
+		DefDelegate(), DefDelegateWithResultTool(nil, DelegateSandboxSchema{}, DefaultResultToolName),
 		DefDelegateSend(), DefModelList(), DefJobWatch(nil),
 		DefJobStatus(), DefJobList(), DefJobStop(), DefGrep(), DefGlob(),
-		DefApplyPatch(), DefWebFetch(), DefWebSearch(), DefCommunicate(),
-		DefTaskList(nil), DefUseSkill(), DefFindSessionTranscripts(),
+		DefApplyPatch(), DefWebFetch(), DefCommunicate(),
+		DefTaskList(nil), DefUseSkill(), DefFindSessionTranscripts(), DefMemoryEdit(),
 		DefDoctorEvener(), DefManageWorktree(), DefManageWorktreeDisposeOnly(),
 		DefReadTranscript(), DefAskUser(), DefUpdateGoal(), DefNotesAgentSet(),
 		DefUrlsAdd(), DefUrlsRemove(), DefNotesRead(),
@@ -1073,31 +1295,74 @@ func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
 	}
 }
 
-// TestDefAskUserDescriptionIsSpecVerbatim pins the description to spec §4.4's
-// key contract points: yields the floor, no timeout, batching, the reply
-// contract, and the "no Other option" rule.
-func TestDefAskUserDescriptionIsSpecVerbatim(t *testing.T) {
-	def := DefAskUser()
-	for _, want := range []string{
-		"Asking yields the floor",
-		"no timeout",
-		"several `ask_user` calls may share the round",
-		"a `communicate` in the same round still delivers its message",
-		"Do not add an \"Other\" or free-text option",
-		"First try to resolve the question yourself with tools",
+func TestDefEditFileAndMemoryEditSchema(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		def      llm.ToolDefinition
+		wantReq  []string
+		hasScope bool
+	}{
+		{name: "edit_file", def: DefEditFile(), wantReq: []string{"file_path", "edits"}, hasScope: false},
+		{name: "memory_edit", def: DefMemoryEdit(), wantReq: []string{"file_path", "edits", "scope"}, hasScope: true},
 	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.def.Name != tc.name {
+				t.Fatalf("Name = %q, want %q", tc.def.Name, tc.name)
+			}
+			if tc.def.Parameters["additionalProperties"] != false {
+				t.Fatalf("additionalProperties = %v, want false", tc.def.Parameters["additionalProperties"])
+			}
+			required(t, tc.def, tc.name, tc.wantReq)
+			props := tc.def.Parameters["properties"].(map[string]any)
+			if _, has := props["old_string"]; has {
+				t.Fatalf("%s must not expose top-level old_string", tc.name)
+			}
+			if _, has := props["new_string"]; has {
+				t.Fatalf("%s must not expose top-level new_string", tc.name)
+			}
+			if _, has := props["scope"]; has != tc.hasScope {
+				t.Fatalf("%s scope present=%v, want %v", tc.name, has, tc.hasScope)
+			}
+			edits, ok := props["edits"].(map[string]any)
+			if !ok || edits["type"] != "array" || edits["minItems"] != 1 {
+				t.Fatalf("%s edits schema = %#v", tc.name, props["edits"])
+			}
+			items := edits["items"].(map[string]any)
+			if items["additionalProperties"] != false {
+				t.Fatalf("%s edits.items additionalProperties = %v, want false", tc.name, items["additionalProperties"])
+			}
+			itemProps := items["properties"].(map[string]any)
+			for _, k := range []string{"old_string", "new_string", "replace_all"} {
+				if _, ok := itemProps[k]; !ok {
+					t.Fatalf("%s edits.items missing %q", tc.name, k)
+				}
+			}
+		})
+	}
+}
+
+// TestDefAskUserNamedPropagatesResultTool verifies ask_user carries the
+// configured result tool token and the [answers] reply framing marker.
+func TestDefAskUserNamedPropagatesResultTool(t *testing.T) {
+	def := DefAskUser()
+	for _, want := range []string{"`communicate`", "[answers]"} {
 		if !strings.Contains(def.Description, want) {
 			t.Fatalf("description missing %q; got: %s", want, def.Description)
 		}
 	}
+	renamed := DefAskUserNamed("submit_report")
+	if !strings.Contains(renamed.Description, "`submit_report`") || strings.Contains(renamed.Description, DefaultResultToolName) {
+		t.Fatalf("DefAskUserNamed did not propagate result tool name: %q", renamed.Description)
+	}
 }
 
 func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
-	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
+	def := DefDelegateWithResultTool(nil, DelegateSandboxSchema{
 		Available:        true,
 		Modes:            []string{"off"},
 		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5, vertex/gemini-2.5.",
-	})
+	}, DefaultResultToolName)
 	props := def.Parameters["properties"].(map[string]any)
 	model := props["model"].(map[string]any)
 	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
@@ -1106,9 +1371,9 @@ func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
 }
 
 func TestDefDelegateWithoutSandboxIncludesVerifiedModelChoices(t *testing.T) {
-	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
+	def := DefDelegateWithResultTool(nil, DelegateSandboxSchema{
 		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5.",
-	})
+	}, DefaultResultToolName)
 	props := def.Parameters["properties"].(map[string]any)
 	model := props["model"].(map[string]any)
 	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
@@ -1178,7 +1443,7 @@ func TestDefTaskList_PresenceBased(t *testing.T) {
 // nothing but this string and its role prompt), and `task_list` seeds the
 // delegate's task list with title+prompt items.
 func TestDefDelegatePromptAndTaskListSchema(t *testing.T) {
-	props := DefDelegate(nil).Parameters["properties"].(map[string]any)
+	props := DefDelegate().Parameters["properties"].(map[string]any)
 	prompt := props["prompt"].(map[string]any)
 	if prompt["type"] != "string" {
 		t.Errorf("prompt type = %v, want string", prompt["type"])

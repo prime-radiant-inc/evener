@@ -158,7 +158,7 @@ func TestTaskTool_MixedAddFailingUpdateIsAtomic(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed tasks: %v", err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("seed current task: %v", err)
 	}
 	before := store.View()

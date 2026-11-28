@@ -30,7 +30,7 @@ func newSharedFileTranscript(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("NewWriterNoSync: %v", err)
 	}
-	if err := w.Append(steeringTurn("before resume")); err != nil {
+	if _, err := w.Record(steeringTurn("before resume"), RecordOptions{Door: DoorBuffered}); err != nil {
 		t.Fatalf("seed append: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -93,18 +93,18 @@ func TestWritersOnOneFileShareOneSequenceAndAppendPosition(t *testing.T) {
 
 	for _, text := range []string{"cold one", "cold two"} {
 		cold := openSharedFileWriter(t, path)
-		if err := cold.AppendSynced(steeringTurn(text)); err != nil {
-			t.Fatalf("cold AppendSynced: %v", err)
+		if _, err := cold.Record(steeringTurn(text), RecordOptions{Door: DoorSynced}); err != nil {
+			t.Fatalf("cold Record(DoorSynced): %v", err)
 		}
 		if err := cold.Close(); err != nil {
 			t.Fatalf("close cold writer: %v", err)
 		}
 	}
-	if err := session.AppendDurable(steeringTurn("session durable")); err != nil {
-		t.Fatalf("session AppendDurable: %v", err)
+	if _, err := session.Record(steeringTurn("session durable"), RecordOptions{Door: DoorDurable}); err != nil {
+		t.Fatalf("session Record(DoorDurable): %v", err)
 	}
-	if err := session.Append(steeringTurn("session buffered")); err != nil {
-		t.Fatalf("session Append: %v", err)
+	if _, err := session.Record(steeringTurn("session buffered"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("session Record(DoorBuffered): %v", err)
 	}
 	requireOneSequenceInFileOrder(t, path, []string{"before resume", "cold one", "cold two", "session durable", "session buffered"})
 }
@@ -118,14 +118,14 @@ func TestBufferedAppendAfterAnotherWriterDoesNotOverwriteIt(t *testing.T) {
 	defer session.Close() //nolint:errcheck // assertion fixture
 
 	cold := openSharedFileWriter(t, path)
-	if err := cold.AppendSynced(steeringTurn("cold record that is longer than the next one")); err != nil {
-		t.Fatalf("cold AppendSynced: %v", err)
+	if _, err := cold.Record(steeringTurn("cold record that is longer than the next one"), RecordOptions{Door: DoorSynced}); err != nil {
+		t.Fatalf("cold Record(DoorSynced): %v", err)
 	}
 	if err := cold.Close(); err != nil {
 		t.Fatalf("close cold writer: %v", err)
 	}
-	if err := session.Append(steeringTurn("short")); err != nil {
-		t.Fatalf("session Append: %v", err)
+	if _, err := session.Record(steeringTurn("short"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("session Record(DoorBuffered): %v", err)
 	}
 	requireOneSequenceInFileOrder(t, path, []string{"before resume", "cold record that is longer than the next one", "short"})
 }
@@ -136,19 +136,19 @@ func TestBufferedAppendAfterAnotherWriterDoesNotOverwriteIt(t *testing.T) {
 func TestReopenWhileAnotherWriterIsOpenContinuesTheSequence(t *testing.T) {
 	path := newSharedFileTranscript(t)
 	old := openSharedFileWriter(t, path)
-	if err := old.Append(steeringTurn("old one")); err != nil {
-		t.Fatalf("old Append: %v", err)
+	if _, err := old.Record(steeringTurn("old one"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("old Record: %v", err)
 	}
 	reopened := openSharedFileWriter(t, path)
 	defer reopened.Close() //nolint:errcheck // assertion fixture
-	if err := old.Append(steeringTurn("old two")); err != nil {
-		t.Fatalf("old Append after reopen: %v", err)
+	if _, err := old.Record(steeringTurn("old two"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("old Record after reopen: %v", err)
 	}
 	if err := old.Close(); err != nil {
 		t.Fatalf("close old writer: %v", err)
 	}
-	if err := reopened.AppendDurable(steeringTurn("reopened")); err != nil {
-		t.Fatalf("reopened AppendDurable: %v", err)
+	if _, err := reopened.Record(steeringTurn("reopened"), RecordOptions{Door: DoorDurable}); err != nil {
+		t.Fatalf("reopened Record(DoorDurable): %v", err)
 	}
 	requireOneSequenceInFileOrder(t, path, []string{"before resume", "old one", "old two", "reopened"})
 }
@@ -172,11 +172,11 @@ func TestConcurrentWritersOnOneFileKeepOneSequence(t *testing.T) {
 				var err error
 				switch j % 3 {
 				case 0:
-					err = w.Append(turn)
+					_, err = w.Record(turn, RecordOptions{Door: DoorBuffered})
 				case 1:
-					err = w.AppendDurable(turn)
+					_, err = w.Record(turn, RecordOptions{Door: DoorDurable})
 				default:
-					err = w.AppendSynced(turn)
+					_, err = w.Record(turn, RecordOptions{Door: DoorSynced})
 				}
 				if err != nil {
 					t.Errorf("writer %d append %d: %v", i, j, err)
@@ -206,8 +206,8 @@ func TestNewTranscriptDoesNotInheritADroppedWritersTail(t *testing.T) {
 				t.Fatalf("NewWriterNoSync: %v", err)
 			}
 			for range 3 {
-				if err := w.Append(steeringTurn("dropped record")); err != nil {
-					t.Fatalf("Append: %v", err)
+				if _, err := w.Record(steeringTurn("dropped record"), RecordOptions{Door: DoorBuffered}); err != nil {
+					t.Fatalf("Record: %v", err)
 				}
 			}
 			if err := w.file.Close(); err != nil {
@@ -223,8 +223,8 @@ func TestNewTranscriptDoesNotInheritADroppedWritersTail(t *testing.T) {
 				t.Fatalf("NewWriterNoSync fresh: %v", err)
 			}
 			defer created.Close() //nolint:errcheck // assertion fixture
-			if err := created.Append(steeringTurn("fresh record")); err != nil {
-				t.Fatalf("fresh Append: %v", err)
+			if _, err := created.Record(steeringTurn("fresh record"), RecordOptions{Door: DoorBuffered}); err != nil {
+				t.Fatalf("fresh Record: %v", err)
 			}
 			requireOneSequenceInFileOrder(t, fresh, []string{"fresh record"})
 		})
@@ -253,16 +253,16 @@ func TestWritersOnOneFileByAliasedPathsShareOneSequence(t *testing.T) {
 	for _, alias := range aliases {
 		cold := openSharedFileWriter(t, alias)
 		text := "cold via " + alias
-		if err := cold.AppendSynced(steeringTurn(text)); err != nil {
-			t.Fatalf("cold AppendSynced via %s: %v", alias, err)
+		if _, err := cold.Record(steeringTurn(text), RecordOptions{Door: DoorSynced}); err != nil {
+			t.Fatalf("cold Record(DoorSynced) via %s: %v", alias, err)
 		}
 		if err := cold.Close(); err != nil {
 			t.Fatalf("close cold writer: %v", err)
 		}
 		texts = append(texts, text)
 	}
-	if err := session.Append(steeringTurn("session buffered")); err != nil {
-		t.Fatalf("session Append: %v", err)
+	if _, err := session.Record(steeringTurn("session buffered"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("session Record: %v", err)
 	}
 	requireOneSequenceInFileOrder(t, path, append(texts, "before resume", "session buffered"))
 }
@@ -273,8 +273,8 @@ func TestDroppedWriterReleasesItsTail(t *testing.T) {
 	path := newSharedFileTranscript(t)
 	func() {
 		w := openSharedFileWriter(t, path)
-		if err := w.Append(steeringTurn("dropped")); err != nil {
-			t.Fatalf("Append: %v", err)
+		if _, err := w.Record(steeringTurn("dropped"), RecordOptions{Door: DoorBuffered}); err != nil {
+			t.Fatalf("Record: %v", err)
 		}
 	}()
 	// A cleanup runs on the runtime's cleanup goroutine some time after a
@@ -299,15 +299,15 @@ func TestCreatingOverAnOpenTranscriptIsRefused(t *testing.T) {
 	path := newSharedFileTranscript(t)
 	open := openSharedFileWriter(t, path)
 	defer open.Close() //nolint:errcheck // assertion fixture
-	if err := open.Append(steeringTurn("open before create")); err != nil {
-		t.Fatalf("open Append: %v", err)
+	if _, err := open.Record(steeringTurn("open before create"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("open Record: %v", err)
 	}
 	if created, err := NewWriterNoSync(path, sharedFileHeader); err == nil {
 		_ = created.Close()
 		t.Fatal("NewWriterNoSync over a transcript this process has open succeeded")
 	}
-	if err := open.Append(steeringTurn("open after create")); err != nil {
-		t.Fatalf("open Append after refused create: %v", err)
+	if _, err := open.Record(steeringTurn("open after create"), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("open Record after refused create: %v", err)
 	}
 	requireOneSequenceInFileOrder(t, path, []string{"before resume", "open before create", "open after create"})
 }

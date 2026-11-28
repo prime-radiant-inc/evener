@@ -184,8 +184,8 @@ func installServeScriptedProviders(t *testing.T, adapters ...*scriptedProvider) 
 
 func scriptedCommunicate(message string) llm.Response {
 	args, _ := json.Marshal(map[string]any{
-		"message":  message,
-		"end_turn": true,
+		"message": message,
+		"next":    "send_and_end_turn",
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},

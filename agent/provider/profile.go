@@ -22,6 +22,9 @@ type Profile struct {
 	toolNameMap map[string]string // canonical → provider-specific
 	docFiles    []string
 	cheapModel  string
+	// communicateOutputBound records an explicit result schema or decision enum,
+	// even when the bound schema has the default envelope's shape.
+	communicateOutputBound bool
 	// cheapProvider routes auxiliary "side calls" (naming, summarization,
 	// web_fetch Q&A) to a different instance than the main model. Empty means
 	// the main model's instance. Set via WithCheapModel("instance/model").
@@ -71,27 +74,16 @@ func surfaceConventions(surface string) (docFiles []string, toolNameMap map[stri
 	}
 }
 
-// capabilities is the surface's tool set; the web_search function tool is a
-// google-protocol arrangement (spec §7.5) and rides only with it.
+// capabilities is the surface's tool set.
 func (p *Profile) capabilities() []toolCapability {
-	var caps []toolCapability
 	switch p.res.Surface {
-	case registry.SurfaceAnthropic:
-		caps = anthropicStyleCapabilities
+	case registry.SurfaceOpenAI:
+		return openAICodexCapabilities
 	case registry.SurfaceGoogle:
-		caps = geminiStyleCapabilities
+		return geminiStyleCapabilities
 	default:
-		caps = openAICodexCapabilities
+		return anthropicStyleCapabilities
 	}
-	googleWebSearch := p.res.Protocol == registry.ProtocolGoogle && registry.BoolValue(p.res.Caps.WebSearch)
-	out := make([]toolCapability, 0, len(caps))
-	for _, c := range caps {
-		if c == capabilityWebSearch && !googleWebSearch {
-			continue
-		}
-		out = append(out, c)
-	}
-	return out
 }
 
 type toolCapability string
@@ -105,7 +97,6 @@ const (
 	capabilityJobControl       toolCapability = "job_control"
 	capabilityWorkflow         toolCapability = "workflow"
 	capabilityWebFetch         toolCapability = "web_fetch"
-	capabilityWebSearch        toolCapability = "web_search"
 )
 
 // Keep in sync with agent.WatchEventKindNames / agent.modelEventKinds. The
@@ -138,7 +129,6 @@ var (
 		capabilityJobControl,
 		capabilityWorkflow,
 		capabilityWebFetch,
-		capabilityWebSearch,
 	}
 )
 
@@ -189,7 +179,7 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 		add(tool.DefJobStatus())
 		add(tool.DefJobList())
 		add(tool.DefJobStop())
-		add(tool.DefDelegate(nil))
+		add(tool.DefDelegate())
 		add(tool.DefJobWatch(jobWatchEventKindNames))
 		add(tool.DefDelegateSend())
 	}
@@ -198,9 +188,6 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 	}
 	if enabled[capabilityWebFetch] {
 		add(tool.DefWebFetch())
-	}
-	if enabled[capabilityWebSearch] {
-		add(tool.DefWebSearch())
 	}
 	if enabled[capabilityWorkflow] {
 		add(tool.DefCommunicate())
@@ -440,26 +427,47 @@ func (p *Profile) ProviderOptions() map[string]any {
 	case registry.ProtocolOpenAIResponses:
 		return map[string]any{registry.ProtocolOpenAIResponses: map[string]any{"parallel_tool_calls": true}}
 	case registry.ProtocolGoogle:
-		return map[string]any{registry.ProtocolGoogle: map[string]any{"safetySettings": []map[string]any{
-			{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
-			{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
-			{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_ONLY_HIGH"},
-			{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_ONLY_HIGH"},
+		return map[string]any{registry.ProtocolGoogle: map[string]any{"safety_settings": []map[string]any{
+			{"type": "harassment", "threshold": "block_only_high"},
+			{"type": "hate_speech", "threshold": "block_only_high"},
+			{"type": "sexually_explicit", "threshold": "block_only_high"},
+			{"type": "dangerous_content", "threshold": "block_only_high"},
 		}}}
 	}
 	return nil
 }
 
 // CheapModel is the configured cheap model, else the instance's curated or
-// configured cheap_model, else the model itself.
+// configured cheap_model, else the model itself. An authoritative account
+// roster that omits the curated cheap model uses the session model instead:
+// the subscription, not the bundled catalog, says which ids it serves. An
+// explicit cheap override is the user's, so it is never substituted.
 func (p *Profile) CheapModel() string {
 	if m := strings.TrimSpace(p.cheapModel); m != "" {
 		return m
 	}
-	if p.res.CheapModel != "" {
+	if p.res.CheapModel != "" && !p.curatedCheapModelAbsent() {
 		return p.res.CheapModel
 	}
 	return p.Model()
+}
+
+// curatedCheapModelAbsent reports that the instance's authoritative live
+// roster has answered and does not list the curated cheap model.
+func (p *Profile) curatedCheapModelAbsent() bool {
+	if p == nil || p.registry == nil || p.res.CheapModel == "" {
+		return false
+	}
+	listing, ok := p.registry.LiveListingFor(p.ID())
+	if !ok || !listing.Authoritative {
+		return false
+	}
+	for _, row := range listing.Rows {
+		if strings.EqualFold(strings.TrimSpace(row.ID), strings.TrimSpace(p.res.CheapModel)) {
+			return false
+		}
+	}
+	return true
 }
 
 // ConfiguredCheapModel returns the auxiliary model explicitly set via
@@ -591,6 +599,12 @@ func (p *Profile) withCheapModelFrom(original *Profile) *Profile {
 	return p
 }
 
+// HasCommunicateOutputOverride reports whether the profile explicitly bound
+// a result schema or allowed decisions for communicate.
+func (p *Profile) HasCommunicateOutputOverride() bool {
+	return p != nil && p.communicateOutputBound
+}
+
 // WithCommunicateOverridesFrom returns a copy of p whose communicate tool
 // definition is replaced by original's, when original defines one.
 func (p *Profile) WithCommunicateOverridesFrom(original *Profile) *Profile {
@@ -624,5 +638,6 @@ func (p *Profile) WithCommunicateOverridesFrom(original *Profile) *Profile {
 		defs = append(defs, *origCommunicate)
 	}
 	p.toolDefs = defs
+	p.communicateOutputBound = original.communicateOutputBound
 	return p
 }

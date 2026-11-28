@@ -387,7 +387,7 @@ func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
 	// Trailing comma is unrepairable by RepairJSON (it deliberately does not fix
 	// trailing commas), so prepareToolCall sets PrevalErr → execTool returns a
 	// PrevalOnly error result without calling the communicate Exec function.
-	const malformedArgs = `{"message":"hi","end_turn":true,}`
+	const malformedArgs = `{"message":"hi","next":"send_and_end_turn",}`
 	rejectedCall := llm.ToolCallData{
 		ID:        "call_rej_comm",
 		Name:      "communicate",
@@ -461,12 +461,14 @@ func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
 	// them to render the rejected communicate. A per-turn registry would lose
 	// that cross-turn linkage.
 	reg := apptranscript.NewToolCallRegistry()
-	turns, err := apptranscript.ItemTurnsFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+	proj, err := apptranscript.ItemTurnProjectionFromFile(transcriptPath, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectTurnParts(turnID, turnIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
 	})
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 
 	// Find the rejected communicate item across all projected turns. It must
 	// be a commandExecution (tool/error), not an agentMessage.

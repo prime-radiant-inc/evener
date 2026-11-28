@@ -1,15 +1,18 @@
-// iOS Safari's half of the on-screen-keyboard fix (the viewport meta's
-// interactive-widget=resizes-content covers Chromium/Android; Safari ignores
-// that key). When the keyboard opens, Safari shrinks only the VISUAL viewport
-// — the layout viewport the fixed mobile shell (AppShell.module.css's
-// position:fixed; inset:0) is sized against stays full height, so the composer
-// docked in the shell's footer ends up underneath the keyboard. This hook
-// mirrors the occluded bottom strip into a --keyboard-inset CSS variable that
-// the mobile .shell rule spends as padding-bottom, riding the composer up
-// exactly with the keyboard and back down when it closes.
+// On-screen-keyboard inset for browsers that keep the layout viewport full
+// height while shrinking only the visual viewport. Browsers that honor
+// index.html's interactive-widget=resizes-content (Chromium/Android, Safari
+// 27.3+) shrink the layout viewport itself so the fixed mobile shell
+// (AppShell.module.css's position:fixed; inset:0) rides up with the keyboard
+// and this hook reports 0px. When the layout viewport stays full height, this
+// hook mirrors the occluded bottom strip into --keyboard-inset so the mobile
+// .shell rule spends it as padding-bottom.
 import { useEffect } from "react";
 
 const VAR_NAME = "--keyboard-inset";
+
+function isPinchZoomed(vv: Pick<VisualViewport, "scale">): boolean {
+  return Math.abs(vv.scale - 1) > 0.01;
+}
 
 /**
  * Bottom pixels of the layout viewport occluded by the on-screen keyboard (or
@@ -23,9 +26,26 @@ const VAR_NAME = "--keyboard-inset";
  * gesture — trackpad pinch still moves it — and the shell that spends the
  * inset is the phone's.
  */
-export function keyboardInset(vv: Pick<VisualViewport, "height" | "offsetTop" | "scale">, innerHeight: number): number {
-  if (Math.abs(vv.scale - 1) > 0.01) return 0;
-  return Math.max(0, innerHeight - vv.height - vv.offsetTop);
+export function keyboardInset(
+  vv: Pick<VisualViewport, "height" | "offsetTop" | "scale">,
+  layoutHeight: number,
+): number {
+  // During a display switch WebKit can report a negative visual height.
+  // Only a positive viewport can describe which part of the page is visible.
+  if (vv.height <= 0 || isPinchZoomed(vv)) return 0;
+  return Math.max(0, layoutHeight - vv.height - vv.offsetTop);
+}
+
+/**
+ * Layout viewport height in CSS pixels. Fixed elements (`position: fixed;
+ * inset: 0`) resolve against `documentElement.clientHeight`, whereas
+ * `window.innerHeight` can stay at the pre-keyboard height under
+ * `interactive-widget=resizes-content` and double-count the keyboard inset.
+ * Falls back to `window.innerHeight` when `clientHeight` is 0 (unstyled jsdom).
+ */
+function layoutViewportHeight(root: HTMLElement): number {
+  const height = root.clientHeight;
+  return height > 0 ? height : window.innerHeight;
 }
 
 export function useKeyboardInset(): void {
@@ -37,8 +57,10 @@ export function useKeyboardInset(): void {
     let lastValue: string | null = null;
     const apply = (): void => {
       // Scroll events fire per-frame with an almost-always-unchanged value;
-      // only a real change earns the style recalc.
-      const next = `${keyboardInset(vv, window.innerHeight)}px`;
+      // skip the clientHeight layout read while pinch-zoomed and only write on
+      // a real change so redundant events earn no style recalc.
+      const inset = isPinchZoomed(vv) ? 0 : keyboardInset(vv, layoutViewportHeight(root));
+      const next = `${inset}px`;
       if (next === lastValue) return;
       lastValue = next;
       root.style.setProperty(VAR_NAME, next);
@@ -46,9 +68,13 @@ export function useKeyboardInset(): void {
     apply();
     vv.addEventListener("resize", apply);
     vv.addEventListener("scroll", apply);
+    // A layout-viewport resize under interactive-widget=resizes-content can
+    // commit after visualViewport.resize without firing a second vv resize.
+    window.addEventListener("resize", apply);
     return () => {
       vv.removeEventListener("resize", apply);
       vv.removeEventListener("scroll", apply);
+      window.removeEventListener("resize", apply);
       root.style.removeProperty(VAR_NAME);
     };
   }, []);

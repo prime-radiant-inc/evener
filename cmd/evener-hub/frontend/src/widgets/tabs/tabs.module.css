@@ -1,0 +1,84 @@
+/* Horizontal underline tabs: flush rectangular cells anchored to the tab bar's
+ * bottom hairline. Pointer and touch selection show only the crisp underline;
+ * keyboard focus (:focus-visible) draws an inset square focus ring inside the
+ * cell so it never collides with the straight underline or spills past the
+ * strip. */
+
+.tablist {
+  display: flex;
+  flex: none;
+  min-inline-size: 0;
+  border-bottom: 1px solid var(--edge);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.tablist::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: inline-flex;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: var(--space-1) var(--space-1);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition:
+    background-color var(--motion-duration-hover) var(--motion-easing-standard),
+    border-color var(--motion-duration-hover) var(--motion-easing-standard),
+    color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+.tab:hover {
+  background: var(--hover-1);
+  color: var(--ink-hi);
+}
+
+.tab[aria-selected="true"] {
+  border-bottom-color: var(--ink-hi);
+  color: var(--ink-hi);
+}
+
+.tab:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: calc(var(--focus-ring-width) * -1);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-half);
+  line-height: var(--line-height-title);
+  white-space: nowrap;
+}
+
+.label {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: inherit;
+}
+
+.detail {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+  color: var(--ink-low);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 899px), (any-pointer: coarse) {
+  .tab {
+    min-block-size: var(--tap-min);
+    min-inline-size: var(--tap-min);
+  }
+}

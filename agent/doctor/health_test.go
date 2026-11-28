@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -253,6 +255,95 @@ func TestTranscriptHealth_TruncationWarnings(t *testing.T) {
 	}
 }
 
+// registryTruncatedOutput runs one real tool.Registry dispatch whose output
+// limit truncates a long body and returns the model-facing text the registry
+// produced. Health's count must come from this text, not a copy of a marker
+// held by the test, so a wording change on the registry side is visible here.
+func registryTruncatedOutput(t *testing.T, limit schema.ToolOutputLimit) string {
+	t.Helper()
+	reg := tool.NewRegistry()
+	err := reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: "big_output", Description: "emits a long body for truncation tests"},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return tool.TextResult{Output: strings.Repeat("line of body\n", 400)}, nil
+		},
+		Limit: limit,
+	})
+	if err != nil {
+		t.Fatalf("register big_output: %v", err)
+	}
+	res := reg.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID: "tc-big", Name: "big_output", Arguments: json.RawMessage(`{}`),
+	})
+	if res.IsError || !res.Truncated {
+		t.Fatalf("registry dispatch: IsError=%v Truncated=%v output=%q", res.IsError, res.Truncated, res.Output)
+	}
+	return res.Output
+}
+
+// healthSessionWithToolResult writes a one-call session whose single tool
+// result carries content, and returns its state base and session id.
+func healthSessionWithToolResult(t *testing.T, name, content string) (base, sid string) {
+	t.Helper()
+	base = t.TempDir()
+	sid = sidA
+	writeRichSession(t, stateHomeBucket(base, hash1), sid, []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			healthToolCall("c1", name, `{}`),
+		}}),
+		schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			healthToolResult("c1", name, content, false),
+		}}),
+	}, nil, schema.SessionMeta{})
+	return base, sid
+}
+
+// TestTranscriptHealth_CountsRealRegistryTruncation covers every current
+// registry truncation shape: tail, head/tail and line-limit cuts. Each output
+// is produced by a real Registry dispatch, so the doctor's count is pinned to
+// the text the registry emits.
+func TestTranscriptHealth_CountsRealRegistryTruncation(t *testing.T) {
+	cases := []struct {
+		name  string
+		limit schema.ToolOutputLimit
+	}{
+		{"tail_chars", schema.ToolOutputLimit{MaxChars: 200, Strategy: schema.TruncTail}},
+		{"head_tail_chars", schema.ToolOutputLimit{MaxChars: 200, Strategy: schema.TruncHeadTail}},
+		{"head_tail_lines", schema.ToolOutputLimit{MaxChars: 100_000, MaxLines: 10, Strategy: schema.TruncHeadTail}},
+		{"head_count_lines", schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 10, Strategy: schema.TruncHeadCount}},
+		{"head_count_chars", schema.ToolOutputLimit{MaxChars: 200, MaxLines: 20, Strategy: schema.TruncHeadCount}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			output := registryTruncatedOutput(t, tc.limit)
+			base, sid := healthSessionWithToolResult(t, "big_output", output)
+			h, err := TranscriptHealth(context.Background(), base, sid)
+			if err != nil {
+				t.Fatalf("TranscriptHealth: %v", err)
+			}
+			if h.TruncationWarnings != 1 {
+				t.Errorf("TruncationWarnings = %d, want 1; registry output was %q", h.TruncationWarnings, output)
+			}
+		})
+	}
+}
+
+// TestTranscriptHealth_UntruncatedToolResultIsNotCounted is the negative
+// case: an ordinary result, and apply_patch's own compacted-diff note (not a
+// registry output-limit truncation), must not count.
+func TestTranscriptHealth_UntruncatedToolResultIsNotCounted(t *testing.T) {
+	for _, content := range []string{"file a contents", "  ... 3 more lines omitted\n"} {
+		base, sid := healthSessionWithToolResult(t, "read_file", content)
+		h, err := TranscriptHealth(context.Background(), base, sid)
+		if err != nil {
+			t.Fatalf("TranscriptHealth: %v", err)
+		}
+		if h.TruncationWarnings != 0 {
+			t.Errorf("TruncationWarnings = %d, want 0 for %q", h.TruncationWarnings, content)
+		}
+	}
+}
+
 func TestTranscriptHealth_SteeringByKind(t *testing.T) {
 	base, sid := healthFixture(t)
 	h, err := TranscriptHealth(context.Background(), base, sid)
@@ -493,11 +584,12 @@ func TestTranscriptHealth_SkipsCompactionFoldCopies(t *testing.T) {
 
 	t.Run("retained_tail_metrics", func(t *testing.T) {
 		t.Parallel()
+		truncatedBody := registryTruncatedOutput(t, schema.ToolOutputLimit{MaxChars: 100, Strategy: schema.TruncTail})
 		readCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			healthToolCall("c1", "read_file", `{"path":"huge.log"}`),
 		}})
 		readRes := schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-			healthToolResult("c1", "read_file", truncationBanner+" truncated body", false),
+			healthToolResult("c1", "read_file", truncatedBody, false),
 		}})
 		loopSteer := steeringTurn("loop warning", events.SteeringKindLoopDetected)
 		doneCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
@@ -637,6 +729,15 @@ func TestCallArgsEndTurn(t *testing.T) {
 	}
 	if callArgsEndTurn(json.RawMessage(`{"end_turn":false}`)) {
 		t.Error("callArgsEndTurn(false) = true, want false")
+	}
+	if !callArgsEndTurn(json.RawMessage(`{"message":"done","next":"send_and_end_turn"}`)) {
+		t.Error("callArgsEndTurn(next=send_and_end_turn) = false, want true")
+	}
+	if callArgsEndTurn(json.RawMessage(`{"message":"working","next":"send_and_continue"}`)) {
+		t.Error("callArgsEndTurn(next=send_and_continue) = true, want false")
+	}
+	if callArgsEndTurn(json.RawMessage(`{"message":"waiting on job","next":"log_quietly_and_end_turn"}`)) {
+		t.Error("callArgsEndTurn(next=log_quietly_and_end_turn) = true, want false")
 	}
 }
 
@@ -842,5 +943,119 @@ func TestTranscriptHealth_UnifiesProviderWireAndCanonicalToolNames(t *testing.T)
 	grepRunChk := AuditCheck{Conditions: []auditCondition{{Metric: "longest_identical_run.tool", Op: "==", Value: "grep"}}}
 	if matched, err := grepRunChk.evaluate(mc); err != nil || matched {
 		t.Errorf("custom grep_search run matched canonical grep = (%t, %v), want (false, nil)", matched, err)
+	}
+}
+
+func finalReplyThenQuietEntries() []transcript.Entry {
+	return []transcript.Entry{
+		{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall("answer", "communicate", `{"message":"Server up","end_turn":true,"output":{"decision":"approve"}}`)}})},
+		{Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{
+			healthToolCall("quiet", "communicate", `{}`),
+			healthToolCall("quiet-explicit", "communicate", `{"end_turn":true}`),
+			healthToolCall("quiet-next", "communicate", `{"message":"waiting on build","next":"log_quietly_and_end_turn"}`),
+		}})},
+	}
+}
+
+func acceptedBareTextEntry(t *testing.T) transcript.Entry {
+	t.Helper()
+	var turn schema.Turn
+	if err := json.Unmarshal([]byte(`{"accepted_reply":true}`), &turn); err != nil {
+		t.Fatal(err)
+	}
+	turn.Kind, turn.Message = schema.TurnAssistant, llm.Assistant("Root answer")
+	return transcript.Entry{Turn: turn}
+}
+
+func TestRootBareTextFallbackFinalEndTurnIndex(t *testing.T) {
+	entries := finalReplyThenQuietEntries()
+	if got := finalEndTurnIndex(entries, "communicate"); got != 0 {
+		t.Errorf("final index after quiet yield = %d, want 0", got)
+	}
+	entries[0] = acceptedBareTextEntry(t)
+	if got := finalEndTurnIndex(entries, "communicate"); got != 0 {
+		t.Errorf("bare-text final index = %d, want 0", got)
+	}
+}
+
+func TestTranscriptHealth_QuietYieldsExcludedFromLongestIdenticalRun(t *testing.T) {
+	quietState := json.RawMessage(`{"communicate_accepted":true,"communicate_end_turn":true,"communicate_quiet":true}`)
+	appendQuiet := func(turns []schema.Turn, id string) []schema.Turn {
+		res := healthToolResult(id, "communicate", `{"accepted":true,"end_turn":true,"inbox":[],"quiet":true}`, false)
+		res.ToolResult.ToolState = quietState
+		return append(turns,
+			schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall(id, "communicate", `{}`)}}),
+			schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{res}}),
+		)
+	}
+	appendInspect := func(turns []schema.Turn, id string) []schema.Turn {
+		return append(turns,
+			schema.NewTurn(schema.TurnAssistant, llm.Message{Content: []llm.ContentPart{healthToolCall(id, "shell", `{"command":"gh pr checks 7501"}`)}}),
+			schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{healthToolResult(id, "shell", "pending", false)}}),
+		)
+	}
+
+	for _, tc := range []struct {
+		name           string
+		sid            string
+		buildTurns     func() []schema.Turn
+		wantCommCalls  int
+		wantShellCalls int
+		wantRunLength  int
+	}{
+		{
+			name: "only_quiet_yields",
+			sid:  "0351uS7IJIgwIWumd4RtmZ",
+			buildTurns: func() []schema.Turn {
+				var turns []schema.Turn
+				for _, id := range []string{"q0", "q1", "q2", "q3"} {
+					turns = appendQuiet(turns, id)
+				}
+				return turns
+			},
+			wantCommCalls: 4,
+			wantRunLength: 0,
+		},
+		{
+			name: "quiet_yield_breaks_identical_inspections_across_wakes",
+			sid:  "0351uS7IJIgwIWumd4RtmY",
+			buildTurns: func() []schema.Turn {
+				var turns []schema.Turn
+				for _, suffix := range []string{"1", "2", "3"} {
+					turns = appendInspect(turns, "inspect-"+suffix)
+					turns = appendQuiet(turns, "quiet-"+suffix)
+				}
+				return turns
+			},
+			wantCommCalls:  3,
+			wantShellCalls: 3,
+			wantRunLength:  1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, "proj-quiet-run")
+			turns := tc.buildTurns()
+			writeSessionsFixtureSession(t, bucket, tc.sid,
+				transcript.Header{CreatedAt: time.Unix(1, 0).UTC()},
+				turns,
+				schema.SessionMeta{TurnCount: len(turns)},
+				nil,
+				time.Unix(2, 0).UTC(),
+			)
+			h, err := TranscriptHealth(t.Context(), base, tc.sid)
+			if err != nil {
+				t.Fatalf("TranscriptHealth: %v", err)
+			}
+			if h.ToolCalls["communicate"] != tc.wantCommCalls {
+				t.Errorf("ToolCalls[communicate] = %d, want %d", h.ToolCalls["communicate"], tc.wantCommCalls)
+			}
+			if h.ToolCalls["shell"] != tc.wantShellCalls {
+				t.Errorf("ToolCalls[shell] = %d, want %d", h.ToolCalls["shell"], tc.wantShellCalls)
+			}
+			if h.LongestIdenticalRun.Length != tc.wantRunLength {
+				t.Errorf("LongestIdenticalRun = %+v, want Length=%d", h.LongestIdenticalRun, tc.wantRunLength)
+			}
+		})
 	}
 }

@@ -310,3 +310,28 @@ func (a *launchCheckFakeAdapter) Stream(context.Context, llm.Request) (llm.Strea
 func (a *launchCheckFakeAdapter) LiveModels(context.Context) ([]registry.Model, error) {
 	return a.models, a.err
 }
+
+func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
+	client, err := launchCheckLoadClient("")
+	if err != nil {
+		return err
+	}
+	return validateLaunchCheckProfileWithClient(client, ref)
+}
+
+func launchCheckModels() ([]appwire.ModelDescriptor, []appwire.ModelListDiagnostic, error) {
+	client, err := launchCheckLoadClient("")
+	if err != nil {
+		return nil, nil, err
+	}
+	models, diagnostics := launchCheckModelsWithClient(client)
+	return models, diagnostics, nil
+}
+
+func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
+	client, err := launchCheckLoadClient("")
+	if err != nil {
+		return nil //nolint:nilerr // client-unavailable passes in launch-check model validation
+	}
+	return validateLaunchCheckModelWithClient(client, ref)
+}

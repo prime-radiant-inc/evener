@@ -38,7 +38,7 @@ func TestRestoreSessionExportsATIFWhenTheInvocationAsks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("resume me"))); err != nil {
+	if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User("resume me")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

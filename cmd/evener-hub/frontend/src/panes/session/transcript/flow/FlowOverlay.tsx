@@ -36,35 +36,42 @@ const CLASS = {
 export function FlowOverlay({ children, top, pill, attentionOverlay, onOverlayHeightChange }: FlowOverlayProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const stackRef = useRef<HTMLDivElement>(null);
+  const attentionRef = useRef<HTMLDivElement>(null);
   const reportRef = useRef(onOverlayHeightChange);
   reportRef.current = onOverlayHeightChange;
-  const hasStack = pill !== undefined || attentionOverlay !== undefined;
+  const hasAttention = attentionOverlay !== undefined;
+  const hasStack = pill !== undefined || hasAttention;
 
-  // One measured stack owns both floating controls. Next sits at the trailing
-  // bottom edge and New Content above it. What this reports is the end
-  // clearance ConversationBody reserves in its synthetic trailing row: the
-  // distance from the reader's own bottom edge up to the stack's top. That is
-  // the stack's height plus the inset the stylesheet floats it above the
-  // bottom (`bottom: var(--space-3)`); reserving only the height would leave
-  // the last content row under the stack by that inset.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: hasStack is the deliberate trigger: the body reads the ref the stack mount writes, and the effect must re-report when the stack appears or goes away
+  // End clearance reserves room only for persistent bottom controls (Next needs
+  // you) plus the stack's bottom inset (which includes the phone composer
+  // reserve). The scroll-to-latest pill mounts only while scrolled away and
+  // unmounts at the bottom, so measuring it into end clearance shrinks
+  // scrollHeight right as the reader reaches the end.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hasAttention attaches the observer when the attention slot mounts and clears the reserve when it unmounts
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
     const stack = stackRef.current;
-    if (!wrap || !stack) {
+    const attention = attentionRef.current;
+    if (!wrap || !stack || !attention) {
       reportRef.current?.(0);
       return;
     }
     // A rect, not offsetHeight: the stack has no scale animation, and rects
     // stay honest in jsdom where the shared offsetHeight test stub is 500 for
-    // every element and an empty stack must report no clearance at all.
-    const report = () => reportRef.current?.(wrap.getBoundingClientRect().bottom - stack.getBoundingClientRect().top);
+    // every element and an empty slot must report no clearance at all.
+    const report = () => {
+      const rect = attention.getBoundingClientRect();
+      reportRef.current?.(rect.height <= 0 ? 0 : wrap.getBoundingClientRect().bottom - rect.top);
+    };
     report();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(report);
-    observer.observe(stack);
+    // Observe both the attention slot (content wraps) and the stack border box
+    // (its padding-bottom carries the phone's floating composer reserve).
+    observer.observe(attention, { box: "border-box" });
+    observer.observe(stack, { box: "border-box" });
     return () => observer.disconnect();
-  }, [hasStack]);
+  }, [hasAttention]);
 
   return (
     <div ref={wrapRef} className={CLASS.wrap}>
@@ -81,8 +88,8 @@ export function FlowOverlay({ children, top, pill, attentionOverlay, onOverlayHe
               {pill}
             </div>
           )}
-          {attentionOverlay !== undefined && (
-            <div data-testid="flow-overlay-attention" className={CLASS.attentionSlot}>
+          {hasAttention && (
+            <div ref={attentionRef} data-testid="flow-overlay-attention" className={CLASS.attentionSlot}>
               {attentionOverlay}
             </div>
           )}

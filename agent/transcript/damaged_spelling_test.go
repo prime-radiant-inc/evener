@@ -50,8 +50,8 @@ func writeSpelledFile(t *testing.T, spelling string) string {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(spelledToolCallTurn()); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := w.Record(spelledToolCallTurn(), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

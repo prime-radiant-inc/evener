@@ -103,18 +103,21 @@ try {
   observations.questionRPC = await evalJS("window.editorialPreview.client.calls.filter(c => c.method === 'turn/steer' || c.method === 'turn/start')");
   assert.deepEqual(await evalJS("window.editorialPreview.client.rejectedRequests"), []);
   await navigateFixture(`${origin}/settings/credentials`);
-  await until("document.body.innerText.includes('+ Add provider instance')");
-  await clickText("+ Add provider instance");
-  await until("!!document.querySelector('[role=dialog]')");
+  await until("document.body.innerText.includes('Connect provider')");
+  await clickText("Connect provider");
+  await until("!!document.querySelector('[role=dialog] [data-testid=show-all-providers]')");
   fs.writeFileSync(path.join(evidence, "provider.txt"), await evalJS("document.body.innerText"));
   fs.writeFileSync(path.join(evidence, "provider.html"), await evalJS("document.body.innerHTML"));
-  await evalJS("Array.from(document.querySelectorAll('[role=dialog] button')).find(e=>e.textContent==='Create').click()");
-  await until("document.body.innerText.includes('Base provider is required.')");
+  await until("document.querySelector('[role=dialog] button[aria-label=\"Anthropic\"]')?.disabled === false");
+  await evalJS("document.querySelector('[role=dialog] button[aria-label=\"Anthropic\"]').click()");
+  await until("!!document.querySelector('[role=dialog] #connection-endpoint')");
+  await evalJS("document.querySelector('[role=dialog] button[type=\"submit\"]').click()");
+  await until("!!document.querySelector('[role=dialog] [role=alert][data-reason=endpoint-required]')");
   await send("Input.dispatchKeyEvent", {type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27});
   await send("Input.dispatchKeyEvent", {type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27});
   await until("!document.querySelector('[role=dialog]')");
-  assert.equal(await evalJS("document.activeElement.textContent"), "+ Add provider instance");
-  observations.tasks.push("Provider instance form empty-submit validation; Escape closes and restores trigger focus; no secrets");
+  assert.equal(await evalJS("document.activeElement.textContent"), "Connect provider");
+  observations.tasks.push("Connect provider dialog validation; Escape closes and restores trigger focus; no secrets");
   await navigateFixture(`${origin}/settings/theme`);
   await until("document.body.innerText.includes('Font size')");
   await clickText("Light"); await clickText("XL");
@@ -171,12 +174,7 @@ try {
   fs.writeFileSync(path.join(evidence,"tasks.png"),Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
   await closeAuxiliaryPanes();
   await until("!document.body.innerText.includes('Review fixture evidence')");
-  await clickText("Session actions"); await clickText("Activity");
-  await until("document.body.innerText.includes('Delegate dlg_editorial_resumed · send')");
-  fs.writeFileSync(path.join(evidence,"activity.png"),Buffer.from((await send("Page.captureScreenshot")).result.data,"base64"));
-  await closeAuxiliaryPanes();
-  await until("!document.body.innerText.includes('Delegate dlg_editorial_resumed · send')");
-  observations.tasks.push("Actual Tasks and Activity panel selection; fixture tasks and partial owner-derived activity; Details split exercised in matrix");
+  observations.tasks.push("Actual Tasks panel selection; fixture tasks; Details split exercised in matrix");
   for (const viewport of [{width:360,height:800,mobile:true,touch:true}, {width:390,height:844,mobile:true,touch:true}, {width:1280,height:1000,narrow:true}, {width:1440,height:1000}]) {
     for (const theme of ["light","dark"]) for (const size of ["m","xl"]) {
       await applyViewport(send, viewport);

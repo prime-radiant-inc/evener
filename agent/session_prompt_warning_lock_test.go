@@ -90,7 +90,7 @@ func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
 	forceSystemPromptRenderFailure(t)
 
 	awaitOrFail(t, "SetModel with a failing prompt render", func() {
-		if err := sess.SetModel("gpt-5.2"); err != nil {
+		if err := sess.SetModel("", "gpt-5.2"); err != nil {
 			t.Errorf("SetModel: %v", err)
 		}
 	})

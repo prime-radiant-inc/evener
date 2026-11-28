@@ -14,6 +14,10 @@ function cardCss(): string {
   return readModuleCss(import.meta.url, "askquestioncard.module.css");
 }
 
+function optionCss(): string {
+  return readModuleCss(import.meta.url, "../../askoptioncopy.module.css");
+}
+
 function question(overrides: Partial<AskQuestionRef> = {}): AskQuestionRef {
   return {
     key: "call_1:0",
@@ -45,7 +49,6 @@ function Harness({ q, initial = UNTOUCHED }: { q: AskQuestionRef; initial?: AskA
     <AskQuestionCard
       disabled={false}
       question={q}
-      number={1}
       answer={answer}
       onResolutionChange={(resolution) => setAnswer((prev) => ({ ...prev, resolution }))}
       onNoteChange={(note) => setAnswer((prev) => ({ ...prev, note }))}
@@ -53,11 +56,42 @@ function Harness({ q, initial = UNTOUCHED }: { q: AskQuestionRef; initial?: AskA
   );
 }
 
-test("renders the question number, header, and question text", () => {
+test("renders the question header and text", () => {
   render(<Harness q={question()} />);
-  expect(screen.getByText("1.")).toBeTruthy();
   expect(screen.getByText("Deploy?")).toBeTruthy();
   expect(screen.getByText("Should I deploy this to production now?")).toBeTruthy();
+});
+
+// The question body is model-authored markdown, so it renders through the
+// shared Markdown widget rather than as literal source. The option rows
+// stay plain text: option labels are answer values the reply echoes back
+// verbatim.
+test("renders the question text as markdown", () => {
+  render(<Harness q={question({ question: "Deploy `agent/deploy.go:81` now?" })} />);
+  const code = screen.getByText("agent/deploy.go:81");
+  expect(code.tagName).toBe("CODE");
+});
+
+// The question text base is semibold (the neutral-frame question display),
+// so the Markdown widget's own semibold strong would render bold spans
+// indistinguishable from that base. The card opts the question's strong
+// spans into the bold weight through the widget's documented host seam;
+// jsdom computes no cascade, so the stylesheet pin carries the contract.
+test("bold emphasis in the question out-weighs the semibold base", () => {
+  render(<Harness q={question({ question: "Deploy to **staging** first?" })} />);
+  expect(screen.getByText("staging").tagName).toBe("STRONG");
+
+  const css = cardCss();
+  const rule = css.match(/\.questionText\s*\{([^}]*)\}/);
+  expect(rule, "askquestioncard.module.css must declare a .questionText rule").not.toBeNull();
+  expect(rule![1]).toContain("--markdown-strong-weight: var(--font-weight-bold)");
+});
+
+// The why line is model-authored prose too (the question's one-line
+// context), so it takes the same markdown pipeline as the question body.
+test("renders the why line as markdown", () => {
+  render(<Harness q={question({ why: "Changes `agent/deploy.go:81` behavior" })} />);
+  expect(screen.getByText("agent/deploy.go:81").tagName).toBe("CODE");
 });
 
 test("renders each option's label and detail, tagging only the recommended one", () => {
@@ -70,32 +104,24 @@ test("renders each option's label and detail, tagging only the recommended one",
   expect(markers[0]?.closest("label")).toBe(screen.getByRole("radio", { name: "Yes" }).closest("label"));
 });
 
-// Option labels are inline bold text, not pills (ask-dialog UX rework): the
-// whole label is ordinary wrapping text inside the option row, so an
-// arbitrarily long VALID label wraps onto as many lines as it needs instead
-// of being crushed inside a fixed-height chip. jsdom does not lay out text;
-// the stylesheet assertions below pin the bold presentation contract, and
-// layoutguard's askdock-mobile-tall-crush case owns the real geometry.
-test("option labels render as bold inline text, keeping the full label available", () => {
+// The option's identity and its explanation form separate lines in one copy
+// stack. Long labels still wrap in full; layoutguard owns the real geometry.
+test("option labels and details form separate lines in a wrapping copy stack", () => {
   const label = `${"A valid option label that remains available to the user ".repeat(19)}A valid option label that remains available to the user`;
-  render(
-    <Harness
-      q={question({
-        options: [{ label, detail: "The detail remains separate from the label." }],
-      })}
-    />,
-  );
+  const detail = "The detail remains separate from the label.";
+  render(<Harness q={question({ options: [{ label, detail }] })} />);
 
-  const radio = screen.getByRole("radio", { name: label });
-  const labelEl = radio.nextElementSibling;
-  expect(labelEl?.textContent).toBe(label);
+  const labelEl = screen.getByText(label);
+  const detailEl = screen.getByText(detail);
+  const labelLine = labelEl.parentElement;
+  const copy = labelLine?.parentElement;
+  expect(copy?.contains(labelLine)).toBe(true);
+  expect(detailEl.parentElement).toBe(copy);
 
-  const css = cardCss();
+  const css = optionCss();
   const rule = css.match(/\.optionName\s*\{([^}]*)\}/);
   expect(rule, "askquestioncard.module.css must declare an .optionName rule").not.toBeNull();
   expect(rule![1]).toMatch(/font-weight:\s*var\(--font-weight-semibold\)/);
-  // The pill treatment is gone entirely - no chip wrapper class remains.
-  expect(css).not.toContain(".optionChip");
 });
 
 // Recommended gets its own visual treatment (ask-dialog UX rework): an
@@ -110,7 +136,7 @@ test("the recommended option carries an accent suffix right after its bold label
   expect(marker?.parentElement).toBe(yesLabel.parentElement);
   expect(yesLabel.nextElementSibling).toBe(marker);
 
-  const css = cardCss();
+  const css = optionCss();
   const rule = css.match(/\.optionRecommended\s*\{([^}]*)\}/);
   expect(rule, "askquestioncard.module.css must declare an .optionRecommended rule").not.toBeNull();
   // Canonical design-system §2: semantic text uses the AA ink companion,
@@ -174,7 +200,6 @@ test("clicking a regular option (single-select) resolves to that option alone", 
     <AskQuestionCard
       disabled={false}
       question={question()}
-      number={1}
       answer={UNTOUCHED}
       onResolutionChange={onResolutionChange}
       onNoteChange={() => {}}
@@ -238,7 +263,6 @@ test("while Something else is active, the shared text field edits the free resol
     <AskQuestionCard
       disabled={false}
       question={question()}
-      number={1}
       answer={{ resolution: { kind: "free", text: "" }, note: "" }}
       onResolutionChange={onResolutionChange}
       onNoteChange={onNoteChange}
@@ -280,7 +304,6 @@ test("the note field is visible with no disclosure toggle and calls onNoteChange
     <AskQuestionCard
       disabled={false}
       question={question()}
-      number={1}
       answer={UNTOUCHED}
       onResolutionChange={() => {}}
       onNoteChange={onNoteChange}
@@ -315,6 +338,18 @@ test("options render inside a group whose role reflects single vs multi select",
   unmount();
   render(<Harness q={question({ multiSelect: true })} />);
   expect(screen.getByRole("group")).toBeTruthy();
+});
+
+// AskDock's focus queries derive from one marker rather than a type list:
+// every answer control carries data-ask-control, so the first-control and
+// first-enabled-control selectors cannot drift apart.
+test("marks every answer control with data-ask-control", () => {
+  render(<Harness q={question({ multiSelect: true })} />);
+  for (const control of screen.getAllByRole("checkbox")) {
+    expect(control.hasAttribute("data-ask-control")).toBe(true);
+  }
+  expect(screen.getByRole("radio", { name: /something else/i }).hasAttribute("data-ask-control")).toBe(true);
+  expect(screen.getByPlaceholderText(/note/i).hasAttribute("data-ask-control")).toBe(true);
 });
 
 // Touch target (UX fix, real-phone measurement): an option WITH a detail

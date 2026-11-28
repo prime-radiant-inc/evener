@@ -2,7 +2,7 @@ import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@e
 import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import { deferred as sharedDeferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -566,6 +566,144 @@ test("resolved setup auth modes override public defaults rather than forcing a v
   expect(screen.queryByLabelText("API key")).toBeNull();
   expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
   expect(screen.queryByRole("link", { name: "Get an API key" })).toBeNull();
+});
+
+// The Copilot subscription is the second provider whose connection is a device
+// sign-in instead of a key. Its card must offer that sign-in and no key field,
+// and the device dialog it opens must name the provider being signed in to.
+test("a Copilot subscription provider offers its device sign-in and no API-key action", async () => {
+  const copilot = provider("github-copilot", "GitHub Copilot", ["oauth"], { auth: "oauth-github-copilot" });
+  const { user, client } = setup({ instances: [], availableProviders: [copilot] });
+  await choose(user, "GitHub Copilot");
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  expect(screen.queryByRole("link", { name: "Get an API key" })).toBeNull();
+  client.on("evener/auth/device/start", () => ({
+    provider: "github-copilot",
+    flowId: "device",
+    userCode: "CODE",
+    verificationUrl: "https://github.com/login/device",
+    intervalSeconds: 5,
+  }));
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  const starts = client.calls.filter((call) => call.method === "evener/auth/device/start");
+  expect(starts).toHaveLength(1);
+  expect(starts[0]!.params).toMatchObject({ provider: "github-copilot" });
+  // The action names this test's provider, not the one Copilot's device flow
+  // used to be hardcoded to.
+  const action = within(screen.getByRole("dialog"))
+    .getAllByRole("button")
+    .find((button) => (button as HTMLButtonElement).disabled);
+  expect(action?.textContent).toContain("GitHub Copilot");
+});
+
+test("cancelling the Copilot device dialog keeps the connection draft", async () => {
+  const copilot = provider("github-copilot", "GitHub Copilot", ["oauth"], { auth: "oauth-github-copilot" });
+  const { user, client } = setup({ instances: [], availableProviders: [copilot] });
+  await choose(user, "GitHub Copilot");
+  client.on("evener/auth/device/start", () => ({
+    provider: "github-copilot",
+    flowId: "device",
+    userCode: "CODE",
+    verificationUrl: "https://github.com/login/device",
+    intervalSeconds: 5,
+  }));
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+  // Back on the card the user was filling in, with the provider choice intact.
+  expect(await screen.findByRole("dialog", { name: "GitHub Copilot" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(0);
+});
+
+function copilotProvider(): ProviderDescriptor {
+  return provider("github-copilot", "GitHub Copilot", ["oauth"], { auth: "oauth-github-copilot" });
+}
+function copilotListing(extra: Partial<InstanceEntry> = {}): InstanceListResponse {
+  const copilot = copilotProvider();
+  const row = { ...copilot.setup!, activeSource: "oauth", hasStoredOAuth: true, ...extra };
+  return { instances: [row], availableProviders: [{ ...copilot, setup: row }] };
+}
+async function openPopularCopilot(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
+  const popular = (await screen.findAllByRole("list", { name: "Providers" }))[0]!;
+  await user.click(await within(popular).findByRole("button", { name: "GitHub Copilot" }));
+  return screen.findByRole("dialog", { name: "GitHub Copilot" });
+}
+function scriptCopilotDevice(client: FakeClient) {
+  client.on("evener/auth/device/start", () => ({
+    provider: "github-copilot",
+    flowId: "device",
+    userCode: "CODE",
+    verificationUrl: "https://github.com/login/device",
+    intervalSeconds: 1,
+  }));
+  client.on("evener/auth/device/poll", () => ({ provider: "github-copilot", state: "authorized" }));
+}
+
+test("the popular Copilot card offers GitHub sign-in with no API-key action and runs the ordinary model-list check", async () => {
+  const { user, client, connected } = setup({ instances: [], availableProviders: [copilotProvider()] });
+  const popular = (await screen.findAllByRole("list", { name: "Providers" }))[0]!;
+  const choice = await within(popular).findByRole("button", { name: "GitHub Copilot" });
+  expect(choice.getAttribute("data-auth-modes")).toBe("oauth");
+  await user.click(choice);
+  const card = await screen.findByRole("dialog", { name: "GitHub Copilot" });
+  expect(card.querySelector('input[type="password"]')).toBeNull();
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  // Wait for the setup row to reach the card before signing in, so the flow
+  // signs in the same instance the card is showing.
+  await screen.findByText("https://github-copilot.example/v1");
+
+  scriptCopilotDevice(client);
+  client.on("evener/instance/list", () => structuredClone(copilotListing()));
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(within(card).getByRole("button", { name: "Sign in" }));
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  vi.useRealTimers();
+
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("github-copilot"));
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
+    {
+      method: "evener/auth/test",
+      params: { provider: "github-copilot", expectedEndpointFingerprint: "fp-github-copilot" },
+    },
+  ]);
+});
+
+test("an unsupported Copilot model roster blocks setup completion", async () => {
+  const { user, client, connected } = setup({ instances: [], availableProviders: [copilotProvider()] });
+  await openPopularCopilot(user);
+  scriptCopilotDevice(client);
+  client.on("evener/instance/list", () => structuredClone(copilotListing()));
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "unsupported", message: "" }));
+
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  vi.useRealTimers();
+
+  await waitFor(() => expect(document.querySelector('form#provider-connection-form button[type="submit"]')).toBeNull());
+  // Copilot keeps no unverified completion action. If one is offered,
+  // activating it must not connect the provider either.
+  const unverified = await screen.findByRole("button", { name: "Continue without verification" }).catch(() => null);
+  if (unverified) {
+    await waitFor(() => expect((unverified as HTMLButtonElement).disabled).toBe(false));
+    await user.click(unverified);
+  }
+  expect(connected).not.toHaveBeenCalled();
+  expect(unverified).toBeNull();
+
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
 });
 
 test("provider choices expose resolved authentication capabilities and select that exact provider", async () => {
@@ -3568,6 +3706,93 @@ test("the access review shows its facts as eyebrow-labeled PropertyList rows", a
   const terms = review.querySelectorAll("dt");
   expect(terms).toHaveLength(2);
   expect([...terms].every((term) => term.className.includes("eyebrowLabel"))).toBe(true);
+});
+
+test("access review surfaces changed non-URL fields and explains fingerprint-only changes", async () => {
+  // 1. A protocol change under an unchanged URL names the old and new protocol
+  // inside the Was/Now rows instead of showing two identical URLs alone.
+  const first = setup(
+    savedList("anthropic", {
+      activeSource: "none",
+      hasStoredFile: false,
+      protocol: "openai-chat",
+    }),
+  );
+  await choose(first.user, "Anthropic");
+  await enterText(first.user, screen.getByLabelText("API key"), "sk-ant-draft");
+  scriptSave(first.client, savedList("anthropic", { protocol: "openai-responses" }));
+  await first.user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  const protocolReview = await screen.findByTestId("access-review");
+  expect(protocolReview.querySelector('[data-review-detail="hidden-endpoint"]')).toBeNull();
+  const prevProtocol = protocolReview.querySelector('[data-destination="previous"] [data-review-field="protocol"]');
+  const currProtocol = protocolReview.querySelector('[data-destination="current"] [data-review-field="protocol"]');
+  expect(prevProtocol?.textContent).toContain("openai-chat");
+  expect(currProtocol?.textContent).toContain("openai-responses");
+  cleanup();
+
+  // 2. An active-source mismatch under an unchanged URL names the expected vs
+  // resolved access source.
+  const second = setup();
+  await choose(second.user, "Anthropic");
+  await enterText(second.user, screen.getByLabelText("API key"), "sk-ant-draft");
+  scriptSave(second.client, savedList("anthropic", { activeSource: "api_key" }));
+  await second.user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  const sourceReview = await screen.findByTestId("access-review");
+  const prevSource = sourceReview.querySelector('[data-destination="previous"] [data-review-field="activeSource"]');
+  const currSource = sourceReview.querySelector('[data-destination="current"] [data-review-field="activeSource"]');
+  expect(prevSource?.textContent?.trim()).toBeTruthy();
+  expect(currSource?.textContent?.trim()).toBeTruthy();
+  expect(prevSource?.textContent).not.toBe(currSource?.textContent);
+  cleanup();
+
+  // 3. A fingerprint-only change (e.g. stripped query parameters) explains why
+  // both displayed URLs look identical.
+  const third = setup(fingerprintList("fp-2024"));
+  await choose(third.user, "Anthropic");
+  await enterText(third.user, screen.getByLabelText("API key"), "sk-ant-draft");
+  scriptSave(third.client, fingerprintList("fp-2025", "store"));
+  await third.user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  const hiddenReview = await screen.findByTestId("access-review");
+  const detail = hiddenReview.querySelector('[data-review-detail="hidden-endpoint"]');
+  expect(detail?.textContent?.trim()).toBeTruthy();
+});
+
+test("waiting for review hides Sign in and the redundant footer test button until review is accepted or endpoint is edited", async () => {
+  const { user, client, connected } = setup({ instances: [], availableProviders: [copilotProvider()] });
+  await openPopularCopilot(user);
+  scriptCopilotDevice(client);
+  client.on("evener/instance/list", () => structuredClone(copilotListing({ protocol: "openai-responses" })));
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  vi.useRealTimers();
+
+  const review = await screen.findByTestId("access-review");
+  expect(within(review).getByRole("button", { name: "Use reviewed access and test" })).toBeTruthy();
+  // Review owns the single primary action: Sign in and the footer's Test again
+  // submit button stay hidden while waiting for review.
+  expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  expect(document.querySelector('button[type="submit"][form="provider-connection-form"]')).toBeNull();
+
+  // Opening the endpoint editor restores the footer's Save endpoint submit action,
+  // and cancelling removes it again.
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  expect(document.querySelector('button[type="submit"][form="provider-connection-form"]')).not.toBeNull();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(document.querySelector('button[type="submit"][form="provider-connection-form"]')).toBeNull();
+
+  // Accepting the review tests and completes connection as before.
+  await user.click(within(review).getByRole("button", { name: "Use reviewed access and test" }));
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("github-copilot"));
 });
 
 test("a credential draft is not saved to a destination that changed since it was typed", async () => {

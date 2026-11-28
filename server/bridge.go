@@ -5,25 +5,6 @@ import (
 	"primeradiant.com/evener/agent/events"
 )
 
-// Bridge reads events from a session event channel, records appwire
-// notifications, and updates server status.
-// It blocks until the events channel is closed.
-func Bridge(srv *Server, eventCh <-chan events.SessionEvent) {
-	BridgeWithObserver(srv, eventCh, nil)
-}
-
-// BridgeWithObserver behaves like Bridge and also invokes observer for every
-// event before broadcasting it. This is used to tee raw NDJSON event logs.
-//
-// The channel form is for callers that already hold one. The daemon does NOT
-// use it: it registers through agent.Session.ConsumeEventsLossless so its feed
-// cannot drop, and applies each event with BridgeEvent.
-func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observer func(events.SessionEvent)) {
-	for ev := range eventCh {
-		BridgeEvent(srv, ev, observer)
-	}
-}
-
 // BridgeEvent applies one session event to the server: the observer tee, then
 // the status write, any checkpoint/legacy envelope refresh, and the projection
 // commit. SessionStart's self-contained CurrentWork seed and typed task/goal
@@ -96,9 +77,8 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 // by construction, and the assert would sit in a branch no test reaches.
 //
 // The other direction — a facet that SAMPLES under a lock an emitter holds —
-// has no self-deadlock to lean on and needed its own mechanism. Five locks are
-// held across live emits TODAY: Session.restMu (agent/session_state.go's
-// needs_response quiet-period timer), Session.queueEventsMu
+// has no self-deadlock to lean on and needed its own mechanism. Four locks are
+// held across live emits TODAY: Session.queueEventsMu
 // (agent/session_client_mutation_queue.go's reflectDurableInputQueue,
 // agent/session_queue.go's popSteeringHead), queuePersistMu
 // (persistQueuesSnapshot), responseSideEffectsMu (agent/session_tools.go's
@@ -173,21 +153,7 @@ func (s *Server) applySessionEventStatus(ev events.SessionEvent) {
 	if ev.Kind == events.EventSessionEnd && s.appPendingStableTurnID != "" && !sessionEventClosesSession(ev) {
 		return
 	}
-	if ev.Kind == events.EventStatusSettled {
-		// Applied, held or dropped together with its projection
-		// (RecordAppEvent), in one lock hold, so the stored state and the
-		// broadcast can't decide differently.
-		return
-	}
 	effect(s)
-}
-
-// settledStatusSupersededLocked reports whether a resting status that settled
-// outside any turn (EventStatusSettled) can't be published now: an input is
-// being taken (it may be held for the end of processing, settledStatusLocked),
-// or the session already closed, and closed wins. The caller holds s.mu.
-func (s *Server) settledStatusSupersededLocked() bool {
-	return s.processing || s.status.State == string(agent.SessionClosed)
 }
 
 func sessionEventClosesSession(ev events.SessionEvent) bool {
@@ -242,14 +208,23 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		return func(s *Server) {
 			s.updateSessionInfoLocked(ev.SessionID, d.NewModel, d.NewProvider)
 		}
-	case events.EventStatusSettled:
-		// Only a resting state settles outside a turn; anything else would
-		// store a state the projector maps differently.
-		d, ok := ev.Data.(events.StatusSettledData)
-		if !ok || (d.State != string(agent.SessionAwaiting) && d.State != string(agent.SessionIdle)) {
+	case events.EventNextModelChanged:
+		// A queued pick's acceptance - or its retraction after a deferred
+		// failure - rewrites the cached session info the same way, so
+		// thread/read agrees with the acceptance frame at the instant it is
+		// published. The model/set hook installs an RPC-time acceptance
+		// itself for its own reply window; this effect covers the paths with
+		// no RPC in flight (the retraction, a compact-at switch).
+		d, ok := ev.Data.(events.NextModelChangedData)
+		if !ok {
 			return nil
 		}
-		return func(s *Server) { s.status.State = d.State }
+		return func(s *Server) {
+			// An acceptance (or its retraction) moves the advertised pair
+			// only: the session keeps running the committed model until the
+			// pick's own commit, so pricing must not follow the pick here.
+			s.updateSessionAdvertisedModelLocked(ev.SessionID, d.Model, d.Provider)
+		}
 	case events.EventSessionEnd:
 		d, ok := ev.Data.(events.SessionEndData)
 		if ok && d.Interrupted {
@@ -267,8 +242,7 @@ func sessionEventStatusEffect(ev events.SessionEvent) func(*Server) {
 		}
 		return func(s *Server) {
 			// The input ended on its own SESSION_END, which states the
-			// session's state; a rest held during it no longer applies.
-			s.appHeldSettledEffect = nil
+			// session's state.
 			s.endProcessingLocked()
 			s.status.State = string(agent.SessionClosed)
 			if ok && d.State != "" {

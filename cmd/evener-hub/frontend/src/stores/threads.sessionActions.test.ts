@@ -41,7 +41,6 @@ import {
   resetThreadsStoreForTests,
   retryBlockedMutation,
   setMutationStorageForTests,
-  settleDisplayCopy,
   threadsStore,
 } from "./threads";
 import { ConflictError } from "./threadsErrors";
@@ -661,26 +660,6 @@ test("queue evidence keeps the accepted display copy without settling it", async
   storage.close();
 });
 
-test("settleDisplayCopy retires a retained queue display copy", async () => {
-  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "m1" });
-  setMutationStorageForTests(storage);
-  connectMutationClient();
-  const outbox = await storage.enqueueIntent({
-    targetRef: "ref_a",
-    threadId: "thr_ref_a",
-    method: "turn/queue",
-    payload: { ref: "ref_a", clientMutationId: "m1", input: [{ type: "text", text: "hello" }] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "hello" }] },
-  });
-  await storage.markAttempted(outbox.clientMutationId);
-  expect(await storage.settleReceipt(outbox.clientMutationId, "pending")).toBe(true);
-  expect(await storage.getOptimistic(outbox.clientMutationId)).toBeDefined();
-  await settleDisplayCopy(outbox.clientMutationId, "ref_a");
-  expect(await storage.getOptimistic(outbox.clientMutationId)).toBeUndefined();
-  storage.close();
-});
-
 describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/rename/compact/shutdown/clearThread/forkFromTurn)", () => {
   test("setModel sends thread/model/set with {ref, modelProvider, model}", async () => {
     const fake = connectFakeClient();
@@ -950,15 +929,6 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await pending;
 
     expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(pushedGoal);
-  });
-
-  test("removeURL refuses a session the write gate rejects and sends nothing", async () => {
-    const fake = connectMutationClient();
-    const ref = "ref_readonly";
-    fake.on("thread/read", (params) => readResponse(params.ref ?? ref, { status: { type: "restartRequired" } }));
-    await threadsStore.getState().ensureThread(ref);
-    await expect(threadsStore.getState().removeURL(ref, "url_1")).rejects.toThrow(/cannot accept notes/i);
-    expect(fake.calls.filter((call) => call.method === "urls/remove")).toEqual([]);
   });
 
   test("setHumanNote does not overwrite a newer authoritative hydration", async () => {

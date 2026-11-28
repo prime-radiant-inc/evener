@@ -31,18 +31,23 @@ func projectKeyForStateDir(stateDir string) string {
 }
 
 var (
-	hubBuildNavigationTree       = hubcore.BuildTreeWithProjects
+	hubBuildNavigationTree       = hubcore.BuildTree
 	hubDeriveNavigationAttention = hubcore.DeriveAttention
 	hubNavigationInputs          = (*WebServer).navigationSnapshotInputs
 )
 
 type navigationSnapshot struct {
-	ownershipErr        error
-	metas               []schema.SessionMeta
-	live                []hubcore.LiveEntry
-	projects            map[string]identifier.Project
-	projectIdentities   map[string][]identifier.Project
-	projectConflicts    map[string]bool
+	ownershipErr      error
+	metas             []schema.SessionMeta
+	live              []hubcore.LiveEntry
+	projects          map[string]identifier.Project
+	projectIdentities map[string][]identifier.Project
+	projectConflicts  map[string]bool
+	// reportedProjects carries each remote thread's own project identity,
+	// keyed by session ID. Two hosts can name the same working directory, so
+	// the path-keyed projects map cannot say which host's project a row
+	// belongs to.
+	reportedProjects    map[string]identifier.Project
 	remoteOwnership     map[string]favoriteRemoteOwnership
 	remoteRoots         *hubcore.RootIndex
 	remoteSources       map[string]hubcore.RemoteSourceSnapshot
@@ -63,7 +68,7 @@ type remoteThreadFetch struct {
 	sources  map[string]hubcore.RemoteSourceSnapshot
 	// sourceGenerations is the per-source identity generation the walk
 	// captured immediately before it read each source — the read-time
-	// capture the background refresher hands to StoreWalkSnapshot, so a
+	// capture the background refresher hands to RemoteThreadCache.Store, so a
 	// remove or remove/re-add between a source's read and the publish
 	// moves the live generation and the read's rows drop. A source absent
 	// from the map was unregistered when the
@@ -433,6 +438,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		return isTombstone
 	}
 	carriedProjectCandidates := make(map[string]map[string]identifier.Project)
+	reportedProjects := make(map[string]identifier.Project)
 	var remoteMetas []schema.SessionMeta
 	for _, thread := range fetch.threads {
 		meta, entry, ok := appThreadTreeEntries(thread)
@@ -441,6 +447,9 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		}
 		metas = append(metas, meta)
 		remoteMetas = append(remoteMetas, meta)
+		if entry.Project.ID != "" {
+			reportedProjects[meta.ID] = entry.Project
+		}
 		if entry.Project.ID != "" && identifier.ValidateProjectID(entry.Project.ID) == nil && entry.WorkingDir != "" {
 			addNavigationProjectCandidate(carriedProjectCandidates, entry.WorkingDir, entry.Project)
 		}
@@ -518,6 +527,7 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		projects:            projects,
 		projectIdentities:   projectIdentities,
 		projectConflicts:    projectConflicts,
+		reportedProjects:    reportedProjects,
 		remoteOwnership:     favoriteRemoteOwnerships(fetch.threads),
 		remoteRoots:         hubcore.NewRootIndex(remoteMetas),
 		remoteSources:       fetch.sources,
@@ -1067,11 +1077,16 @@ func appThreadTreeLive(thread appwire.Thread) bool {
 }
 
 func (s *WebServer) apiTreeSources() []hubapi.Source {
+	localLabel := "this host"
+	if s.cfg.LocalHostName != "" {
+		localLabel = s.cfg.LocalHostName + " (hub)"
+	}
 	sources := []hubapi.Source{{
-		ID:     "local",
-		Label:  "this host",
-		Kind:   "local",
-		Online: true,
+		ID:                     "local",
+		Label:                  localLabel,
+		Kind:                   "local",
+		Online:                 true,
+		ThreadStartIdempotency: s.cfg.CreationIdempotencyAvailable(),
 	}}
 	if s.sources == nil {
 		return sources
@@ -1080,11 +1095,16 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 		if source.ID() == appwire.LocalSourceID {
 			continue
 		}
+		idempotentStart := false
+		if capSource, ok := source.(appsource.ThreadStartIdempotencySource); ok {
+			idempotentStart = capSource.ThreadStartIdempotencySupportedIfAttached()
+		}
 		sources = append(sources, hubapi.Source{
-			ID:     source.ID(),
-			Label:  source.ID(),
-			Kind:   "appwire",
-			Online: s.sourceOnline(source.ID()),
+			ID:                     source.ID(),
+			Label:                  source.ID(),
+			Kind:                   "appwire",
+			Online:                 s.sourceOnline(source.ID()),
+			ThreadStartIdempotency: idempotentStart,
 		})
 	}
 	return sources

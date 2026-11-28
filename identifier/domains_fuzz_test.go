@@ -5,7 +5,6 @@ package identifier
 import (
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
 // domainCase pairs a domain's minter with its validator and the prefix that
@@ -119,12 +118,12 @@ func FuzzIdentifierDomainIDs(f *testing.F) {
 // that ValidateSessionID also accepts, or a malformed job ID becomes a wrong
 // owner rather than an error.
 func FuzzJobIDBoundary(f *testing.F) {
-	f.Add("", 26)
-	f.Add("job_"+strings.Repeat("0", base62Width)+"_000000000001", 26)
-	f.Add("job_", 0)
-	f.Add(strings.Repeat("job_", 40), -1)
+	f.Add("")
+	f.Add("job_" + strings.Repeat("0", base62Width) + "_000000000001")
+	f.Add("job_")
+	f.Add(strings.Repeat("job_", 40))
 
-	f.Fuzz(func(t *testing.T, jobID string, maxLength int) {
+	f.Fuzz(func(t *testing.T, jobID string) {
 		// Minting is the other half of the seam: a job ID is only useful if the
 		// owner it embeds survives a round trip back out.
 		owner := MustNewSessionID()
@@ -156,23 +155,6 @@ func FuzzJobIDBoundary(f *testing.F) {
 			}
 		} else if owner, err := JobOwnerSessionID(jobID); err == nil {
 			t.Fatalf("JobOwnerSessionID returned owner %q for a job ID ValidateJobID rejects: %q", owner, jobID)
-		}
-
-		// Abbreviation is bounded by DISPLAY width, not bytes: maxLength is a
-		// column budget and the ellipsis is one character but three bytes, so an
-		// abbreviation is routinely longer in bytes than the value it replaced.
-		// Counting runes is the assertion that matches what the budget means.
-		got := AbbreviateJobID(jobID, maxLength)
-		if got != jobID {
-			if n := utf8.RuneCountInString(got); n > maxLength {
-				t.Fatalf("AbbreviateJobID(%q, %d) = %q, %d characters wide", jobID, maxLength, got, n)
-			}
-			// The random suffix is what keeps two jobs from the same session
-			// distinguishable once the middle is elided, so it must survive whole.
-			suffix := jobID[len(jobID)-jobIDSuffixSize:]
-			if !strings.HasSuffix(got, suffix) {
-				t.Fatalf("AbbreviateJobID(%q, %d) = %q, dropping the %q suffix", jobID, maxLength, got, suffix)
-			}
 		}
 	})
 }

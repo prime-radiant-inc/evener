@@ -1112,7 +1112,7 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 		endedAt := startedAt.Add(90 * time.Second)
 		activityAt := endedAt.Add(-2 * time.Second)
 		finish := delegateFinishFromRun(delegateTerminalRunInputs{
-			session:      &Session{comm: communicateResult{called: true}},
+			session:      &Session{comm: communicateResult{phase: commBoundarySettled}},
 			result:       "complete",
 			communicated: true,
 			descriptor: delegatestore.Descriptor{
@@ -1133,7 +1133,6 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 				CacheReadTokens: 7,
 				TotalTokens:     130,
 			},
-			warnings: []string{"worktree validation retained"},
 			worktree: &delegateWorktreeReport{
 				Path:    "/repo/.worktrees/dlg_target",
 				Branch:  "delegate/dlg_target",
@@ -1142,6 +1141,7 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 				Dirty:   true,
 			},
 		})
+		finish.packet.Warnings = []string{"worktree validation retained"}
 		marshaled, err := marshalDelegateSendResult(runDelegateInlinePacket(t, finish), 64*1024)
 		if err != nil {
 			t.Fatalf("marshal inline operational metadata: %v", err)
@@ -1306,12 +1306,22 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 	invocation := <-result
 	assertStableStopCompleted(t, invocation, harness.fixture.delegateID, delegateLifecycleRunning, "cancelled_by_request")
 	assertStableStopDurableCompletion(t, harness.root.delegateController, harness.fixture.delegateID)
-	pending, err := readPendingDelegateAttention(transcriptPath(harness.fixture.stateDir, harness.fixture.childID), harness.fixture.childID)
-	if err != nil {
-		t.Fatalf("read attention after stable stop: %v", err)
+	harness.root.delegateController.mu.Lock()
+	aggregate := harness.root.delegateController.durable[harness.fixture.delegateID]
+	harness.root.delegateController.mu.Unlock()
+	if aggregate == nil {
+		t.Fatal("stable stop dropped the delegate from the journal")
 	}
-	if len(pending) != 0 {
-		t.Fatalf("pending attention after stable stop = %#v", pending)
+	if _, resolved := aggregate.ResolvedAttention["attention-before-stop"]; !resolved {
+		t.Fatal("stable stop did not record the discarded attention's resolution in delegatestore")
+	}
+	for _, row := range aggregate.PendingAttention {
+		if row.AttentionID == "attention-before-stop" {
+			t.Fatal("stable stop left the discarded attention pending in delegatestore")
+		}
+	}
+	if aggregate.NeedsAttention {
+		t.Fatal("stable stop left the delegate needing attention")
 	}
 }
 
@@ -1843,7 +1853,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 		drainSteering:      func() []steeringMessage { return nil },
 		prependSteering:    func([]steeringMessage) {},
 		resultToolName:     func() string { return "communicate" },
-		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any, _ string) bool {
+		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
 			captured = raw
 			return true
 		},
@@ -1862,14 +1872,14 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 	}
 	_ = registerCommunicateTool(reg, deps)
 	if _, err := reg.Get("communicate").Exec(context.Background(), nil, map[string]any{
-		"message": "explicit null", "end_turn": true, "output": nil,
+		"message": "explicit null", "next": "send_and_end_turn", "output": nil,
 	}); err != nil {
 		t.Fatalf("communicate explicit null: %v", err)
 	}
 	if !bytes.Equal(captured.(json.RawMessage), json.RawMessage(`null`)) {
 		t.Fatalf("captured explicit null = %#v", captured)
 	}
-	sess := &Session{comm: communicateResult{called: true}}
+	sess := &Session{comm: communicateResult{phase: commBoundarySettled}}
 	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		session:                 sess,
 		result:                  "explicit null",
@@ -1892,7 +1902,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 func TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained(t *testing.T) {
 	t.Parallel()
 	structured := map[string]any{"wrong": true}
-	sess := &Session{comm: communicateResult{called: true, structured: structured}}
+	sess := &Session{comm: communicateResult{phase: commBoundarySettled, structured: structured}}
 	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		session:                 sess,
 		result:                  "schema-invalid result",
@@ -1962,7 +1972,7 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 	startedAt := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
 	endedAt := startedAt.Add(90 * time.Second)
 	activityAt := endedAt.Add(-2 * time.Second)
-	sess := &Session{comm: communicateResult{called: true}}
+	sess := &Session{comm: communicateResult{phase: commBoundarySettled}}
 	finish := delegateFinishFromRun(delegateTerminalRunInputs{
 		session:      sess,
 		result:       "complete",
@@ -1985,7 +1995,6 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 			CacheReadTokens: 7,
 			TotalTokens:     130,
 		},
-		warnings: []string{"worktree validation retained"},
 		worktree: &delegateWorktreeReport{
 			Path:    "/repo/.worktrees/dlg_target",
 			Branch:  "delegate/dlg_target",
@@ -1994,6 +2003,7 @@ func TestDelegateResourceRuntime_TerminalPacketPreservesTaskModelEffortTimingUsa
 			Dirty:   true,
 		},
 	})
+	finish.packet.Warnings = []string{"worktree validation retained"}
 	packet := finish.packet
 	if packet == nil {
 		t.Fatal("terminal packet is nil")

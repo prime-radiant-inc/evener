@@ -539,7 +539,7 @@ func TestAppDiagnosticsFromDetailedStatus_DelegateRosterKeepsClientFields(t *tes
 // A plain list is unchanged.
 func TestThreadListStatusOnlyCarriesProbeDiagnosticsOnly(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	exitCode := 0
 	srv.mu.Lock()
 	srv.appEnvelope.Detailed = &DetailedStatus{
@@ -684,7 +684,7 @@ func TestAppWireItemPagingSubscriptionCut(t *testing.T) {
 
 func TestHandleAppThreadReadUnknownThreadRemainsEmpty(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "known")
+	setAppIdentity(t, srv, "local", "known")
 
 	itemResponse, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{
 		Subscribe:    false,

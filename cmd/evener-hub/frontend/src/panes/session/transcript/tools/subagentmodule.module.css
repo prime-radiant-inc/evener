@@ -78,10 +78,6 @@
 .statsSep {
   color: var(--edge-strong);
 }
-.statsSpring {
-  flex: 1 1 auto;
-  margin-left: auto;
-}
 .clock {
   flex: none;
   color: var(--ink-mid);
@@ -117,7 +113,7 @@
 }
 .quoteLive {
   color: var(--ink-hi);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 .quoteMsg {
   font-family: var(--font-prose);
@@ -136,21 +132,11 @@
   color: var(--ink-low);
   white-space: nowrap;
 }
-.quotesEmpty {
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  font-style: italic;
-}
-
 .section {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
   padding-top: var(--space-1);
-}
-.sectionLabel {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
 }
 .mandate {
   font-family: var(--font-sans);

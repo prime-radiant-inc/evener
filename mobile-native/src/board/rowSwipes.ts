@@ -16,7 +16,7 @@ const LOOKS: Record<SwipeRowAction, Pick<SwipeAction, "label" | "symbol" | "fill
 	unarchive: { label: "Unarchive", symbol: "archivebox", fill: "inkMid" },
 	stop: { label: "Stop", symbol: "stop.fill", fill: "inkHi" },
 	pin: { label: "Pin", symbol: "pin.fill", fill: "inkMid" },
-	more: { label: "More", symbol: "ellipsis.circle", fill: "inkLow" },
+	more: { label: "More", symbol: "ellipsis", fill: "inkLow" },
 };
 
 export interface RowSwipes {

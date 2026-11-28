@@ -12,6 +12,9 @@ export interface FocusScopeProps {
    * anchoring input while the panel is open (Popover autoFocus={false}).
    * Default true (Dialog/Sheet/Menu behavior). */
   autoFocus?: boolean;
+  /** Extra class for the scope's root <div>. Defaults to none, so existing
+   * callers render exactly as before. */
+  className?: string;
   children: ReactNode;
 }
 
@@ -27,6 +30,8 @@ export interface FocusScopeProps {
  * Renders a plain wrapping <div tabIndex={-1}> (no styling of its own -
  * Dialog/Sheet/Menu own all visible chrome) so there is always a valid
  * fallback focus target even when the scope's content has nothing tabbable.
+ * A caller that owns the root's layout passes className (ActivitySidebar's
+ * flex body).
  */
 export function FocusScope(props: FocusScopeProps) {
   return <LayerFocusScope {...props} released={false} />;
@@ -46,6 +51,7 @@ export function LayerFocusScope({
   autoFocus = true,
   released,
   restoreWithoutScroll,
+  className,
   children,
 }: FocusScopeProps & {
   released: boolean;
@@ -63,6 +69,15 @@ export function LayerFocusScope({
   const ref = useRef<HTMLDivElement>(null);
   const restoreTargetRef = useRef<Element | null>(null);
   const ownerDocumentRef = useRef<Document | null>(null);
+  const preCommitRestoreRef = useRef<{ doc: Document; target: Element | null } | null>(null);
+  const activeRef = useRef(false);
+  const childFocusedOnMountRef = useRef<Element | null>(null);
+
+  if (!activeRef.current && autoFocus && !released) {
+    const preDoc = ref.current?.ownerDocument ?? (typeof document !== "undefined" ? document : null);
+    preCommitRestoreRef.current = preDoc ? { doc: preDoc, target: preDoc.activeElement } : null;
+    childFocusedOnMountRef.current = null;
+  }
 
   // Mount (or un-release): capture the restore target, then move focus in.
   // Unmount (or release): restore, if the target is still focusable and still
@@ -72,22 +87,40 @@ export function LayerFocusScope({
   // biome-ignore lint/correctness/useExhaustiveDependencies: restoreWithoutScroll is read at the CLOSE, by design - putting a ref's .current in the dependency list would re-run this effect whenever the value changed, and re-running it re-captures the restore target and moves focus a second time. The close that sets it is the only thing that should decide it.
   useEffect(() => {
     if (!autoFocus || released) return;
+    activeRef.current = true;
     const scope = ref.current;
     // The scope's own document: in a Dockview popout the active element and the
     // focus target both belong to that window, and the opener's document knows
     // neither.
     const doc = scope?.ownerDocument ?? document;
     ownerDocumentRef.current = doc;
-    restoreTargetRef.current = doc.activeElement;
+    const liveActive = doc.activeElement;
+    const preCommit = preCommitRestoreRef.current;
+    const preTarget =
+      preCommit !== null && preCommit.doc === doc && preCommit.target !== null && !scope?.contains(preCommit.target)
+        ? preCommit.target
+        : null;
+    // Child autoFocus or mount effects run before this parent effect and move
+    // activeElement inside the scope; keep the pre-commit opener so closing
+    // never tries to restore to an unmounted or inert child.
+    restoreTargetRef.current = scope?.contains(liveActive) ? preTarget : liveActive;
     if (scope) {
-      const first = tabbable(scope)[0];
-      // preventScroll: the layer is already placed where the user is looking
-      // (a fixed or anchored overlay); a plain focus() of the unstyled scope
-      // wrapper at the end of <body> scrolls the page to it, and the scroll
-      // closes a Popover or Menu that was just opened.
-      (first ?? scope).focus({ preventScroll: true });
+      if (scope.contains(liveActive) && liveActive !== scope) {
+        childFocusedOnMountRef.current = liveActive;
+      } else {
+        const list = tabbable(scope);
+        const retained = childFocusedOnMountRef.current;
+        const initial =
+          retained !== null && list.includes(retained as HTMLElement) ? (retained as HTMLElement) : list[0];
+        // preventScroll: the layer is already placed where the user is looking
+        // (a fixed or anchored overlay); a plain focus() of the unstyled scope
+        // wrapper at the end of <body> scrolls the page to it, and the scroll
+        // closes a Popover or Menu that was just opened.
+        (initial ?? scope).focus({ preventScroll: true });
+      }
     }
     return () => {
+      activeRef.current = false;
       const target = restoreTargetRef.current;
       // Realm-independent: a node adopted into another window keeps its original
       // prototype, so `instanceof HTMLElement` from either window rejects it.
@@ -128,7 +161,9 @@ export function LayerFocusScope({
       const last = list[list.length - 1];
       if (!first || !last) return; // list.length >= 1 was just checked above
       const active = (ownerDocumentRef.current ?? scope.ownerDocument ?? document).activeElement;
-      if (event.shiftKey && active === first) {
+      // A dialog can take initial focus itself. Menus own Tab from their
+      // popup and choose among enabled rows, including rows with tabindex=-1.
+      if (event.shiftKey && (active === first || first.closest('[role="dialog"], dialog') === active)) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && active === last) {
@@ -142,7 +177,7 @@ export function LayerFocusScope({
   }, [trap, released]);
 
   return (
-    <div ref={ref} tabIndex={-1}>
+    <div ref={ref} tabIndex={-1} className={className} data-focus-layer={trap ? "" : undefined}>
       {children}
     </div>
   );

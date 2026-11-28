@@ -238,7 +238,7 @@ func TestLongRunningResumeCanceledAliasWaitReleasesAcquiredPrefix(t *testing.T) 
 		locks := hubcore.NewResumeLocks()
 		aliases := []string{"a-stable", "z-current"}
 		finish := locks.BeginForceStop(aliases)
-		if err := locks.PersistForceStop(aliases, "z-current"); err != nil {
+		if _, err := locks.PersistForceStop(aliases, "z-current", daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		finish.Finish(true)
@@ -288,7 +288,7 @@ func TestLongRunningResumeRepeatStopUsesDurableConfirmedAuthority(t *testing.T) 
 			stable, current := hubtest.SessionID(t), hubtest.SessionID(t)
 			aliases := []string{stable, current}
 			finish := locks.BeginForceStop(aliases)
-			if err := locks.PersistForceStop(aliases, current); err != nil {
+			if _, err := locks.PersistForceStop(aliases, current, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := locks.ConfirmForceStop(current); err != nil {
@@ -333,7 +333,7 @@ func TestLongRunningResumeConfirmedStopDoesNotHideOtherAliasClaims(t *testing.T)
 			locks := hubcore.NewResumeLocks()
 			stable, current := hubtest.SessionID(t), hubtest.SessionID(t)
 			finish := locks.BeginForceStop([]string{stable, current})
-			if err := locks.PersistForceStop([]string{stable, current}, current); err != nil {
+			if _, err := locks.PersistForceStop([]string{stable, current}, current, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if kind != "unconfirmed exit" {
@@ -457,6 +457,23 @@ func TestLongRunningResumeHubCancelsOwnedChild(t *testing.T) {
 			var stopped chan error
 			if reason == "disconnect" {
 				client.Close()
+				// The caller walking away must not kill the healthy child (#5535):
+				// Resume answers retryable, the claim stays, and hub shutdown
+				// reaps the child instead.
+				if err := <-resumed; err == nil {
+					t.Fatal("canceled Resume reported success")
+				}
+				select {
+				case <-killed:
+					t.Fatal("departing caller killed the restoring child")
+				default:
+				}
+				if _, ok := locks.PendingLaunch(sessionID); !ok {
+					t.Fatal("departing caller dropped the pending-launch claim")
+				}
+				close(allowExit)
+				locks.Close()
+				<-killed
 			} else {
 				recovery := dialHubRPC(t, hub)
 				defer recovery.Close()
@@ -468,13 +485,11 @@ func TestLongRunningResumeHubCancelsOwnedChild(t *testing.T) {
 					var response appwire.EmptyResponse
 					stopped <- recovery.Request(t.Context(), appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, &response)
 				}()
-			}
-			<-killed
-			close(allowExit)
-			if err := <-resumed; err == nil {
-				t.Fatal("canceled Resume reported success")
-			}
-			if stopped != nil {
+				<-killed
+				close(allowExit)
+				if err := <-resumed; err == nil {
+					t.Fatal("canceled Resume reported success")
+				}
 				if err := <-stopped; err == nil {
 					t.Fatal("pre-ready cleanup alone fabricated durable stopped authority")
 				}
@@ -489,13 +504,97 @@ func TestLongRunningResumeHubCancelsOwnedChild(t *testing.T) {
 	}
 }
 
+// Force Stop must still reach a child whose caller abandoned it. The detached
+// supervisor keeps that child alive, and no ActiveResume covers it, so Stop has
+// to cancel the session's pending-launch claim and wait for the reap.
+func TestForceStopKillsDetachedRestoringChild(t *testing.T) {
+	root := t.TempDir()
+	chdirTemp(t, root)
+	t.Setenv(envvars.XDGStateHome.Name, filepath.Join(root, "state-home"))
+	runDir := filepath.Join(root, "run")
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(root, "fixture-evener")
+	writeFakeEvener(t, binary, "#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n printf '%s\\n' '{\"protocol\":\"evener-appwire-v7\",\"launch_flags\":[\"api-log\"]}'\n exit 0\nfi\nexit 2\n")
+	waiting, killed, allowExit := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	original := startResumeChild
+	defer func() { startResumeChild = original }()
+	startResumeChild = func(*exec.Cmd) (resumeChild, error) {
+		return resumeChild{pid: 4242, kill: func() error { close(killed); return nil }, wait: func() error {
+			close(waiting)
+			<-allowExit
+			return nil
+		}}, nil
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(allowExit)
+		}
+	}
+	defer release()
+	locks := hubcore.NewResumeLocks()
+	defer locks.Close()
+	spawner := &HubSpawner{Cfg: DefaultConfig(), RunDir: runDir, EvenerBinary: binary}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, Spawner: spawner})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := hubtest.SessionID(t)
+	resumed := make(chan error, 1)
+	go func() {
+		var response appwire.ThreadResumeResponse
+		resumed <- client.Request(t.Context(), "thread/resume", appwire.ThreadResumeParams{Ref: "local:" + sessionID}, &response)
+	}()
+	select {
+	case <-waiting:
+	case err := <-resumed:
+		t.Fatalf("Resume did not reach child launch: %v", err)
+	}
+	// The caller walks away: the child keeps restoring behind its claim.
+	client.Close()
+	if err := <-resumed; err == nil {
+		t.Fatal("canceled Resume reported success")
+	}
+	if _, ok := locks.PendingLaunch(sessionID); !ok {
+		t.Fatal("caller departure dropped the pending-launch claim")
+	}
+
+	recovery := dialHubRPC(t, hub)
+	defer recovery.Close()
+	if _, err := recovery.Initialize(t.Context(), appwire.InitializeParams{}); err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan error, 1)
+	go func() {
+		var response appwire.EmptyResponse
+		stopped <- recovery.Request(t.Context(), appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, &response)
+	}()
+	select {
+	case <-killed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("force stop did not kill the detached restoring child")
+	}
+	release()
+	if err := <-stopped; err == nil {
+		t.Fatal("pre-ready cleanup alone fabricated durable stopped authority")
+	}
+	if _, ok := locks.PendingLaunch(sessionID); ok {
+		t.Fatal("pending-launch claim survived force stop")
+	}
+}
+
 func TestLongRunningResumeShutdownProofNeverCancelsOrKills(t *testing.T) {
 	for _, reason := range []string{"active resume", "daemon claim"} {
 		t.Run(reason, func(t *testing.T) {
 			locks := hubcore.NewResumeLocks()
 			sessionID := hubtest.SessionID(t)
 			finish := locks.BeginForceStop([]string{sessionID})
-			if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -630,7 +729,7 @@ func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 	}
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -835,7 +934,7 @@ func TestShutdownRefusesCleanupBeforeHandlerDone(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -888,7 +987,7 @@ func TestShutdownUncertainDiscoveryAttemptsSource(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	sessionID := hubtest.SessionID(t)
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -995,7 +1094,7 @@ func TestShutdownUncertainDiscoveryInvalidatesWaitingResumeRegistration(t *testi
 		locks := hubcore.NewResumeLocks()
 		sessionID := hubtest.SessionID(t)
 		finish := locks.BeginForceStop([]string{sessionID})
-		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := locks.ConfirmForceStop(sessionID); err != nil {

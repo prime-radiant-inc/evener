@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { render } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./diffblock.module.css";
 import { DiffBlock } from "./index";
@@ -41,9 +43,66 @@ const SIMPLE_DIFF = [
   ' \treturn "hi"',
 ].join("\n");
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+});
+
 test("renders one line per input line", () => {
   const { container } = render(<DiffBlock unified={SIMPLE_DIFF} />);
   expect(lineElements(container)).toHaveLength(9);
+});
+
+test("the copy control writes the unified diff text to the clipboard", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  render(<DiffBlock unified={SIMPLE_DIFF} />);
+
+  await user.click(screen.getByRole("button", { name: "Copy diff" }));
+
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(SIMPLE_DIFF);
+});
+
+// The shared copy control is absolutely positioned over the diff's top-right
+// corner. jsdom lays nothing out, so measure the geometry the real stylesheets
+// and tokens declare: the rows the control covers must reserve its full phone
+// footprint, and the rows below must keep the plain inset.
+test("the rows under the copy control reserve its phone footprint", () => {
+  const tokens = readModuleCss(import.meta.url, "../../styles/tokens.css");
+  const diffCss = readModuleCss(import.meta.url, "diffblock.module.css");
+  const codeCss = readModuleCss(import.meta.url, "../codeblock/codeblock.module.css");
+  const tokenPx = (name: string): number => {
+    const value = new RegExp(`--${name}:\\s*(\\d+)px`).exec(tokens)?.[1];
+    if (value === undefined) throw new Error(`tokens.css declares no px --${name}`);
+    return Number(value);
+  };
+  const value = (declaration: string): number => {
+    const match = /var\(--([\w-]+)\)|(\d+)px/.exec(declaration);
+    if (match?.[1] !== undefined) return tokenPx(match[1]);
+    if (match?.[2] !== undefined) return Number(match[2]);
+    throw new Error(`no length in "${declaration}"`);
+  };
+  const declared = (css: string, selector: string, property: string): string => {
+    const match = new RegExp(`${property}:\\s*([^;]+);`).exec(topRuleBlock(css, selector));
+    if (match === null) throw new Error(`no ${property} in ${selector}`);
+    return match[1]!;
+  };
+
+  const padding = declared(codeCss, ".header", "padding").split(/\s+/);
+  const footprint = tokenPx("tap-min") + 2 * value(padding[1]!) + value(declared(codeCss, ".header", "right"));
+  const chromeRows = /\.line:nth-child\([^)]*\)\s*\{([^}]*)\}/.exec(diffCss)?.[1];
+  if (chromeRows === undefined) throw new Error("diffblock.module.css has no under-control row rule");
+  expect(value(/padding-right:\s*([^;]+);/.exec(chromeRows)![1]!)).toBeGreaterThanOrEqual(footprint);
+  expect(value(declared(diffCss, ".line", "padding").split(/\s+/)[1]!)).toBeLessThan(footprint);
+
+  // Three 16*1.6px phone rows clear the header's 56px bottom edge (4px offset
+  // + 44px tap target + 2*4px padding); two would not.
+  const coveredRows = Number(/\.line:nth-child\(-n\s*\+\s*(\d+)\)/.exec(diffCss)?.[1]) - 1;
+  const headerBottom = value(declared(codeCss, ".header", "top")) + tokenPx("tap-min") + 2 * value(padding[0]!);
+  const phoneBody = /--font-size-body:\s*calc\(16px/.test(tokens) ? 16 : 0;
+  const rowHeight = phoneBody * Number(/--line-height-body:\s*([\d.]+)/.exec(tokens)?.[1]);
+  expect(coveredRows * rowHeight).toBeGreaterThanOrEqual(headerBottom);
+  expect((coveredRows - 1) * rowHeight).toBeLessThan(headerBottom);
 });
 
 test("classifies diff --git and index lines as header", () => {

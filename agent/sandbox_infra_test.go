@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -26,7 +27,7 @@ func infraSandboxHost(t *testing.T) sandbox.HostFacts {
 	if err != nil {
 		t.Fatalf("resolve test home: %v", err)
 	}
-	return (sandbox.FakeProber{Facts: sandbox.HostFacts{
+	return (sandboxtest.FakeProber{Facts: sandbox.HostFacts{
 		OS: "linux", Home: home, BwrapPath: "/fixture/bwrap", BwrapCapable: true,
 	}}).Probe()
 }

@@ -82,7 +82,7 @@ Settings groups controls by task:
 
 - **Preferences:** Appearance, Conversation display, Input & shortcuts, Notifications.
 - **Agent setup:** Providers & credentials, Agents, AGENTS.md, Session defaults.
-- **Extensions:** Plugins, Skill directories, MCP servers.
+- **Extensions:** Plugins, Skill directories (the host's full discovery order plus the editable extra list), MCP servers.
 - **System:** Hosts, Devices, Hub, Storage, About.
 
 Search matches destination names and control keywords, such as font, Enter,
@@ -107,11 +107,13 @@ inspection failures do not prevent editing local overrides.
 Conversation display edits one device layout at a time, initially the current
 device class. Both shared layouts remain available through the layout selector.
 Use the shared default clears only the selected layout's browser-local override.
-Thinking traces render as unfoldable disclosures at every level — collapsed to
-their placeholder grammar when the Reasoning content switch is off, with the
-Chat preset staying conversation-only — and "Thinking open by default" controls
-whether they start open, broken-turn thoughts included, whose neutral label
-always remains the summary.
+Thinking is intent-level content: Chat omits reasoning rows. At Intent and
+above, live and settled thinking render as unfoldable disclosures. Compact
+rows use the shared icon rail and UI-size summary type when Reasoning is off;
+Full retains the richer reasoning presentation. "Thinking open by default"
+controls their initial state, with an explicit reader choice taking precedence.
+Broken-turn thoughts above Chat follow the same disclosure and keep their
+neutral summary label.
 Scope and the local-override action appear before the editor. Editing a shared
 default keeps both browser-local layout choices. **Use the shared default** clears
 only the selected layout's browser-local override, without writing shared defaults.
@@ -134,6 +136,10 @@ overrides retain their existing hub synchronization. Appearance and notification
 preferences retain their existing browser storage. Conversation display keeps
 its Desktop/Mobile hub defaults and browser overrides. Organization does not
 change persistence or introduce new synchronization.
+
+Inside the iPhone app, Settings → Notifications also controls this phone’s
+failure alerts, questions and approvals, holding alerts while reading or typing,
+and haptics. The phone supplies the saved values and applies changes across hubs.
 
 Notifications shows Loud for only when sound or desktop notifications are enabled.
 Hiding that control preserves its selection. Browser tab indicator is independent
@@ -377,18 +383,19 @@ lost pointer capture or unmount ends a pending hold without
 opening anything. A completed hold consumes the single click its release emits;
 the next intentional click still runs Next.
 
-The control and the New Content affordance share one measured stack at the
-transcript's trailing bottom edge, with New Content above Next. The stack's
-committed height becomes end clearance inside the virtual list, so the last
-transcript row can scroll clear of both controls and stays readable. A dormant or
-empty transcript floats the same control above the composer in its own dock.
+The control and the New Content affordance share one stack at the transcript's
+trailing bottom edge, with New Content above Next. Only the Next slot (together
+with the stack's bottom inset, which carries the phone's floating composer
+reserve) becomes end clearance inside the virtual list, so the last transcript
+row scrolls clear of Next without changing `scrollHeight` as the scroll-to-latest
+pill mounts and unmounts at the bottom. A dormant or empty transcript floats
+the same control above the composer in its own dock.
 
 Each stack slot mounts only while its control would actually render — the New
 Content pill exactly when its own gate would show it, Next only while its
-visibility predicate holds — and the stack, with the end clearance it reserves,
-disappears entirely while neither would. Nothing floats over the transcript's
-bottom edge, and no clearance band pads its end, until there is something to
-float.
+visibility predicate holds — and the stack disappears entirely while neither
+would. End clearance disappears whenever Next is unmounted, so no clearance
+band pads the transcript's end until Next floats over it.
 
 That predicate also answers whether anything needs the reader: Next mounts for
 a session it can offer, or for rows already loaded while another page of the

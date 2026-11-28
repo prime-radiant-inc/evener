@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
@@ -191,7 +192,7 @@ Use the echo tool.
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
 		testOnly: testConfig{
-			sandboxProber: sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: workDir, BwrapPath: "/nonexistent/bwrap", BwrapCapable: false}},
+			sandboxProber: sandboxtest.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: workDir, BwrapPath: "/nonexistent/bwrap", BwrapCapable: false}},
 		},
 	})
 	if err != nil {

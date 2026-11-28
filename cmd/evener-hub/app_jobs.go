@@ -121,7 +121,7 @@ func hubJobsOutput(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return source.JobOutput(ctx, params)
 		},
 		func(stateDir, sessionID, jobID string) (appwire.JobsOutputResponse, bool, error) {
-			tail, found, err := agent.LoadSessionJobOutputPageWithFence(stateDir, sessionID, jobID, params.BeforeBytes, params.MaxBytes, savedJobOwnerFence(cfg.DeletionStore))
+			tail, found, err := agent.LoadSessionJobOutputPage(stateDir, sessionID, jobID, params.BeforeBytes, params.MaxBytes, savedJobOwnerFence(cfg.DeletionStore))
 			return appwire.JobsOutputResponse{Data: tail}, found, err
 		})
 }
@@ -133,7 +133,7 @@ func hubJobsGet(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.R
 			return source.JobGet(ctx, params)
 		},
 		func(stateDir, sessionID, jobID string) (appwire.JobsGetResponse, bool, error) {
-			job, found, err := agent.LoadSessionJobGetWithFence(stateDir, sessionID, jobID, savedJobOwnerFence(cfg.DeletionStore))
+			job, found, err := agent.LoadSessionJobGet(stateDir, sessionID, jobID, savedJobOwnerFence(cfg.DeletionStore))
 			return appwire.JobsGetResponse{Data: job}, found, err
 		})
 }

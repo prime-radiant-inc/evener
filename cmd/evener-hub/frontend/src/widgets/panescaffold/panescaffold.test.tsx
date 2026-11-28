@@ -4,9 +4,8 @@ import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { requestPaneFocus, resetWorkspaceStoreForTests } from "../../shell/workspace";
-import { escapeRegExp, mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { PaneScaffold } from "./index";
 
 beforeEach(() => {
@@ -187,9 +186,10 @@ test("renders the footer when provided", () => {
 });
 
 test("renders a flush edge footer after the padded footer", () => {
-  render(
+  const { container, rerender } = render(
     <PaneScaffold
       title="Sessions"
+      scaffoldMarker="session:local:test"
       footer={<span data-testid="my-footer" />}
       edgeFooter={<span data-testid="my-edge-footer" />}
     >
@@ -197,10 +197,21 @@ test("renders a flush edge footer after the padded footer", () => {
     </PaneScaffold>,
   );
 
+  const body = container.querySelector('[data-pane-scaffold="session:local:test"]');
   const footer = screen.getByTestId("pane-footer");
   const edgeFooter = screen.getByTestId("pane-edge-footer");
+  expect(body?.getAttribute("data-has-edge-footer")).toBe("true");
   expect(footer.contains(edgeFooter)).toBe(false);
   expect(footer.compareDocumentPosition(edgeFooter) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  rerender(
+    <PaneScaffold title="Sessions" scaffoldMarker="session:local:test" footer={<span data-testid="my-footer" />}>
+      content
+    </PaneScaffold>,
+  );
+  expect(
+    container.querySelector('[data-pane-scaffold="session:local:test"]')?.getAttribute("data-has-edge-footer"),
+  ).toBeNull();
 });
 
 test("renders title, cadence, actions and children in that document order", () => {
@@ -228,10 +239,10 @@ test("renders title, cadence, actions and children in that document order", () =
 // the same jsdom limitation for a different reason. Instead this reads the
 // CSS module's own source, the same way button.test.tsx verifies its
 // :focus-visible rule this way.
-test("the title rule truncates overflow with an ellipsis", () => {
+test("the title rule composes the shared truncation recipe", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
-  expect(css).toContain("text-overflow: ellipsis");
+  expect(css).toMatch(/\.title\s*\{[^}]*composes:\s*truncate from "\.\.\/\.\.\/styles\/text\.module\.css"/s);
 });
 
 test("the body rule scrolls independently of the header and footer", () => {
@@ -256,8 +267,8 @@ test("the header and footer are fixed slots around the scrolling body", () => {
 // footer - not on StackHost's container (StackHost.module.css's .host
 // comment): the footer's own chrome fills the home-indicator band while its
 // padding keeps the composer controls above it. env() is 0 on desktop, so
-// the padding resolves to plain --space-3 there. The phone's safe-area-only
-// padding is checked geometrically by overflowguard against the real Session.
+// the padding resolves to plain --space-3 there. Overflowguard checks the
+// phone's folded and content-bearing states with a real nonzero safe area.
 test("the footer fills to the screen's bottom edge while keeping its content clear of the home indicator", () => {
   // Comments stripped: the rule's own comment names the inset (testing.md's
   // "a stylesheet assertion that matches its own comment" trap).
@@ -265,22 +276,10 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
   const footerRule = css.match(/\.footer \{([^}]*)\}/)?.[1] ?? "";
   expect(footerRule).toContain("padding-bottom: calc(var(--space-3) + var(--dock-clearance))");
   expect(topRuleBlock(css, ".edgeFooter")).toContain("padding-bottom: var(--dock-clearance)");
-  // The phone keeps only keyboard-aware safe-area clearance below the card.
-  expect(css).toMatch(
-    new RegExp(
-      `@media ${escapeRegExp(MOBILE_QUERY)} \\{[\\s\\S]*?\\.footer \\{[^}]*padding: var\\(--space-3\\) var\\(--space-4\\);[^}]*padding-bottom: var\\(--dock-clearance\\)`,
-    ),
-  );
   // A flush edge footer below this one (the session status bar) is the pane's
   // bottom edge and owns the band at every width, including a landscape phone
   // whose width crosses the desktop shell boundary.
   expect(topRuleBlock(css, ".footerBeforeEdge")).toContain("padding-bottom: var(--space-3)");
-  // The composer's activity line is the pane's bottom edge: its chips already
-  // occupy the tap floor, so reserving the home-indicator band below them
-  // spends that band twice and eats the transcript's height. A phone pane
-  // renders no edge footer, so this must address .footer - the composer's
-  // actual home on a phone - not the session's .footerBeforeEdge rule.
-  expect(css).toMatch(/\.footer:has\(:global\(\[data-composer-activity-line="true"\]\)\) \{[^}]*padding-bottom: 0;/);
 });
 
 // Footer-less panes (welcome, settings, spawn, doc) had their end-of-scroll
@@ -290,7 +289,7 @@ test("the footer fills to the screen's bottom edge while keeping its content cle
 //
 // That inset belongs to the pane's bottom edge. Any slot below the body (the
 // session pane's composer footer, or a flush edgeFooter alone) hands the edge
-// to that surface's top hairline, so the inset there would be a dead band
+// to that surface, so the inset there would be a dead band
 // between the last row and the surface. The step is a property on .body so the
 // phone block can change it at (0,1,0); a .body:last-child override there would
 // be (0,2,0) and beat .bodyNoScroll, padding the cascade's flush columns.
@@ -305,11 +304,6 @@ test("the body keeps end-of-scroll content clear of the home indicator", () => {
   expect(bodyRule).toContain("--pane-body-edge-inset: calc(var(--space-5) + var(--dock-clearance));");
   expect(topRuleBlock(css, ".body:not(:last-child)")).toContain("padding-bottom: 0");
   expect(topRuleBlock(css, ".body:last-child")).toContain("padding-bottom: var(--pane-body-edge-inset)");
-  // The phone changes only the step, and must use its own: a block repeating
-  // --space-5 would change nothing.
-  expect(mediaBlock(css, "max-width: 899px").replace(/\s+/g, " ")).toContain(
-    "--pane-body-edge-inset: calc(var(--space-4) + var(--dock-clearance));",
-  );
 });
 
 // The chrome-store title channel (2026-07-30-mobile-session-layout-design.md,
@@ -349,30 +343,6 @@ test("clears the chrome store title on unmount", async () => {
   expect(chromeStore.getState().paneTitle).toBeNull();
 });
 
-// Mobile full-bleed + hidden header (2026-07-30-mobile-session-layout-design.md,
-// decisions 1 and 3): on the phone the pane loses its card chrome (the
-// top bar and surface steps carry the structure) and its header (the title
-// moved into StackHost's top bar via the chrome store).
-test("mobile: the pane sheds its border and radius to sit flush against the screen edges", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
-  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
-  expect(mobile).not.toBeNull();
-  const paneRule = mobile![1]!.match(/\.pane \{([^}]*)\}/);
-  expect(paneRule).not.toBeNull();
-  expect(paneRule![1]).toContain("border: none");
-  expect(paneRule![1]).toContain("border-radius: 0");
-});
-
-test("mobile: the in-pane header is hidden - the title lives in the top bar", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
-  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
-  const headerRule = mobile![1]!.match(/\.header \{([^}]*)\}/);
-  expect(headerRule).not.toBeNull();
-  expect(headerRule![1]).toContain("display: none");
-});
-
 test("mobile: the body can never scroll sideways - wide content is contained, not panned", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
@@ -396,9 +366,5 @@ test("the title renders as a sentence-case pane-title heading, not an uppercase 
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "panescaffold.module.css"), "utf8");
   const rule = css.match(/\.title \{([^}]*)\}/)?.[1] ?? "";
-  expect(rule).toContain("font-size: var(--font-size-pane-title)");
-  expect(rule).toContain("font-weight: var(--font-weight-semibold)");
   expect(rule).not.toContain("text-transform");
-  expect(rule).toContain("letter-spacing: var(--tracking-display)");
-  expect(rule).toContain("color: var(--ink-hi)");
 });

@@ -5,17 +5,20 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { readModuleCss } from "../../../../styles/cssBlock";
 import { ALL_CAPABILITIES as FORK_CAPABILITIES } from "../../../../threadTestUtils";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
+import "../../../doc";
 import { Toast } from "../../../../widgets";
 import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { readDraft } from "../../composer/draft";
 import { SessionNowContext } from "../../liveness";
 import { ignoringTurn, itemRendererFor } from "../types";
+import speakerStyles from "./speakerheader.module.css";
 import { UserMessageItem, UserMessageView } from "./UserMessageItem";
 import styles from "./usermessageitem.module.css";
 
@@ -79,15 +82,15 @@ test("message timestamp advances with the shared clock and preserves the exact i
 test("no time node at all (no placeholder) when startedAt is absent", () => {
   render(<UserMessageView item={item({ text: "hello" })} />);
   const root = screen.getByTestId("user-message-item");
-  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
-  expect(header.querySelector(`.${styles.time}`)).toBeNull();
+  const header = root.querySelector(`.${speakerStyles.header}`) as HTMLElement;
+  expect(header.querySelector(`.${speakerStyles.meta}`)).toBeNull();
   expect(header.children).toHaveLength(1);
 });
 
 test("actions live in the speaker header row", () => {
   render(<UserMessageView item={item({ text: "hello" })} actions={<button type="button">act</button>} />);
   const root = screen.getByTestId("user-message-item");
-  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
+  const header = root.querySelector(`.${speakerStyles.header}`) as HTMLElement;
   expect(header.contains(screen.getByRole("button", { name: "act" }))).toBe(true);
 });
 
@@ -100,7 +103,7 @@ test('carries a quiet "You" tag as a sibling of the text, not mixed into it', ()
   const { container } = render(<UserMessageItem item={item({ text: "hi" })} turn={turn} live={false} />);
   // The "You" tag and the prompt text are two separate nodes: the bubble
   // holds the text alone, so a mixed-in tag would show up in it.
-  expect(screen.getByTestId("user-bubble").textContent).toBe("hi");
+  expect(screen.getByTestId("user-bubble").textContent?.trim()).toBe("hi");
   expect(screen.getByTestId("user-message-item").dataset.speaker).toBe("user");
   expect(container.querySelector('[data-testid="user-message-item"]')).toBeTruthy();
 });
@@ -113,7 +116,7 @@ test("the approved You row keeps identity, text, and attachments in one avatar +
   expect(message?.children[0]?.className).toBe(styles.avatar);
   const content = message?.children[1];
   expect(content?.className).toBe(styles.content);
-  expect(content?.children[0]?.className).toBe(styles.header);
+  expect(content?.children[0]?.className).toBe(speakerStyles.header);
   expect((message as HTMLElement | null)?.dataset.speaker).toBe("user");
   const body = content?.children[1];
   expect(body?.className).toBe(styles.body);
@@ -121,8 +124,9 @@ test("the approved You row keeps identity, text, and attachments in one avatar +
   expect(body?.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-test("the slack-lean layout is token-backed and has no prose card treatment", () => {
+test("the speaker header and message column keep their alignment across widths", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
+  const speaker = readModuleCss(import.meta.url, "speakerheader.module.css");
   // One flex row: avatar (flex:none) + the transcript's single-sourced
   // --speaker-gap (10px, declared on .turn in turnblock.module.css), so the
   // content column lands on the same 34px line the TurnBlock gutter uses for
@@ -143,14 +147,19 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   // the old 92% cap: "commit and merge" clamped to 133px and wrapped in a
   // 651px row).
   expect(css).toMatch(/\.content\s*\{[\s\S]*flex:\s*1 1 auto;[\s\S]*min-width:\s*0;/);
-  expect(css).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
-  // Speaker name at body size / semibold / --ink-hi (spec decision 1, weight
-  // raised by typography-spacing-critique-2026-09-06 R3 so the header is a
-  // landmark); clock time at ui size / --ink-mid (readable, not sub-AA).
-  expect(css).toMatch(
+  // The speaker header itself is shared with the agent message
+  // (speakerheader.module.css): one flex row naming the speaker, with the
+  // name at body size / semibold / --ink-hi (spec decision 1, weight raised
+  // by typography-spacing-critique-2026-09-06 R3 so the header is a
+  // landmark), and the meta slot composing the shared ui-size / --ink-mid
+  // recipe (pinned once in text.contract.test.ts).
+  expect(speaker).toMatch(/\.header\s*\{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*baseline;/);
+  expect(speaker).toMatch(
     /\.name\s*\{[\s\S]*font-size:\s*var\(--font-size-body\);[\s\S]*font-weight:\s*var\(--font-weight-semibold\);[\s\S]*color:\s*var\(--ink-hi\);/,
   );
-  expect(css).toMatch(/\.time\s*\{[\s\S]*font-size:\s*var\(--font-size-ui\);[\s\S]*color:\s*var\(--ink-mid\);/);
+  expect(speaker).toMatch(
+    /\.meta\s*\{[\s\S]*composes:\s*textSecondary from "\.\.\/\.\.\/\.\.\/\.\.\/styles\/text\.module\.css";/,
+  );
   // Text at --ink-hi (spec decision 5 - the header now carries the
   // boundary-scannability the old --ink-mid demotion was buying).
   expect(css).toMatch(/\.text\s*\{[\s\S]*color:\s*var\(--ink-hi\);/);
@@ -170,8 +179,6 @@ test("the slack-lean layout is token-backed and has no prose card treatment", ()
   expect(phone![1]).toMatch(/\.message > \.content\s*\{[^}]*display:\s*contents;/);
   expect(phone![1]).toMatch(/\.message \.body\s*\{[^}]*grid-column:\s*1 \/ -1;/);
   expect(css.split("@media").length).toBe(2);
-  expect(css).not.toMatch(/\.message\s*\{[^}]*background\s*:/);
-  expect(css).not.toMatch(/\.message\s*\{[^}]*border\s*:/);
 });
 
 test("the speaker avatar starts at the top of the user message row", () => {
@@ -188,26 +195,116 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
   expect(bubble.querySelector('[data-testid="image-gallery-thumb"]')).toBeTruthy();
 });
 
-// The user's own words sit on a paper slip (structural surface, one hairline,
-// the card lift) hugging the content. The corner toward the avatar is the
-// tight one; the other three share one rounder corner. Serif prose stays.
-test("the user reading surface is a paper slip hugging its content column", () => {
+test("user prose spans its content column, pins the prose size, and avoids pre-wrap on markdown", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
   const body = /\.body\s*\{([^}]*)\}/.exec(css);
   expect(body).not.toBeNull();
-  expect(body![1]).toMatch(/background:\s*var\(--surface-1\)/);
-  expect(body![1]).toMatch(/border:\s*1px solid var\(--edge\)/);
-  expect(body![1]).toMatch(/box-shadow:\s*var\(--shadow-card\)/);
-  expect(body![1]).toMatch(
-    /border-radius:\s*var\(--radius-chip\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)\s*var\(--radius-pane\)/,
-  );
-  expect(body![1]).toMatch(/width:\s*fit-content/);
+  expect(body![1]).toMatch(/(?:^|\n)\s*width:\s*100%/);
   expect(body![1]).toMatch(/max-width:\s*100%/);
-  expect(body![1]).toMatch(/padding:\s*var\(--space-2\)\s*var\(--space-3\)/);
+  expect(body![1]).toMatch(/--prose-font-size:\s*var\(--font-size-prose\)/);
+  expect(body![1]).not.toMatch(/white-space:\s*pre-wrap/);
   expect(body![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   const text = /\.text\s*\{([^}]*)\}/.exec(css);
   expect(text?.[1]).toMatch(/font-family:\s*var\(--font-prose\)/);
   expect(text?.[1]).toMatch(/font-size:\s*var\(--font-size-prose\)/);
+  const provisionalBody = /\.provisional\s+\.body\s*\{([^}]*)\}/.exec(css);
+  expect(provisionalBody?.[1]).toMatch(/width:\s*fit-content/);
+});
+
+test("renders GFM markdown in user messages and escapes raw HTML", () => {
+  const source = [
+    "## Plan",
+    "",
+    "Check **bold**, _italic_, `inline()`, and [docs](https://example.test/docs).",
+    "",
+    "- first",
+    "- second",
+    "",
+    "> quoted note",
+    "",
+    "```ts",
+    "const x = 1;",
+    "```",
+    "",
+    "| Col | Val |",
+    "| --- | --- |",
+    "| a | 1 |",
+    "",
+    '<script>window.__xss = 1</script><div class="raw-box">literal</div><img src="x" onerror="alert(1)">',
+  ].join("\n");
+
+  const { container } = render(<UserMessageItem item={item({ text: source })} turn={turn} live={false} />);
+  const bubble = screen.getByTestId("user-bubble");
+  expect(screen.getByRole("heading", { level: 2, name: "Plan" })).toBeTruthy();
+  expect(bubble.querySelector("strong")?.textContent).toBe("bold");
+  expect(bubble.querySelector("em")?.textContent).toBe("italic");
+  expect(bubble.querySelector("p code")?.textContent).toBe("inline()");
+  const link = screen.getByRole("link", { name: "docs" });
+  expect(link.getAttribute("href")).toBe("https://example.test/docs");
+  expect(link.getAttribute("target")).toBe("_blank");
+  expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  expect(bubble.querySelectorAll("ul li")).toHaveLength(2);
+  expect(bubble.querySelector("blockquote")?.textContent).toContain("quoted note");
+  expect(bubble.querySelector("pre code")?.textContent).toBe("const x = 1;");
+  expect(bubble.querySelectorAll("table tbody tr")).toHaveLength(1);
+  // Raw HTML is escaped as text, never parsed into DOM elements.
+  expect(container.querySelector("script")).toBeNull();
+  expect(container.querySelector("img")).toBeNull();
+  expect(container.querySelector(".raw-box")).toBeNull();
+  expect(bubble.textContent).toContain('<div class="raw-box">literal</div>');
+});
+
+test("resolves project file and file:// links in user messages beside the session pane", async () => {
+  resetWorkspaceStoreForTests();
+  const user = userEvent.setup();
+  const sourcePaneId = workspaceStore.getState().openPane("session", { ref: "local:sess_1" });
+  const thread = {
+    ref: "local:sess_1",
+    threadId: "sess_1",
+    cwd: "/workspace/project",
+  } as Parameters<typeof TranscriptRenderProvider>[0]["thread"];
+
+  render(
+    <TranscriptRenderProvider sessionRef="local:sess_1" thread={thread} sourcePaneId={sourcePaneId}>
+      <UserMessageItem
+        item={item({
+          text: "Inspect [the report](file:///workspace/project/report.md) and src/main.ts.\n\n```\nsrc/ignored.ts\n```",
+        })}
+        turn={turn}
+        live={false}
+        sessionRef="local:sess_1"
+      />
+    </TranscriptRenderProvider>,
+  );
+
+  const reportLink = screen.getByRole("link", { name: "the report" });
+  await user.click(reportLink);
+  expect(
+    workspaceStore
+      .getState()
+      .panes.filter((pane) => pane.type === "doc")
+      .map((pane) => documentPaneState(pane)),
+  ).toMatchObject([{ reference: { path: "report.md", cwd: "/workspace/project" }, origin: { id: sourcePaneId } }]);
+
+  const bareFileLink = screen.getByRole("link", { name: "src/main.ts" });
+  expect(bareFileLink).toBeTruthy();
+  expect(screen.queryByRole("link", { name: "src/ignored.ts" })).toBeNull();
+  resetWorkspaceStoreForTests();
+});
+
+test("markdown={false} keeps literal text for tool-output callers", () => {
+  render(
+    <UserMessageView
+      item={item({ text: "Keep **stars** literal\nsecond line" })}
+      speaker="agent"
+      name="Agent → dlg_abc123"
+      markdown={false}
+    />,
+  );
+  const bubble = screen.getByTestId("user-bubble");
+  expect(bubble.querySelector("strong")).toBeNull();
+  expect(bubble.querySelector("p")).toBeNull();
+  expect(bubble.textContent).toBe("Keep **stars** literal\nsecond line");
 });
 
 test("no gallery thumbnails when the item carries no images", () => {
@@ -475,6 +572,7 @@ test("UserMessageView accepts speaker/name/timeIso overrides for non-user speake
       speaker="agent"
       name="Agent → dlg_abc123"
       timeIso="2026-08-06T10:05:00Z"
+      markdown={false}
     />,
   );
   expect(screen.getByText("Agent → dlg_abc123")).toBeTruthy();
@@ -486,7 +584,7 @@ test("UserMessageView defaults are unchanged: user speaker, 'You' name, item.sta
   render(<UserMessageView item={item({ text: "hi" })} />);
   const root = screen.getByTestId("user-message-item");
   expect(root.dataset.speaker).toBe("user");
-  expect(root.querySelector(`.${styles.name}`)?.textContent ?? "").not.toBe("");
+  expect(root.querySelector(`.${speakerStyles.name}`)?.textContent ?? "").not.toBe("");
 });
 
 // --- the provisional register (steering-ghost live edge) ---------------------
@@ -511,7 +609,7 @@ test("a provisional caption renders in the meta slot instead of the item time", 
   // a relative label, never a clock string - while a timestamp rendered
   // alongside the caption would append its label here and fail.)
   const root = screen.getByTestId("user-message-item");
-  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
+  const header = root.querySelector(`.${speakerStyles.header}`) as HTMLElement;
   expect(header.textContent).toBe("YouDelivers when this step finishes · held 42s");
 });
 

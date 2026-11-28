@@ -7,11 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/githubcopilot"
 	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
@@ -320,4 +323,137 @@ func runStartupPrefetch(t *testing.T, start func(startBackground func(func()))) 
 		t.Fatal("the prefetch never returned: it is still running after its startup pass")
 	}
 	return runs
+}
+
+// TestPrefetchKeepsAuthoritativeEmptyRoster pins the account-owned catalog
+// through the hub's publish path and a reload: the subscription answered with
+// no usable rows, so no bundled Copilot row may appear, before or after the
+// snapshot is carried onto a fresh registry.
+func TestPrefetchKeepsAuthoritativeEmptyRoster(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	if err := githubcopilot.SaveAuth(stateDir, "work", githubcopilot.AuthRecord{
+		Instance: "work", Scheme: githubcopilot.AuthScheme, Version: 1,
+		AccessToken: "access", CopilotToken: "copilot", AccountID: "account-1",
+		ObtainedAt: time.Now().Add(-time.Hour), CopilotExpiry: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"" + srv.URL + "/v1\"\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, nil)
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	prefetchAllLiveModels(context.Background(), ctl.reg, nil, func() {})
+	if got := entry(t, ctl.List(), "work"); len(got.Models) != 0 {
+		t.Fatalf("models = %+v, want none from an authoritative empty roster", got.Models)
+	}
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got := entry(t, ctl.List(), "work"); len(got.Models) != 0 {
+		t.Fatalf("models after reload = %+v, want the empty roster carried", got.Models)
+	}
+}
+
+// copilotListingController serves one mutable /models status for a Copilot
+// instance whose stored credential makes its listing authoritative.
+func copilotListingController(t *testing.T, status *atomic.Int32, body string) *hubInstancesController {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(int(status.Load()))
+		if status.Load() == http.StatusOK {
+			_, _ = w.Write([]byte(body))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	dir, stateDir := t.TempDir(), t.TempDir()
+	if err := githubcopilot.SaveAuth(stateDir, "work", githubcopilot.AuthRecord{
+		Instance: "work", Scheme: githubcopilot.AuthScheme, Version: 1,
+		AccessToken: "access", CopilotToken: "copilot", AccountID: "account-1",
+		ObtainedAt: time.Now().Add(-time.Hour), CopilotExpiry: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := "[providers.work]\nbase = \"github-copilot\"\nbase_url = \"" + srv.URL + "/v1\"\n"
+	if err := os.WriteFile(tomlPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, nil)
+	if err := ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	return ctl
+}
+
+// TestFetchInstanceLiveInitialFailureKeepsStaticCatalog pins that a fetch that
+// never succeeded publishes the preexisting non-authoritative fallback: the
+// bundled Copilot catalog stays visible, and no authoritative empty roster is
+// recorded for reloads to restore.
+func TestFetchInstanceLiveInitialFailureKeepsStaticCatalog(t *testing.T) {
+	status := &atomic.Int32{}
+	status.Store(http.StatusServiceUnavailable)
+	ctl := copilotListingController(t, status, `{"data":[]}`)
+	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "work"); err == nil {
+		t.Fatal("a provider failure reported success")
+	}
+	got := entry(t, ctl.List(), "work")
+	if len(got.Models) == 0 {
+		t.Fatal("models = none, want the bundled catalog after an initial fetch failure")
+	}
+	if listing, ok := ctl.reg.Get().LiveListingFor("work"); ok && listing.Authoritative {
+		t.Fatalf("a failed fetch recorded an authoritative listing: %+v", listing)
+	}
+}
+
+// TestFetchInstanceLiveFailureAfterRosterRestoresStaticCatalog pins that a
+// transient failure after a good account roster keeps the preexisting failure
+// fallback: the bundled catalog returns and the failed result is not recorded
+// as an authoritative empty roster for a later reload to restore.
+func TestFetchInstanceLiveFailureAfterRosterRestoresStaticCatalog(t *testing.T) {
+	status := &atomic.Int32{}
+	status.Store(http.StatusOK)
+	ctl := copilotListingController(t, status, `{"data":[
+	 {"id":"account-live-row","supported_endpoints":["/responses"],"capabilities":{"family":"gpt"}}
+	]}`)
+	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "work"); err != nil {
+		t.Fatalf("initial live fetch: %v", err)
+	}
+	got := entry(t, ctl.List(), "work")
+	if !slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "account-live-row" }) {
+		t.Fatalf("entry models = %+v, want the account roster first", got.Models)
+	}
+	status.Store(http.StatusServiceUnavailable)
+	if err := fetchInstanceLive(context.Background(), ctl.reg, ctl.auth, "work"); err == nil {
+		t.Fatal("provider failure reported success")
+	}
+	got = entry(t, ctl.List(), "work")
+	if slices.ContainsFunc(got.Models, func(m appwire.InstanceModelEntry) bool { return m.ID == "account-live-row" }) {
+		t.Fatalf("entry models = %+v, want the stale account row gone", got.Models)
+	}
+	if len(got.Models) == 0 {
+		t.Fatal("models = none, want the bundled catalog after the failed refresh")
+	}
+	if listing, ok := ctl.reg.Get().LiveListingFor("work"); ok && listing.Authoritative {
+		t.Fatalf("a failed refresh recorded an authoritative listing: %+v", listing)
+	}
 }

@@ -281,7 +281,7 @@ func TestRefreshRemoteThreadSnapshotDropsRowsWhenChurnLandsAfterRead(t *testing.
 	if len(fetch.threads) != 2 {
 		t.Fatalf("walk threads = %+v, want both sources' rows read", fetch.threads)
 	}
-	cache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+	cache.Store(hubcore.RemoteThreadSnapshot{
 		Threads:  fetch.threads,
 		Complete: fetch.complete,
 		Sources:  fetch.sources,
@@ -340,7 +340,7 @@ func TestRefreshRemoteThreadSnapshotPublishesRowsReadAfterMidWalkChurn(t *testin
 	if captured, ok := fetch.sourceGenerations["zzz-victim"]; !ok || captured != current {
 		t.Fatalf("walk captured zzz-victim at %d (ok=%v), want the read-time generation %d", captured, ok, current)
 	}
-	cache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+	cache.Store(hubcore.RemoteThreadSnapshot{
 		Threads:  fetch.threads,
 		Complete: fetch.complete,
 		Sources:  fetch.sources,

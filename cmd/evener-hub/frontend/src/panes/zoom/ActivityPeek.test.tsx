@@ -131,19 +131,28 @@ function installMobileCascadeViewport(): () => void {
   };
 }
 
-async function expectFourPeeks(controls: ReturnType<typeof scope>, ref: string) {
+async function expectFourPeeks(controls: ReturnType<typeof scope>, ref: string, orientation: "row" | "column") {
   for (const category of ["Agents", "Jobs", "Watches", "Tasks"]) {
     expect(controls.getByRole("button", { name: new RegExp(`^${category},.* - peek at ${ref}$`) })).toBeTruthy();
   }
   expect(controls.queryByRole("button", { name: `About - peek at ${ref}` })).toBeNull();
-  expect(controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) })).toHaveLength(4);
+  const triggers = controls.getAllByRole("button", { name: new RegExp(` - peek at ${ref}$`) });
+  expect(triggers).toHaveLength(4);
+  for (const trigger of triggers) {
+    expect(trigger.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(trigger.dataset.orientation).toBe(orientation);
+    expect(trigger.dataset.compact).toBe("true");
+  }
   const tasksTrigger = controls.getByRole("button", { name: new RegExp(`^Tasks,.* - peek at ${ref}$`) });
   await act(async () => fireEvent.click(tasksTrigger));
   const peek = await screen.findByTestId("activity-peek");
+  expect(tasksTrigger.getAttribute("aria-expanded")).toBe("true");
   expect(within(peek).getByRole("dialog", { name: `Tasks for ${ref}` })).toBeTruthy();
   await waitFor(() => expect(emptyStateReasons(peek)).toContain("empty"));
   await act(async () => fireEvent.click(within(peek).getByRole("button", { name: "Close activity peek" })));
   await waitFor(() => expect(screen.queryByTestId("activity-peek")).toBeNull());
+  expect(tasksTrigger.getAttribute("aria-expanded")).toBe("false");
 }
 
 test("desktop cascade spine and readable parent keep About out of their four activity peeks while leaf omits duplicate controls", async () => {
@@ -151,10 +160,10 @@ test("desktop cascade spine and readable parent keep About out of their four act
   client.on("evener/tasks/list", () => ({ data: [] }));
   mount();
   await conversationMounted("child");
-  await expectFourPeeks(scope("root"), "root");
-  await expectFourPeeks(scope("child"), "child");
+  await expectFourPeeks(scope("root"), "root", "column");
+  await expectFourPeeks(scope("child"), "child", "row");
   expect(scope("grandchild").queryByTestId("cascade-activity-controls")).toBeNull();
-});
+}, 15_000);
 
 test("mobile cascade column keeps About out of its four activity peeks", async ({ onTestFinished }) => {
   onTestFinished(installMobileCascadeViewport());
@@ -166,7 +175,7 @@ test("mobile cascade column keeps About out of its four activity peeks", async (
     "grandchild",
   ]);
   expect(screen.queryByTestId("statusbar")).toBeNull();
-  await expectFourPeeks(scope("grandchild"), "grandchild");
+  await expectFourPeeks(scope("grandchild"), "grandchild", "row");
 });
 
 test.each(["success", "failure"] as const)(
@@ -369,7 +378,7 @@ test("closing a leaf peek releases only its collection while the same-ref sideba
   // reader before checking release of the sidebar's final collection demand.
   rerender(contents(false));
   await act(async () =>
-    fireEvent.click(within(screen.getByTestId("activity-sidebar")).getByRole("radio", { name: /Jobs/ })),
+    fireEvent.click(within(screen.getByTestId("activity-sidebar")).getByRole("tab", { name: /Jobs/ })),
   );
   const before = reads();
   act(() =>

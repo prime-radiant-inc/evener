@@ -35,7 +35,6 @@ import type {
   ThreadModel,
   ThreadReadResponse,
   ThreadTurnsListResponse,
-  UrlsRemoveResponse,
 } from "@evener/appwire-client";
 import {
   acquireThreadSubscription,
@@ -523,11 +522,6 @@ export interface ThreadsStoreState {
     expectedInstanceId?: string,
     onCommitted?: (record: MutationOutboxRecord) => void,
   ): Promise<MutationOutboxRecord>;
-  // Removes one session URL list entry by id. The response carries no
-  // state; the evener/urls/updated push is the authority. Local list edits
-  // on success are the push's business, not this response's — unlike
-  // setGoal/setHumanNote there is no response-derived local commit here.
-  removeURL(ref: string, id: string): Promise<UrlsRemoveResponse>;
   rename(ref: string, name: string): Promise<void>;
   compact(ref: string): Promise<void>;
   // Clears the thread's conversation through the durable mutation outbox. The
@@ -2816,16 +2810,6 @@ function requireMutationRuntime(): MutationRuntime {
   const runtime = getMutationRuntime();
   if (!runtime) throw new Error(INDEXEDDB_UNAVAILABLE);
   return runtime;
-}
-
-// A queue action that removes or promotes a row has no transcript item to
-// prove delivery, but the user explicitly ended that queue row. Settle its
-// retained display copy so the stack cannot keep a permanent Delivering row.
-export async function settleDisplayCopy(clientMutationId: string, ref: string): Promise<void> {
-  const runtime = getMutationRuntime();
-  if (!runtime) return;
-  await runtime.dispatcher.reconcileIdentities([clientMutationId]);
-  await refreshMutationPins(runtime, [ref]);
 }
 
 export interface MutationPersistenceSnapshot {
@@ -9360,18 +9344,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         onCommitted?.(record);
       },
     );
-  },
-
-  async removeURL(ref, id) {
-    const model = trackedThreadModel(ref);
-    if (!canWriteSharedNotes(model)) throw new Error("Session cannot accept notes");
-    // The response carries no state; evener/urls/updated is authoritative.
-    return requestMappingConflict("urls/remove", {
-      ref,
-      clientMutationId: createSecureUUID(),
-      expectedInstanceId: threadInstanceID(model) ?? "",
-      id,
-    });
   },
 
   async rename(ref, name) {

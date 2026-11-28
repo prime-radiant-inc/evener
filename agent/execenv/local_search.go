@@ -287,27 +287,11 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 // sensitivity, result cap, output mode, and context window the caller asked
 // for.
 func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
-	return e.GrepSkipping(ctx, pattern, path, globFilter, caseInsensitive, maxResults, outputMode, grepContextLines(contextLines), nil)
-}
-
-// grepContextLines is the context window an optional contextLines argument
-// asks for: its first value when positive, else 0.
-func grepContextLines(contextLines []int) int {
-	if len(contextLines) > 0 && contextLines[0] > 0 {
-		return contextLines[0]
-	}
-	return 0
-}
-
-// GrepSkipping is Grep, except that it never searches a file for which skip,
-// when not nil, reports true. skip gets the file's slash path relative to the
-// searched directory. A skipped file is left out before the result cap, so
-// it never uses up a result.
-func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
 	}
+	ctxLines := grepContextLines(contextLines)
 	dir := resolveGrepDir(path, e.RootDir)
 
 	if sfs := e.sandbox(); sfs != nil {
@@ -319,17 +303,13 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
 		// rely on here: correctness over speed for a sandboxed session. grepNative
 		// policy-checks the base itself and skips masked subtrees.
-		return sfs.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, e.ignoreMatcherCacheFor(), e.RootDir)
+		return sfs.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil, e.ignoreMatcherCacheFor(), e.RootDir)
 	}
 
-	// Ripgrep takes no predicate, so a search that skips files walks natively.
-	if skip != nil {
-		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, e.RootDir)
-	}
 	// Targets ripgrep cannot bound never reach it (see grepTakesNativeArm);
 	// the native walk applies the pseudo-root skip and the per-file read cap.
 	if grepTakesNativeArm(dir) {
-		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip, e.RootDir)
+		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil, e.RootDir)
 	}
 	rg, err := e.findExecutable("rg")
 	if err != nil {
@@ -455,6 +435,15 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// The capture consumed rg's stdout, so a failed search's diagnostic shows the
 	// bounded prefix it kept beside rg's stderr.
 	return capture.diagnostics() + res.Stderr, err
+}
+
+// grepContextLines is the context window an optional contextLines argument
+// asks for: its first value when positive, else 0.
+func grepContextLines(contextLines []int) int {
+	if len(contextLines) > 0 && contextLines[0] > 0 {
+		return contextLines[0]
+	}
+	return 0
 }
 
 // grepRgOversizeCount reports how many candidate files ripgrep leaves out of
@@ -772,8 +761,10 @@ func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, pat
 	return e.grepNativeSkipping(ctx, pattern, path, globFilter, caseInsensitive, maxResults, outputMode, grepContextLines(contextLines), nil, e.RootDir)
 }
 
-// grepNativeSkipping is grepNative, never searching a file skip names (see
-// GrepSkipping).
+// grepNativeSkipping is grepNative, except that it never searches a file for
+// which skip, when not nil, reports true. skip gets the file's slash path
+// relative to the searched directory. A skipped file is left out before the
+// result cap, so it never uses up a result.
 func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, ctxLines int, skip func(rel string) bool, displayRoot ...string) (string, error) {
 	dispRoot := e.RootDir
 	if len(displayRoot) > 0 {

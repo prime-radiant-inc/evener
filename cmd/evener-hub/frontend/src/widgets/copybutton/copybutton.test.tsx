@@ -3,11 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { CopyButton } from "./index";
 
+const originalExecCommand = document.execCommand;
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.useRealTimers();
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+  Object.defineProperty(document, "execCommand", { configurable: true, writable: true, value: originalExecCommand });
 });
 
 // jsdom has no Clipboard API of its own; userEvent.setup() installs an
@@ -32,12 +35,31 @@ test("a specific label names what it copies", () => {
   expect(screen.getByRole("button", { name: "Copy raw JSON" })).toBeTruthy();
 });
 
+test("text presentation renders its label as visible text, not an icon", () => {
+  render(<CopyButton text="ABCD-1234" label="Copy code" presentation="text" />);
+  const button = screen.getByRole("button", { name: "Copy code" });
+  expect(button.textContent).toBe("Copy code");
+  expect(button.querySelector("svg")).toBeNull();
+});
+
 test("clicking writes exactly its text to the clipboard", async () => {
   const user = userEvent.setup();
   const writeText = vi.spyOn(navigator.clipboard, "writeText");
   render(<CopyButton text="git status --short" label="Copy command" />);
   await user.click(screen.getByRole("button", { name: "Copy command" }));
   expect(writeText).toHaveBeenCalledExactlyOnceWith("git status --short");
+});
+
+test("text presentation shows Copied ✓ after a successful write and reports it", async () => {
+  installClipboard(() => Promise.resolve());
+  const onResult = vi.fn();
+  render(<CopyButton text="ABCD-1234" label="Copy code" presentation="text" onResult={onResult} />);
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+  });
+  expect(onResult).toHaveBeenCalledExactlyOnceWith(true);
+  expect(screen.getByRole("button", { name: "Copied ✓" })).toBeTruthy();
 });
 
 test("after a successful write it is named Copied for two seconds, then reverts to its label", async () => {
@@ -71,7 +93,31 @@ test("a rejected write is a silent no-op: the name never claims Copied", async (
   expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
 });
 
-test("a missing Clipboard API is a silent no-op", async () => {
+test("a failed copy calls onResult(false) and never claims Copied", async () => {
+  installClipboard(() => Promise.reject(new Error("denied")));
+  Object.defineProperty(document, "execCommand", { configurable: true, value: vi.fn().mockReturnValue(false) });
+  const onResult = vi.fn();
+  render(<CopyButton text="hello" label="Copy code" presentation="text" onResult={onResult} />);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+  });
+  expect(onResult).toHaveBeenCalledExactlyOnceWith(false);
+  expect(screen.getByRole("button", { name: "Copy code" })).toBeTruthy();
+});
+
+test("falls back to execCommand when the Clipboard API is unavailable", async () => {
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+  const execCommand = vi.fn().mockReturnValue(true);
+  Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+  render(<CopyButton text="hello" />);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+  });
+  expect(execCommand).toHaveBeenCalledExactlyOnceWith("copy");
+  expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+});
+
+test("a missing Clipboard API and no working fallback is a silent no-op", async () => {
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
   render(<CopyButton text="hello" />);
   await act(async () => {

@@ -3,6 +3,7 @@
 // the canvas, and ink-mid footers. A row carries a bare SF Symbol in ink-mid
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
+import { GlassView } from "expo-glass-effect";
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import {
 	Children,
@@ -30,7 +31,7 @@ import {
 	useWindowDimensions,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
+import { fonts, type Palette, radius, scaledType, space, uiType } from "../design/tokens";
 import { haptic } from "../haptics";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useModalFrameAppliesInsets } from "./modalFrameInset";
@@ -119,12 +120,15 @@ function carriesSymbol(row: ReactNode): boolean {
  * on both sides of it carry a symbol, as iOS Settings draws it. */
 export function Group({
 	children,
+	glass = false,
 	label,
 	machineLabel = false,
 	selectableLabel = false,
 	section,
 }: {
 	children: ReactNode;
+	/** A group of navigation actions can share a native interactive surface. */
+	glass?: boolean;
 	label?: string;
 	/** Which group this is, as a stable token: its `group:<section>` testID. */
 	section?: string;
@@ -135,15 +139,17 @@ export function Group({
 }) {
 	const { palette } = useColors();
 	const rows = Children.toArray(children);
+	const Surface = glass ? GlassView : View;
 	const group = (
-		<View
+		<Surface
+			{...(glass ? { glassEffectStyle: "regular" as const, colorScheme: palette.scheme, isInteractive: true } : {})}
 			testID={section ? `group:${section}` : undefined}
 			style={{
 				marginHorizontal: space.margin,
 				marginTop: label ? 0 : space.groupGap,
 				borderRadius: 12,
 				overflow: "hidden",
-				backgroundColor: palette.surface,
+				backgroundColor: glass ? "transparent" : palette.surface,
 			}}
 		>
 			{rows.map((row, index) => (
@@ -161,7 +167,7 @@ export function Group({
 					{row}
 				</Fragment>
 			))}
-		</View>
+		</Surface>
 	);
 	if (!label) return group;
 	return (
@@ -583,7 +589,7 @@ const BUTTON_KINDS = {
 	primary: {
 		drawn: 50,
 		reach: "platform",
-		shape: { borderRadius: 25, paddingHorizontal: 20, paddingVertical: 6, alignSelf: "stretch" },
+		shape: { paddingHorizontal: 20, paddingVertical: 6, alignSelf: "stretch" },
 		fill: "accentFill",
 		ink: "onFill",
 		type: uiType.listRow,
@@ -592,7 +598,7 @@ const BUTTON_KINDS = {
 	plain: {
 		drawn: 36,
 		reach: "platform",
-		shape: { borderRadius: 18, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 0.5 },
+		shape: { paddingHorizontal: 14, paddingVertical: 6, borderWidth: 0.5 },
 		fill: "surface",
 		ink: "inkHi",
 		type: uiType.subheadline,
@@ -601,7 +607,7 @@ const BUTTON_KINDS = {
 	mini: {
 		drawn: 30,
 		reach: "row",
-		shape: { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 },
+		shape: { paddingHorizontal: 8, paddingVertical: 6 },
 		fill: undefined,
 		ink: "accentInk",
 		type: uiType.footnote,
@@ -684,7 +690,7 @@ export function Button({
 					justifyContent: "center",
 					paddingHorizontal: compactPrimary ? 18 : 8,
 					paddingVertical: 8,
-					...(compactPrimary ? { backgroundColor: palette.accentFill, borderRadius: 24 } : null),
+					...(compactPrimary ? { backgroundColor: palette.accentFill, borderRadius: radius.capsule } : null),
 					opacity: disabled ? 0.4 : pressed ? 0.65 : 1,
 				})}
 			>
@@ -720,6 +726,7 @@ export function Button({
 				alignItems: "center",
 				justifyContent: "center",
 				...kind.shape,
+				borderRadius: radius.capsule,
 				...outline,
 				backgroundColor: pressed && kind.pressed === "shade" ? palette.pressed : fill,
 				opacity: disabled ? 0.4 : pressed && kind.pressed === "dim" ? 0.65 : 1,
@@ -859,7 +866,7 @@ export function Segmented<T extends string>({
 				gap: 2,
 				marginHorizontal: space.margin,
 				padding: 2,
-				borderRadius: 12,
+				borderRadius: stacked ? 12 : radius.capsule,
 				backgroundColor: palette.inset,
 			}}
 		>
@@ -887,7 +894,7 @@ export function Segmented<T extends string>({
 							gap: space.rowGap,
 							paddingHorizontal: 12,
 							paddingVertical: 8,
-							borderRadius: 10,
+							borderRadius: radius.capsule,
 							backgroundColor: chosen ? selectedSurface : "transparent",
 						}}
 					>

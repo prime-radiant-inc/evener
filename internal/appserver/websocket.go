@@ -138,10 +138,15 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer ws.Close(websocket.StatusNormalClosure, "") //nolint:errcheck // connection cleanup; close error is not actionable
 
 	connectionID := fmt.Sprintf("conn-%d", serverConnSeq.Add(1))
-	var observer appwire.FrameObserver
+	var (
+		observer appwire.FrameObserver
+		closeErr error
+	)
 	if s.cfg.WebSocketTrace != nil {
 		s.cfg.WebSocketTrace.ConnectionOpened(connectionID)
-		defer s.cfg.WebSocketTrace.ConnectionClosed(connectionID, nil)
+		defer func() {
+			s.cfg.WebSocketTrace.ConnectionClosed(connectionID, closeErr)
+		}()
 		observer = s.cfg.WebSocketTrace.Observer(connectionID)
 	}
 	transport := webSocketTransport(appwire.NewObservedWSTransport(ws, observer))
@@ -192,7 +197,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 		runWebSocketKeepaliveWithTicker(ctx, ws, cancel, gate, keepalivePongTimeout, s.keepaliveTickerFactory(keepalivePingInterval), s.keepaliveDecision)
 	})
 
-	runWebSocketReceiveLoop(ctx, ws, transport, conn, gate)
+	closeErr = runWebSocketReceiveLoop(ctx, ws, transport, conn, gate)
 	// The receive loop returned, so the queue's only producer has stopped —
 	// cancel first so a racing worker dequeue discards rather than executes,
 	// then drop the buffered frames (see purgeRequestQueue). The deferred
@@ -207,7 +212,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 // connection's inbound policy (Connection.receiveInbound owns the
 // ping-inline-vs-enqueue decision), and stop when the transport or the
 // connection dies.
-func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport webSocketTransport, conn *Connection, gate *webSocketReadGate) {
+func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport webSocketTransport, conn *Connection, gate *webSocketReadGate) error {
 	defer func() {
 		// Both Recv and a full inbound queue can observe cancellation without
 		// closing the socket. Local teardown must not wait for a peer handshake.
@@ -220,23 +225,18 @@ func runWebSocketReceiveLoop(ctx context.Context, ws webSocketCloser, transport 
 		msg, err := transport.Recv(ctx)
 		gate.readerUnavailable()
 		if err != nil {
-			if ctx.Err() == nil && websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+			if websocket.CloseStatus(err) == websocket.StatusNormalClosure {
+				return nil
+			}
+			if ctx.Err() == nil {
 				_ = ws.Close(websocket.StatusInternalError, err.Error())
 			}
-			return
+			return err
 		}
 		if !conn.receiveInbound(ctx, msg) {
-			return
+			return nil
 		}
 	}
-}
-
-// runWebSocketKeepalive pings the peer every interval and cancels the
-// connection if a ping is not answered within timeout. A dead peer thus
-// surfaces to the recv/send loops as context cancellation rather than an
-// indefinite block.
-func runWebSocketKeepalive(ctx context.Context, conn wsPinger, cancel context.CancelFunc, gate *webSocketReadGate, interval, timeout time.Duration) {
-	runWebSocketKeepaliveWithTicker(ctx, conn, cancel, gate, timeout, realWebSocketKeepaliveTicker{ticker: time.NewTicker(interval)}, nil)
 }
 
 func runWebSocketKeepaliveWithTicker(ctx context.Context, conn wsPinger, cancel context.CancelFunc, gate *webSocketReadGate, timeout time.Duration, ticker webSocketKeepaliveTicker, onDecision func(bool)) {
@@ -263,10 +263,6 @@ func runWebSocketKeepaliveWithTicker(ctx context.Context, conn wsPinger, cancel 
 			}
 		}
 	}
-}
-
-func runWebSocketSendLoop(ctx context.Context, transport webSocketSender, send <-chan appwire.Message) {
-	runWebSocketSendLoopWithTimeout(ctx, transport, send, webSocketWriteTimeout, nil, nil)
 }
 
 // sent, when non-nil, is called with each message the transport accepted, so

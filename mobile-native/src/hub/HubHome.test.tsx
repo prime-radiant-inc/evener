@@ -163,7 +163,13 @@ async function mount(
 			{ id: "hub-2", name: "Home hub", origin: "https://home:9180" },
 		],
 	};
-	const root = { dispatch: vi.fn(), navigate: vi.fn(), goBack: vi.fn() };
+	const root = {
+		getState: () => ({ routes: [{ name: "Workspace" }, { name: "Hub" }] }),
+		dispatch: vi.fn(),
+		navigate: vi.fn(),
+		goBack: vi.fn(),
+		replace: vi.fn(),
+	};
 	const sheet = { getParent: () => root, navigate: vi.fn() };
 	const navigation = sheet as unknown as NativeStackScreenProps<HubRoutes, "HubHome">["navigation"];
 	const route = { key: "HubHome", name: "HubHome", params: { hubId: "hub-1" } } as const;

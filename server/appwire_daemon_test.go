@@ -295,7 +295,7 @@ func TestDaemonIdleTimeoutSetReachesController(t *testing.T) {
 	s, _, c := retirementEngineServer(t)
 	installDaemonLifecycle(s, c, &daemonRetireHold{})
 	s.SetDaemonIdleTimeoutSet(func(_ context.Context, params appwire.DaemonIdleTimeoutSetParams) (appwire.DaemonIdleTimeoutSetResponse, error) {
-		if err := c.Retarget(time.Duration(params.TimeoutMillis) * time.Millisecond); err != nil {
+		if _, _, err := c.Retarget(time.Duration(params.TimeoutMillis) * time.Millisecond); err != nil {
 			return appwire.DaemonIdleTimeoutSetResponse{}, err
 		}
 		return appwire.DaemonIdleTimeoutSetResponse{Lifecycle: DaemonLifecycleFromSnapshot(c.Snapshot())}, nil

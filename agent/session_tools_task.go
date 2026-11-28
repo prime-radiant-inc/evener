@@ -627,7 +627,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					// Keep update-only validation order and snapshot behavior exactly
 					// as before; ApplyBatch is needed only where additions and
 					// updates must commit together.
-					mutation, err = store.UpdateWithSnapshot(updates)
+					mutation, err = store.Update(updates)
 				} else {
 					mutation, err = store.ApplyBatch(adds, updates)
 				}
@@ -736,7 +736,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							if hook := deps.taskGuard.beforeAutoAdvance; hook != nil {
 								hook()
 							}
-							auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
+							auto, err := store.Update([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
 							if err != nil {
 								postCommitErr = fmt.Errorf("post-commit auto-advance failed: %w", err)
 								postCommitAdvice = "The terminal update was committed, but the next-task update failed; inspect the committed task state and resolve the reported cause before choosing the next task update."

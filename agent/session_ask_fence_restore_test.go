@@ -71,7 +71,7 @@ func TestAskFenceRestoreSubtractsCapturedCompositesAndLegacyCount(t *testing.T) 
 			if !found || len(pending) != want || pending[0].CallID != "second" {
 				t.Fatalf("pending=%+v found=%v", pending, found)
 			}
-			if state := deriveRestoredState(history, 0, nil, nil); state != SessionAwaiting {
+			if state, _, _ := deriveRestoredState(history, 0, nil); state != SessionAwaiting {
 				t.Fatalf("state=%s", state)
 			}
 		})

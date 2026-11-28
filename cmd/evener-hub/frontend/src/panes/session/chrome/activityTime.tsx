@@ -22,7 +22,8 @@ export type ActivityTimeMeaning =
   | "cancelled"
   | "delivered"
   | "armed"
-  | "created";
+  | "created"
+  | "added";
 
 export interface ActivityTimeValue {
   at: string;
@@ -40,10 +41,19 @@ const MEANING_LABEL: Record<ActivityTimeMeaning, string> = {
   delivered: "Last delivered",
   armed: "Armed",
   created: "Created",
+  added: "Added",
 };
 
 export function validActivityTime(at: string | undefined, meaning: ActivityTimeMeaning): ActivityTimeValue | undefined {
   return at !== undefined && isValidActivityTimestamp(at) ? { at, meaning } : undefined;
+}
+
+export function unixSecondsActivityTime(
+  epochSeconds: number | undefined,
+  meaning: ActivityTimeMeaning,
+): ActivityTimeValue | undefined {
+  if (epochSeconds === undefined || !Number.isFinite(epochSeconds) || epochSeconds <= 0) return undefined;
+  return validActivityTime(new Date(epochSeconds * 1000).toISOString(), meaning);
 }
 
 export function ActivityTime({ value, now }: { value: ActivityTimeValue | undefined; now: number }) {

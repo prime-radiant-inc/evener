@@ -1,12 +1,15 @@
 // What the connection says wherever a screen shows it (spec 14): nothing
 // while live, "Reconnecting…" after 2 seconds without a connection,
 // "Offline · updated 3m ago" after 30, and "Update needed" for a close no
-// retry can fix. A close a retry can fix says why it closed (the connection's
-// `error`) once the drop is old enough to speak. The Session's connection bar
-// and the sheets' status lines read it, on ConnectionProvider's one clock.
+// retry can fix that updating this app would cure. A hub below the protocol
+// floor needs its own host updated, so that close says its sentence instead.
+// A close a retry can fix says why it closed (the connection's `error`) once
+// the drop is old enough to speak. The Session's connection bar and the
+// sheets' status lines read it, on ConnectionProvider's one clock.
 import type { ConnectionState } from "@evener/appwire-client";
 import { compactDuration, DURATION_UNIT_MS, durationParts } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
+import { HUB_BELOW_FLOOR } from "../connectionRecovery";
 import { useConnection } from "../ConnectionProvider";
 
 /** How long the connection can be down before the status says so: a blip
@@ -16,18 +19,20 @@ export const RECONNECTING_AFTER_MS = 2_000;
  * what's on screen is. */
 export const OFFLINE_AFTER_MS = 30_000;
 const MINUTE = 60_000;
-/** The status for a close no retry can fix; INCOMPATIBLE_VERSIONS says what
- * it means. */
+/** The status for a close no retry can fix that updating this app would cure;
+ * INCOMPATIBLE_VERSIONS says what it means. */
 export const UPDATE_NEEDED = "Update needed";
 
 /** The connection status the Session's connection bar and the sheets' status
  * lines show (spec 14), or null when there is nothing to say. A close no
- * retry can fix says "Update needed" at once and never Reconnecting. A close
- * a retry can fix says why it closed (`error`, the sentence the connection
- * context carries for the failure) in place of Reconnecting/Offline while the
- * connection stays down. Otherwise the text depends on how long the connection
- * has been down (`downSince`) and when it was last live (`lastLiveAt`, null
- * when the hub was never reached this launch). */
+ * retry can fix says "Update needed" at once and never Reconnecting, except a
+ * hub below the floor, which says its own host-upgrade sentence: "Update
+ * needed" would point at the wrong side. A close a retry can fix says why it
+ * closed (`error`, the sentence the connection context carries for the
+ * failure) in place of Reconnecting/Offline while the connection stays down.
+ * Otherwise the text depends on how long the connection has been down
+ * (`downSince`) and when it was last live (`lastLiveAt`, null when the hub was
+ * never reached this launch). */
 export function connectionStatus(
 	state: ConnectionState,
 	fatal: boolean,
@@ -36,7 +41,7 @@ export function connectionStatus(
 	lastLiveAt: number | null,
 	now: number,
 ): string | null {
-	if (fatal) return UPDATE_NEEDED;
+	if (fatal) return error === HUB_BELOW_FLOOR ? HUB_BELOW_FLOOR : UPDATE_NEEDED;
 	if (state === "ready" || downSince === null) return null;
 	const down = now - downSince;
 	if (down < RECONNECTING_AFTER_MS) return null;

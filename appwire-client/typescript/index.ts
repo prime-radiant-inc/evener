@@ -97,8 +97,13 @@ export { answeredAskUserReply, answeredAskUserSuffix, parseAskUserQuestions } fr
 export type { AttachmentRejection, RejectableFile } from "./attachmentLimits";
 export {
   admissionRejection,
+  fitImageDimensions,
+  IMAGE_JPEG_QUALITY,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENTS,
+  MAX_IMAGE_LONG_EDGE,
+  MAX_SOURCE_BYTES,
+  MAX_SOURCE_PIXELS,
   rejectionReason,
   sizeRejection,
 } from "./attachmentLimits";
@@ -253,7 +258,15 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 export { DOC_FILE_MAX_BYTES, DocFileError, docDownloadURL, docFileRawURL, docImageURL } from "./docContent";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { canonicalJson } from "./draftCheckpointPort";
-export { diffStats, editDiffText } from "./editDiff";
+export type { DiffLineKind, EditOperation } from "./editDiff";
+export {
+  classifyDiffLineKinds,
+  diffStats,
+  editBatchDiffText,
+  editDiffText,
+  editOperationsOf,
+  splitDiffLines,
+} from "./editDiff";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
@@ -282,6 +295,7 @@ export {
   isInstanceRemoveApplied,
   isInstanceRenamePersisted,
   isMethodNotFound,
+  isSocketDroppedError,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
   isTranscriptIndexLockedError,
@@ -296,6 +310,26 @@ export {
   WireError,
   wireRejectionPayload,
 } from "./errors";
+export type {
+  FileMentionMatch,
+  FileMentionSearchInputs,
+  FileMentionSnapshot,
+  FileMentionSpliceResult,
+  FileMentionStore,
+  FileMentionTarget,
+  FileMentionToken,
+} from "./fileMention";
+export {
+  createFileMentionStore,
+  FILE_MENTION_DEBOUNCE_MS,
+  FILE_MENTION_DEFAULT_LIMIT,
+  FILE_MENTION_MAX_QUERY_LENGTH,
+  matchFileMentionPositions,
+  parseFileMentionToken,
+  rankFileMentions,
+  scoreFileMention,
+  spliceFileMention,
+} from "./fileMention";
 export {
   findIndexIn,
   findMatches,
@@ -552,6 +586,7 @@ export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject, sameJsonValue } from "./plainObject";
 export { RUNNING_QUIET_AFTER_MS } from "./quiet";
+export { isQuietYield, QUIET_YIELD_EVENT_KIND, quietYieldCommentaryOf } from "./quietYield";
 export { humanizeState, needsResponseRest } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
@@ -681,6 +716,7 @@ export {
 export {
   decodeNotificationEntities,
   escapeNotificationEntities,
+  hasFailedNotification,
   isNotificationRemnant,
   isValidTranscriptRef,
   type NotificationOutcome,

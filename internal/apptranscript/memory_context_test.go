@@ -28,7 +28,7 @@ func memoryContextTurn(text string) schema.Turn {
 
 func projectMemoryContext(t *testing.T, turn schema.Turn) appwire.ThreadItem {
 	t.Helper()
-	items := ProjectTurn("memory-turn", 3, turn, NewToolCallRegistry(), nil, nil)
+	items, _ := ProjectTurnParts("memory-turn", 3, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("projected %d items, want 1: %+v", len(items), items)
 	}
@@ -117,7 +117,7 @@ func TestMemoryContextProjectionSplitsSections(t *testing.T) {
 		MemoryIndexChangeCountsSection("personal", 150),
 		MemoryPageChangesSection("project", []string{"opaque-changed.md", "opaque-gone.md"}),
 	}
-	items := ProjectTurn("memory-turn", 3, memoryContextTurn(memoryContextRecord(sections...)), NewToolCallRegistry(), nil, nil)
+	items, _ := ProjectTurnParts("memory-turn", 3, memoryContextTurn(memoryContextRecord(sections...)), NewToolCallRegistry(), nil, nil)
 	if len(items) != len(sections) {
 		t.Fatalf("projected %d items, want one per section: %+v", len(items), items)
 	}
@@ -203,7 +203,7 @@ func TestMemoryContextProjectionPreservesBoundaryWhitespace(t *testing.T) {
 			t.Fatalf("raw=%s on whitespace-only body; want absent", item.Raw)
 		}
 	}
-	if items := ProjectTurn("memory-turn", 3, memoryContextTurn(""), NewToolCallRegistry(), nil, nil); len(items) != 0 {
+	if items, _ := ProjectTurnParts("memory-turn", 3, memoryContextTurn(""), NewToolCallRegistry(), nil, nil); len(items) != 0 {
 		t.Fatalf("empty body projected %+v, want nothing", items)
 	}
 }
@@ -214,7 +214,7 @@ func TestMemoryContextProjectionLeavesOtherContextTrimmed(t *testing.T) {
 	t.Parallel()
 	for _, kind := range []schema.TurnKind{schema.TurnEnvironment, schema.TurnNotesContext} {
 		turn := schema.Turn{Kind: kind, Message: llm.System("  padded  ")}
-		items := ProjectTurn("turn", 1, turn, NewToolCallRegistry(), nil, nil)
+		items, _ := ProjectTurnParts("turn", 1, turn, NewToolCallRegistry(), nil, nil)
 		if len(items) != 1 || items[0].Text != "padded" {
 			t.Fatalf("kind=%s items=%+v, want one trimmed item", kind, items)
 		}
@@ -233,7 +233,7 @@ func TestMemoryContextProjectionReloadParity(t *testing.T) {
 	}
 	text := memoryContextRecord(MemoryIndexSection("project", "current", true, "opaque-parity\n"), MemoryPageChangesSection("project", []string{"opaque-parity.md"}))
 	turn := memoryContextTurn(text)
-	if err := w.Append(turn); err != nil {
+	if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -246,8 +246,8 @@ func TestMemoryContextProjectionReloadParity(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("read %d entries, want 1", len(entries))
 	}
-	direct := ProjectTurn("memory-turn", 3, turn, NewToolCallRegistry(), nil, nil)
-	reloaded := ProjectTurn("memory-turn", 3, entries[0].Turn, NewToolCallRegistry(), nil, nil)
+	direct, _ := ProjectTurnParts("memory-turn", 3, turn, NewToolCallRegistry(), nil, nil)
+	reloaded, _ := ProjectTurnParts("memory-turn", 3, entries[0].Turn, NewToolCallRegistry(), nil, nil)
 	if len(direct) != 2 || len(reloaded) != len(direct) {
 		t.Fatalf("direct %d items, reloaded %d, want 2 each", len(direct), len(reloaded))
 	}

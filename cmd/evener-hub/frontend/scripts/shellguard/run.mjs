@@ -20,6 +20,7 @@ import {
   connectPage,
   createStartupDeadline,
   evaluate,
+  forcePseudoStates,
   navigateTo,
   openPage,
   waitForFonts,
@@ -37,6 +38,7 @@ import {
 } from "./floatingFixture.mjs";
 import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
 import { checkSettingsGeometry } from "./settingsGeometry.mjs";
+import { checkTopBarDrawerPlacement } from "./topBarDrawerPlacement.mjs";
 import { measureDelayedFloatingDock } from "./startup.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -50,6 +52,14 @@ const VIEWPORT = { width: 1400, height: 900 };
 // never matches and the tap-target floors this guard exists to measure are
 // styled out of the page.
 const MOBILE_VIEWPORT = { width: 390, height: 844, mobile: true, touch: true };
+const PHONE_PALETTE_VIEWPORT = { ...MOBILE_VIEWPORT, width: 400 };
+const DUO_INNER_PORTRAIT = { ...MOBILE_VIEWPORT, width: 669, height: 951, fontSize: "xl" };
+
+// Inside the 768-899px tablet band: StackHost keeps mobile/touch emulation
+// while splitting the board column beside the conversation.
+const TABLET_VIEWPORT = { width: 800, height: 1025, mobile: true, touch: true, platform: "Linux armv8l" };
+// Desktop-site iPadOS identifies as a Mac with multiple touch points.
+const IPAD_VIEWPORT = { width: 1032, height: 1244, touch: true, platform: "MacIntel" };
 
 // A touch device the desktop layout still applies to (a tablet or a touch
 // laptop). The rail renders docked and resizable here, so its width floor is
@@ -74,12 +84,32 @@ const BOOT = {
 async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expression) {
   const page = await connectPage(cdpEndpoint, sharedTabId);
   const { send } = page;
+  const hosted = viewport.duoClient === "hosted app";
+  const standalone = viewport.duoClient === "Home Screen";
   try {
     // Every measurement shares this tab, and the outgoing document can still
     // save its layout until the navigation replaces it, so clear storage as each
     // new document starts. The script ends with this CDP session.
     await send("Page.addScriptToEvaluateOnNewDocument", { source: "try { localStorage.clear(); } catch {}" });
+    if (viewport.fontSize) {
+      await send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `localStorage.setItem('evener.prefs.fontSize', ${JSON.stringify(viewport.fontSize)});
+          Object.defineProperty(navigator, 'standalone', {value: ${standalone}});`,
+      });
+    }
+    if (hosted) {
+      await send("Page.addScriptToEvaluateOnNewDocument", { source: `
+        Object.defineProperty(navigator, 'userAgent', {value: navigator.userAgent +
+          ' EvenerNative/1 EvenerSessionHeader/1 EvenerWorkspaceControls/1 EvenerSessionsToolbar/1 EvenerPaneNavigation/1'});
+        window.ReactNativeWebView = { postMessage() {} };
+        window.evenerEdgeToolbar = false;
+      ` });
+    }
     await applyViewport(send, viewport);
+    if (viewport.platform) {
+      const { userAgent } = (await send("Browser.getVersion")).result;
+      await send("Emulation.setUserAgentOverride", { userAgent, platform: viewport.platform });
+    }
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
     await evaluate(send, "window.settledShell");
     await waitForFonts(send);
@@ -88,16 +118,50 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
       await evaluate(
         send,
         `JSON.stringify((() => {
+      const box = (el, container) => {
+        if (!el || !container?.contains(el)) return null;
+        const r = el.getBoundingClientRect();
+        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+      };
       const brand = document.querySelector('[data-testid="rail-brand"]');
+      if (window.innerWidth < 768) {
+        const dialog = document.querySelector('[role="dialog"]');
+        const sheetHeader = dialog?.querySelector("header");
+        const titleId = dialog?.getAttribute("aria-labelledby");
+        const title = titleId ? document.getElementById(titleId) : sheetHeader?.querySelector("h2");
+        const settings = sheetHeader?.querySelector('[data-testid="rail-settings"]');
+        const hubs = sheetHeader?.querySelector('[aria-label="Hubs on this iPhone"]');
+        const search = sheetHeader?.querySelector('[data-testid="rail-search"]');
+        const close = sheetHeader?.querySelector('[aria-label="Close"]');
+        const filter = dialog?.querySelector('[data-testid="rail-filter"]');
+        const newSession = dialog?.querySelector('[data-testid="rail-new-session"]');
+        return {
+          mode: "sheet",
+          hasBrand: brand !== null,
+          hasSearch: search !== null,
+          hasFilter: filter !== null,
+          filterRight: filter?.getBoundingClientRect().right,
+          newSessionRight: newSession?.getBoundingClientRect().right,
+          isDesktop: false,
+          containerRight: dialog ? dialog.getBoundingClientRect().right : null,
+          items: [title, ...(${hosted} ? [hubs] : []), settings, close].map((el) => box(el, sheetHeader)),
+        };
+      }
       const settings = document.querySelector('[data-testid="rail-settings"]');
       const search = document.querySelector('[data-testid="rail-search"]');
       const hide = brand?.querySelector('[aria-label="Hide sidebar"]');
       const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
-      return [wordmark, settings, search, ...(window.innerWidth > 899 ? [hide] : [])].map(el => {
-        if (!el || !brand?.contains(el)) return null;
-        const r = el.getBoundingClientRect();
-        return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
-      });
+      const filter = document.querySelector('[data-testid="rail-filter"]');
+      const isDesktop = window.innerWidth > 899;
+      return {
+        mode: "brand",
+        hasBrand: brand !== null,
+        hasSearch: search !== null,
+        hasFilter: filter !== null,
+        isDesktop,
+        containerRight: null,
+        items: (isDesktop ? [wordmark, settings, search, hide] : [wordmark, settings]).map((el) => box(el, brand)),
+      };
     })())`,
       ),
     );
@@ -125,35 +189,66 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     })())`,
       ),
     );
-    for (let i = 0; i < header.length; i++) {
-      const box = header[i];
+    if (header.mode === "sheet" && header.hasBrand) {
+      throw new Error(`rail header at ${viewport.width}px: unexpected rail-brand inside phone drawer`);
+    }
+    if (header.mode === "sheet" || !header.isDesktop) {
+      if (header.hasSearch) {
+        throw new Error(`rail header at ${viewport.width}px: unexpected duplicate rail-search button below 900px`);
+      }
+      if (!header.hasFilter) {
+        throw new Error(`rail header at ${viewport.width}px: missing inline rail-filter input below 900px`);
+      }
+    } else if (header.hasFilter) {
+      throw new Error(`rail header at ${viewport.width}px: unexpected inline rail-filter input on desktop`);
+    }
+    const labels =
+      header.mode === "sheet"
+        ? ["title", ...(hosted ? ["Hubs"] : []), "Settings", "Close"]
+        : header.isDesktop
+          ? ["wordmark", "Settings", "Search", "Hide sidebar"]
+          : ["wordmark", "Settings"];
+    const containerRight = header.mode === "sheet" ? header.containerRight : railBox?.right ?? null;
+    for (let i = 0; i < header.items.length; i++) {
+      const box = header.items[i];
       if (!box || box.width <= 0 || box.height <= 0) {
         throw new Error(
-          `rail header at ${viewport.width}px: missing visible ${["wordmark", "Settings", "Search", "Hide sidebar"][i]}`,
+          `rail header at ${viewport.width}px: missing visible ${labels[i]}`,
         );
       }
       if (box.left < 0 || box.right > viewport.width)
         throw new Error(`rail header escapes ${viewport.width}px viewport`);
       // Per-element, not just the viewport: an item pushed past the rail's edge
       // paints over the workspace beside it.
-      if (railBox && box.right > railBox.right + 0.5) {
+      if (containerRight !== null && box.right > containerRight + 0.5) {
         throw new Error(
-          `rail header at ${viewport.width}px (rail ${railBox.width.toFixed(1)}px, min ${railBox.ariaValueMin}): ` +
-            `${["wordmark", "Settings", "Search", "Hide sidebar"][i]} ends at ${box.right.toFixed(1)}px, ` +
-            `past the rail's ${railBox.right.toFixed(1)}px edge`,
+          `rail header at ${viewport.width}px (rail ${railBox?.width.toFixed(1) ?? "?"}px, min ${railBox?.ariaValueMin ?? null}): ` +
+            `${labels[i]} ends at ${box.right.toFixed(1)}px, ` +
+            `past the ${header.mode === "sheet" ? "drawer" : "rail"}'s ${containerRight.toFixed(1)}px edge`,
         );
       }
-      if (i > 0) {
-        const previous = header[i - 1];
+      if ((standalone || hosted) && i > 0) {
+        const previous = header.items[i - 1];
+        const besideList = box.left >= Math.max(header.filterRight, header.newSessionRight);
+        const sameColumn = i === 1 || Math.abs(box.left + box.width / 2 - previous.left - previous.width / 2) <= 1;
+        if (!(besideList && sameColumn && box.width >= 44 && box.height >= 44 &&
+          box.top >= previous.bottom && box.bottom <= viewport.height)) {
+          throw new Error(`installed Sessions drawer: ${labels[i]} must fit its trailing column: ${JSON.stringify(header)}`);
+        }
+      } else if (i > 0) {
+        const previous = header.items[i - 1];
         if (
           previous.right > box.left ||
           Math.abs((previous.top + previous.bottom) / 2 - (box.top + box.bottom) / 2) > 1
         ) {
           throw new Error(
-            `rail header at ${viewport.width}px: wordmark, Settings, Search, Hide sidebar must align on one row in order`,
+            `rail header at ${viewport.width}px: ${labels.slice(0, header.items.length).join(", ")} must align on one row in order`,
           );
         }
       }
+    }
+    if (viewport.fontSize) {
+      console.log(`shellguard Duo ${viewport.duoClient} Sessions: ${JSON.stringify(header)}`);
     }
     // At the width floor the header must fit exactly: the floor is derived from
     // this content, so a clipped wordmark there means the two have drifted.
@@ -166,6 +261,7 @@ async function measureOnPage(cdpEndpoint, sharedTabId, vitePort, viewport, expre
     }
     return typeof expression === "function" ? await expression(page) : JSON.parse(await evaluate(send, expression));
   } finally {
+    if (viewport.platform) await send("Emulation.setUserAgentOverride", { userAgent: "" });
     await clearViewportOverride(send);
     page.close();
   }
@@ -500,14 +596,16 @@ function assertResult(result) {
   // rail (docs/developing-evener/testing.md's unfalsifiable-fixture trap).
   if (result.treeRows < 120) failures.push(`expected the tall tree in the page, found ${result.treeRows} rows`);
   if (!result.railNewSession?.present) failures.push("the rail's New session control did not render");
-  if (result.railNewSession?.primary) {
-    failures.push("the rail's New session control is a filled primary and outranks the current task");
+  if (!result.railNewSession?.primary) {
+    failures.push("the rail's New session action lost its accent-filled primary treatment");
   }
-  if (!result.railNewSession?.secondary) {
-    failures.push("the rail's New session control lost its secondary treatment");
+  if (result.railNewSession?.secondary) {
+    failures.push("the rail's New session action is a bordered secondary, not the list's floating primary");
   }
   if (result.primaryButtons > 1) {
-    failures.push(`the shell route shows ${result.primaryButtons} filled primaries, expected at most one`);
+    failures.push(
+      `the shell route shows ${result.primaryButtons} filled primaries outside the rail's floating action, expected at most one`,
+    );
   }
 
   // The property the bug broke: with a tree taller than the viewport, the
@@ -669,15 +767,882 @@ function assertMobileResult(result) {
       `mobile document is ${result.document.scrollHeight}px tall in a ${MOBILE_VIEWPORT.height}px viewport`,
     );
   }
-  if (result.searchBox) failures.push("mobile inline search box is still rendered");
+  if (result.searchBox) {
+    failures.push("mobile inline search box uses native type=search (renders duplicate clear button)");
+  }
+  if (!result.railFilter) {
+    failures.push("mobile inline search box (type=text role=searchbox) is not rendered");
+  }
   if (result.resume) failures.push("mobile Jump back in action is still rendered");
   if (result.hints) failures.push("mobile key-binding hints are still rendered");
+  return failures;
+}
+
+async function measurePhoneSearchPalette(page) {
+  const { send } = page;
+  const dialogByTitleExpr = `(title) => [...document.querySelectorAll('[role="dialog"]')].find((el) => {
+    const id = el.getAttribute('aria-labelledby');
+    return id && document.getElementById(id)?.textContent?.trim() === title;
+  }) ?? null`;
+  await waitForDom(
+    send,
+    `Boolean((${dialogByTitleExpr})("Sessions") && document.querySelector('[data-testid="rail-filter"]'))`,
+    "phone Sessions drawer and inline filter mounted",
+  );
+  await clickControl(send, '[data-testid="rail-filter"]');
+  await pressKey(send, "k", "KeyK", 75, 2);
+  await waitForDom(
+    send,
+    `Boolean((${dialogByTitleExpr})("Command palette"))`,
+    "Command palette opened from phone Sessions drawer",
+  );
+  await settleFiniteAnimations(send);
+  const hitProbe = `(() => {
+    const dialogByTitle = ${dialogByTitleExpr};
+    const sessions = dialogByTitle("Sessions");
+    const palette = dialogByTitle("Command palette");
+    const input = palette?.querySelector('[role="combobox"]');
+    const toast = document.querySelector('[aria-label="Notifications"] [data-kind="error"]');
+    const hitAt = (x, y) => {
+      const target = document.elementFromPoint(x, y);
+      const labelId = target?.getAttribute?.('aria-labelledby');
+      const labelledTitle = labelId ? document.getElementById(labelId)?.textContent?.trim() ?? null : null;
+      return {
+        tag: target?.tagName ?? null,
+        ariaLabel: target?.getAttribute?.('aria-label') ?? null,
+        labelledTitle,
+        inPalette: Boolean(palette && target && palette.contains(target)),
+        inSessions: Boolean(sessions && target && sessions.contains(target)),
+        isInput: Boolean(input && target && (target === input || input.contains(target))),
+        inToast: Boolean(toast && target && toast.contains(target)),
+      };
+    };
+    const ir = input?.getBoundingClientRect();
+    const tr = toast?.getBoundingClientRect();
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      center: hitAt(innerWidth / 2, innerHeight / 2),
+      input: ir ? { ...hitAt(ir.left + ir.width / 2, ir.top + ir.height / 2), focused: document.activeElement === input } : null,
+      toast: tr ? { ...hitAt(tr.left + tr.width / 2, tr.top + tr.height / 2), x: tr.left + tr.width / 2, bottom: tr.bottom } : null,
+    };
+  })()`;
+  const beforeToast = await evaluate(send, hitProbe);
+  async function measureToast() {
+    await evaluate(
+      send,
+      "import('/src/widgets/toast/store.ts').then(({ pushToast }) => pushToast('error', 'Palette toast check'))",
+    );
+    await waitForDom(send, 'Boolean(document.querySelector(\'[aria-label="Notifications"] [data-kind="error"]\'))', "Toast rendered");
+    await settleFiniteAnimations(send);
+    return evaluate(send, hitProbe);
+  }
+  const withToast = await measureToast();
+  await evaluate(
+    send,
+    "import('/src/widgets/toast/store.ts').then(({ resetToastStoreForTests }) => resetToastStoreForTests())",
+  );
+  await pressKey(send, "Escape", "Escape", 27);
+  await waitForDom(
+    send,
+    `!(${dialogByTitleExpr})("Command palette")`,
+    "Escape closes phone Command palette",
+  );
+  await settleFiniteAnimations(send);
+  const afterEscape = await evaluate(
+    send,
+    `(() => {
+      const sessions = (${dialogByTitleExpr})("Sessions");
+      const search = document.querySelector('[data-testid="rail-filter"]');
+      const sr = search?.getBoundingClientRect();
+      const hit = sr ? document.elementFromPoint(sr.left + sr.width / 2, sr.top + sr.height / 2) : null;
+      return {
+        sessionsOpen: Boolean(sessions),
+        searchFocused: document.activeElement === search,
+        searchHit: Boolean(search && hit && search.contains(hit)),
+      };
+    })()`,
+  );
+  await applyViewport(send, { ...MOBILE_VIEWPORT, width: 951, height: 669 });
+  await waitForDom(send, 'Boolean(document.querySelector("[data-desktop-workspace]"))', "Duo landscape workspace mounted");
+  const landscape = await measureToast();
+  await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await applyViewport(send, { width: 951, height: 669 });
+  const desktop = await measureToast();
+  return { ...beforeToast, toast: withToast.toast, afterEscape, landscape, desktop };
+}
+
+function assertPhoneSearchPalette(result) {
+  const failures = [];
+  if (
+    result.viewport.width !== PHONE_PALETTE_VIEWPORT.width ||
+    result.viewport.height !== PHONE_PALETTE_VIEWPORT.height
+  ) {
+    failures.push(
+      `phone palette viewport is ${result.viewport.width}x${result.viewport.height}, expected ${PHONE_PALETTE_VIEWPORT.width}x${PHONE_PALETTE_VIEWPORT.height}`,
+    );
+  }
+  if (!result.center.inPalette || result.center.inSessions) {
+    failures.push(`phone Command palette center hit-test was occluded: ${JSON.stringify(result.center)}`);
+  }
+  if (!result.input?.isInput || !result.input.focused) {
+    failures.push(`phone Command palette input is not hit-testable/focused: ${JSON.stringify(result.input)}`);
+  }
+  if (!result.toast?.inToast) {
+    failures.push(`toast did not paint above Command palette: ${JSON.stringify(result.toast)}`);
+  }
+  for (const { toast, viewport } of [result, result.landscape]) {
+    if (!toast || toast.bottom > viewport.height / 2 || Math.abs(toast.x - viewport.width / 2) > 1)
+      failures.push(`phone toast outside the top center at ${viewport.width}x${viewport.height}: ${JSON.stringify(toast)}`);
+  }
+  const { toast, viewport } = result.desktop;
+  if (!toast || toast.bottom < viewport.height / 2 || toast.x < viewport.width / 2)
+    failures.push(`desktop toast outside the lower right: ${JSON.stringify(toast)}`);
+  if (!result.afterEscape.sessionsOpen || !result.afterEscape.searchFocused || !result.afterEscape.searchHit) {
+    failures.push(
+      `dismissing Command palette did not restore phone Sessions drawer/focus: ${JSON.stringify(result.afterEscape)}`,
+    );
+  }
+  return failures;
+}
+
+async function assertTabletActionGeometry(send) {
+  const result = await evaluate(send, `(async () => {
+    const root = document.documentElement;
+    root.style.setProperty('--dock-clearance', '34px');
+    try {
+      // ResizeObserver publishes the wide dock baseline after the inset is laid out.
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const scroll = window.focusScrollFixture.scrollRailToEnd();
+      const last = document.querySelector('[data-focus-scroll-trigger]').closest('[role="treeitem"]').getBoundingClientRect();
+      const createButton = document.querySelector('[data-testid="rail-new-session"]');
+      const sendButton = document.querySelector('[data-composer] button[type="submit"]');
+      const attachButton = document.querySelector('[data-testid="composer-attach"] svg').closest('button');
+      const create = createButton.getBoundingClientRect(), send = sendButton.getBoundingClientRect();
+      function inkOffset(button, seat) {
+        const svg = button.querySelector('svg'), box = svg.getBBox(), target = seat.getBoundingClientRect();
+        const center = new DOMPoint(box.x + box.width / 2, box.y + box.height / 2).matrixTransform(svg.getScreenCTM());
+        return Math.max(Math.abs(center.x - target.x - target.width / 2), Math.abs(center.y - target.y - target.height / 2));
+      }
+      const sendSeat = sendButton.firstElementChild;
+      const labeled = [...sendButton.children].some(el => el !== sendSeat && el.getClientRects().length);
+      return { newY: create.top + create.height / 2, sendY: send.top + send.height / 2,
+        newInkOffset: inkOffset(createButton, createButton), sendInkOffset: inkOffset(sendButton, labeled ? sendSeat : sendButton),
+        attachInkOffset: inkOffset(attachButton, attachButton),
+        atEnd: scroll.nearMax && scroll.scrollTop > 0, lastVisible: scroll.triggerVisible,
+        lastBottom: last.bottom, actionTop: create.top };
+    } finally {
+      root.style.removeProperty('--dock-clearance');
+    }
+  })()`);
+  if (Math.abs(result.newY - result.sendY) > 1 || !result.atEnd || !result.lastVisible || result.lastBottom > result.actionTop + 1) {
+    throw new Error(`tablet action alignment or final session clearance: ${JSON.stringify(result)}`);
+  }
+  if (result.newInkOffset > 1 || result.sendInkOffset > 1 || result.attachInkOffset > 1) {
+    throw new Error(`tablet button glyph is off center: ${JSON.stringify(result)}`);
+  }
+  const settings = '[data-testid="rail-settings"]';
+  await forcePseudoStates(send, [{ selector: settings, pseudoClasses: ["hover"] }]);
+  const feedback = await evaluate(send, `(() => {
+    const button = document.querySelector('${settings}');
+    const { width, height } = button.getBoundingClientRect();
+    const corner = getComputedStyle(button).borderTopLeftRadius;
+    return { width, height, corner };
+  })()`);
+  await forcePseudoStates(send, [{ selector: settings, pseudoClasses: [] }]);
+  const circularCorner = feedback.corner.endsWith("%") ? 50 : feedback.width / 2;
+  if (!feedback.width || feedback.width !== feedback.height || parseFloat(feedback.corner) < circularCorner) {
+    throw new Error(`tablet Settings button feedback should stay circular: ${JSON.stringify(feedback)}`);
+  }
+  console.log(`shellguard tablet actions: ${JSON.stringify(result)}`);
+}
+
+async function measureWideIPad({ send }) {
+  // Pin the motion preference the glass scene requires. iPhoneGlass skips
+  // creating the scene under prefers-reduced-motion: reduce while the body
+  // still reads glass mode as regular, so a host carrying the preference
+  // would pass the clip assert and then hang the drawn wait on a healthy
+  // build. The clear after the pass hands the shared tab back its host
+  // media for the next measurement.
+  await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "no-preference" }] });
+  await evaluate(send, "window.overviewPane('other')");
+  await waitForDom(send, "document.querySelector('[data-iphone-composer] [data-testid=composer-submit]')", "wide iPad composer");
+  await assertFocusedComposerClips(send);
+  await assertDrawnGlassCanvasContained(send);
+  await assertTabletActionGeometry(send);
+  await send("Emulation.setEmulatedMedia", { features: [] });
+}
+
+// The drawn half of the glass containment contract (#7930). The SDK creates
+// each surface's canvas inside the surface, then its own pipeline - the frame
+// addSurface requests, the ResizeObserver's measure, the worker's paint -
+// moves the canvas to a positioned previous sibling when the card clips,
+// sizes it to the card plus its bleed, and flags the card
+// data-iphone-glass-drawn. Nothing drives that pipeline, so the guard only
+// waits for the drawn flag, then requires the canvas to be the card's previous
+// sibling (the placement the SDK maintains for a clipped card: an unclipped
+// card keeps the bleed-sized canvas in-card, widening the card's scrollable
+// content - the escape #7928 fixed), to cover the card it drew, and to add
+// no horizontal scroll range any user can reach.
+async function assertDrawnGlassCanvasContained(send) {
+  await waitForDom(
+    send,
+    "document.querySelector('[data-iphone-composer=\"focused\"] [data-prompt-card]')?.hasAttribute('data-iphone-glass-drawn')",
+    "focused composer card painted by the liquid-glass worker",
+  );
+  await settleFiniteAnimations(send);
+  const drawn = await evaluate(
+    send,
+    `(() => {
+      const card = document.querySelector('[data-iphone-composer="focused"] [data-prompt-card]');
+      if (!card) return { card: false };
+      const prev = card.previousElementSibling;
+      const canvas = prev && prev.matches('[data-lg-canvas]') ? prev : null;
+      const rect = (el) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+      };
+      return {
+        card: true,
+        surface: card.hasAttribute('data-lg-surface'),
+        prevSiblingCanvas: Boolean(canvas),
+        inCard: Boolean(card.querySelector('[data-lg-canvas]')),
+        canvasRect: canvas ? rect(canvas) : null,
+        cardRect: rect(card),
+      };
+    })()`,
+  );
+  if (!drawn.card) {
+    throw new Error('the focused conversation card vanished after the liquid-glass worker painted');
+  }
+  if (!drawn.surface) {
+    throw new Error("the focused conversation card never registered as a liquid-glass surface - the drawn-canvas check would pass vacuously");
+  }
+  if (!drawn.prevSiblingCanvas || drawn.inCard) {
+    throw new Error(
+      `the drawn liquid-glass canvas is hosted inside the conversation card (prevSiblingCanvas=${drawn.prevSiblingCanvas}, inCard=${drawn.inCard}) - the SDK hosts the canvas in-card only when the card does not clip, and the in-card canvas widens the card's scrollable content`,
+    );
+  }
+  if (
+    !drawn.canvasRect ||
+    drawn.canvasRect.left > drawn.cardRect.left ||
+    drawn.canvasRect.right < drawn.cardRect.right ||
+    drawn.canvasRect.top > drawn.cardRect.top ||
+    drawn.canvasRect.bottom < drawn.cardRect.bottom
+  ) {
+    throw new Error(
+      `the drawn glass canvas does not cover the conversation card (canvas ${JSON.stringify(drawn.canvasRect)} card ${JSON.stringify(drawn.cardRect)}) - the SDK sizes the sibling canvas to the card plus its bleed, so a partial cover means the canvas is not this card's`,
+    );
+  }
+  const added = await evaluate(
+    send,
+    `(() => {
+      const card = document.querySelector('[data-iphone-composer="focused"] [data-prompt-card]');
+      if (!card) return { card: false };
+      const canvas = card.previousElementSibling && card.previousElementSibling.matches('[data-lg-canvas]') ? card.previousElementSibling : null;
+      const describe = (el) => {
+        let d = el.tagName.toLowerCase();
+        const classes = String(el.className).trim().split(/\s+/).filter(Boolean);
+        if (classes.length) d += '.' + classes.slice(0, 3).join('.');
+        for (const attr of ['data-prompt-card', 'data-iphone-composer', 'data-pane-scaffold-root', 'data-reading-scroll-host', 'role', 'data-testid']) {
+          if (el.getAttribute(attr) !== null) d += '[' + attr + ']';
+        }
+        return d;
+      };
+      const read = () => {
+        const levels = [];
+        for (let el = card; el; el = el.parentElement) {
+          levels.push({ descriptor: describe(el), overhang: el.scrollWidth - el.clientWidth, overflowX: getComputedStyle(el).overflowX });
+        }
+        return levels;
+      };
+      // Both reads run in one synchronous evaluation, with the canvas hidden
+      // between them: renders ride rAF, so the SDK cannot react to the hide,
+      // and the finally restores the inline display before any frame. The
+      // difference is exactly what the canvas adds to each box.
+      const shown = read();
+      if (!canvas) return { card: true, canvas: false, levels: shown };
+      const display = canvas.style.display;
+      try {
+        canvas.style.display = 'none';
+        const hidden = read();
+        return {
+          card: true,
+          canvas: true,
+          levels: shown.map((level, i) => ({ ...level, added: level.overhang - hidden[i].overhang })),
+        };
+      } finally {
+        canvas.style.display = display;
+      }
+    })()`,
+  );
+  if (!added.card) {
+    throw new Error('the focused conversation card vanished before its overhang could be read');
+  }
+  if (!added.canvas) {
+    throw new Error('the drawn glass canvas is gone from beside the conversation card');
+  }
+  for (let i = 0; i < added.levels.length; i++) {
+    const level = added.levels[i];
+    // The canvas's contribution only fails the guard where the box actually
+    // scrolls: a visible box hands its growth up to the next scroller (which
+    // this walk also measures) and a clipped box discards it, while the
+    // document root is the viewport scroller whatever its computed overflow
+    // says. The SDK sizes the sibling canvas to the card plus its bleed, so
+    // its host boxes always report the bleed as overhang - invisible unless a
+    // scroller adopts it.
+    const scrolls =
+      (i === added.levels.length - 1 && level.overflowX !== "clip") ||
+      level.overflowX === "auto" ||
+      level.overflowX === "scroll" ||
+      level.overflowX === "hidden";
+    if (level.added > 0 && scrolls) {
+      throw new Error(
+        `the drawn glass canvas added horizontal scroll range at ${level.descriptor} (overflow-x: ${level.overflowX}): +${level.added}px`,
+      );
+    }
+  }
+}
+
+// The focused conversation card is the one surface the liquid-glass SDK draws:
+// it attaches its canvas only while the composer is focused on an Apple touch
+// device, and it picks the canvas's host from the card's own computed overflow
+// - a card that does not clip gets the canvas as an in-card child whose
+// bleed-sized box extends the card's scrollable content and any ancestor
+// scroller's range. This pass already spoofs the Apple touch environment
+// (IPAD_VIEWPORT's MacIntel platform + touch), so the shell's own
+// connectIPhoneGlass wiring puts the page in regular glass mode. Focus the
+// composer's editor, then read the real card's computed overflow and fail if
+// either axis is not clip. The glass attribute is read too, so a guard
+// environment that loses glass mode fails by name instead of passing
+// vacuously.
+async function assertFocusedComposerClips(send) {
+  await evaluate(send, `(() => {
+    document.querySelector('[data-composer] [role="textbox"]')?.focus();
+  })()`);
+  await waitForDom(send, "document.querySelector('[data-iphone-composer=\"focused\"] [data-prompt-card]')", "focused composer card");
+  const clip = await evaluate(send, `(() => {
+    const card = document.querySelector('[data-iphone-composer="focused"] [data-prompt-card]');
+    if (!card) return { card: false };
+    const style = getComputedStyle(card);
+    return {
+      card: true,
+      glass: document.body.getAttribute('data-iphone-glass'),
+      overflowX: style.overflowX,
+      overflowY: style.overflowY,
+      overflowClipMargin: style.overflowClipMargin,
+    };
+  })()`);
+  if (!clip.card) {
+    throw new Error('wide iPad composer card is missing under [data-iphone-composer="focused"]');
+  }
+  if (clip.glass !== 'regular') {
+    throw new Error(`wide iPad pass is not in regular glass mode (data-iphone-glass=${clip.glass}) - the focused-card clip check would pass vacuously`);
+  }
+  if (clip.overflowX !== 'clip' || clip.overflowY !== 'clip') {
+    throw new Error(`the focused conversation card does not clip its overflow in glass mode (x: ${clip.overflowX}, y: ${clip.overflowY}, margin: ${clip.overflowClipMargin}) - the liquid-glass SDK would host its canvas inside the card and extend the card's scroll range`);
+  }
+}
+
+async function measureTabletSplit(page) {
+  const { send } = page;
+  await waitForDom(
+    send,
+    "Boolean(document.querySelector('[data-testid=\"board-column\"]') && document.querySelector('[data-testid=\"topbar-title\"]')?.textContent?.trim())",
+    "tablet split initial topbar title settled",
+  );
+  await settleFiniteAnimations(send);
+  const snapState = `(() => {
+    const box = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    };
+    const hit = (el) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return false;
+      const target = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return target !== null && el.contains(target);
+    };
+    const split = document.querySelector('[data-testid="board-split"]');
+    const board = document.querySelector('[data-testid="board-column"]:not([inert])');
+    const pane = document.querySelector('[data-testid="pane-column"]');
+    const topbar = document.querySelector('[data-testid="topbar"]');
+    const title = document.querySelector('[data-testid="topbar-title"]');
+    const findInput = pane?.querySelector('[data-find-bar] input[type="search"]');
+    const findStyle = findInput && getComputedStyle(findInput);
+    const findRectWidth = findInput ? findInput.getBoundingClientRect().width : 0;
+    const findText = findInput && document.createElement('canvas').getContext('2d');
+    if (findText) findText.font = findStyle.font;
+    const overview = document.querySelector('[data-session-overview-ref]')?.closest('button') ?? null;
+    const brand = document.querySelector('[data-testid="rail-brand"]');
+    const wordmark = document.querySelector('[data-testid="rail-wordmark"]');
+    const settings = document.querySelector('[data-testid="rail-settings"]');
+    const search = document.querySelector('[data-testid="rail-search"]');
+    const filter = board?.querySelector('[data-testid="rail-filter"]') ?? null;
+    const toggles = [...document.querySelectorAll('[data-testid="board-toggle"]')];
+    const toggle = toggles[0] ?? null;
+    const handle = board?.querySelector('[role="separator"]');
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      document: { scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight },
+      dataBoard: split?.getAttribute('data-board') ?? null,
+      board: box(board),
+      pane: box(pane),
+      topbar: box(topbar),
+      topbarInPane: Boolean(pane && topbar && pane.contains(topbar)),
+      title: box(title),
+      overview: box(overview),
+      overviewHit: hit(overview),
+      find: findInput ? {
+        width: findRectWidth,
+        editableWidth:
+          findRectWidth -
+          parseFloat(findStyle.borderLeftWidth) -
+          parseFloat(findStyle.borderRightWidth) -
+          parseFloat(findStyle.paddingLeft) -
+          parseFloat(findStyle.paddingRight),
+        queryWidth: findText.measureText(findInput.value).width,
+        clearAllowance: parseFloat(findStyle.fontSize),
+        focused: document.activeElement === findInput,
+        hit: hit(findInput),
+        value: findInput.value,
+      } : null,
+      brand: box(brand),
+      wordmark: box(wordmark),
+      settings: box(settings),
+      settingsHit: hit(settings),
+      search: box(search),
+      filter: box(filter),
+      filterHit: hit(filter),
+      toggleCount: toggles.length,
+      toggle: box(toggle),
+      toggleHit: hit(toggle),
+      toggleInBoard: Boolean(board && toggle && board.contains(toggle)),
+      toggleInBrand: Boolean(brand && toggle && brand.contains(toggle)),
+      toggleInTopbar: Boolean(topbar && toggle && topbar.contains(toggle)),
+      toggleExpanded: toggle?.getAttribute('aria-expanded'),
+      resizeHandle: box(handle),
+      resizeHandleHit: hit(handle),
+      range: handle ? {
+        min: Number(handle.getAttribute('aria-valuemin')), max: Number(handle.getAttribute('aria-valuemax')),
+        now: Number(handle.getAttribute('aria-valuenow')),
+      } : null,
+    };
+  })()`;
+  const open = await evaluate(send, snapState);
+  const scrolledBoard = await evaluate(
+    send,
+    `(() => {
+    const board = document.querySelector('[data-testid="board-column"]');
+    if (!board) return null;
+    const scroller = [board, ...board.querySelectorAll('*')].find(
+      el => el.scrollHeight > el.clientHeight + 1 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+    );
+    if (!scroller) return { scrolled: false };
+    scroller.scrollTop = 200;
+    const brand = document.querySelector('[data-testid="rail-brand"]');
+    const toggle = document.querySelector('[data-testid="board-toggle"]');
+    const handle = board.querySelector('[role="separator"]');
+    const br = brand?.getBoundingClientRect();
+    const tr = toggle?.getBoundingClientRect();
+    const hr = handle?.getBoundingClientRect();
+    const target = tr ? document.elementFromPoint(tr.left + tr.width / 2, tr.top + tr.height / 2) : null;
+    return {
+      scrolled: scroller.scrollTop > 0,
+      scrollTop: scroller.scrollTop,
+      brandTop: br?.top ?? null,
+      toggleTop: tr?.top ?? null,
+      toggleHit: Boolean(toggle && target && toggle.contains(target)),
+      handleTop: hr?.top ?? null,
+    };
+  })()`,
+  );
+  const rowFocusSample = `(() => {
+    const header = document.querySelector('[data-testid="rail-header"]');
+    const row = document.activeElement?.closest('[role="treeitem"]');
+    const rows = row?.closest('[role="tree"]')?.querySelectorAll('[role="treeitem"]');
+    const rect = row?.getBoundingClientRect();
+    const target = rect && document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    return { headerBottom: header?.getBoundingClientRect().bottom, rowTop: rect?.top, rowBottom: rect?.bottom,
+      index: rows ? [...rows].indexOf(row) : -1,
+      hit: Boolean(row && target && row.contains(target)), coveredByHeader: Boolean(target && header?.contains(target)) };
+  })()`;
+  const startedAtVisibleRow = await evaluate(send, `(() => {
+    const header = document.querySelector('[data-testid="rail-header"]');
+    if (!header) return false;
+    const bottom = header.getBoundingClientRect().bottom;
+    for (const tree of document.querySelectorAll('[data-testid="board-column"] [role="tree"]')) {
+      const rows = [...tree.querySelectorAll('[role="treeitem"]')];
+      const index = rows.findIndex(row => row.getBoundingClientRect().top >= bottom);
+      if (index <= 0 || rows[index].getBoundingClientRect().bottom >= innerHeight) continue;
+      rows[index].focus({ preventScroll: true });
+      return document.activeElement === rows[index];
+    }
+    return false;
+  })()`);
+  const beforeArrowUp = await evaluate(send, rowFocusSample);
+  const arrowUpRows = [];
+  for (let step = 0; startedAtVisibleRow && step < Math.min(5, beforeArrowUp.index); step++) {
+    await pressKey(send, "ArrowUp", "ArrowUp", 38);
+    arrowUpRows.push(await evaluate(send, rowFocusSample));
+  }
+  await evaluate(
+    send,
+    `(() => {
+    const board = document.querySelector('[data-testid="board-column"]');
+    const scroller = board && [board, ...board.querySelectorAll('*')].find(
+      el => el.scrollHeight > el.clientHeight + 1 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+    );
+    if (scroller) scroller.scrollTop = 0;
+  })()`,
+  );
+  // The separator strip is only 8px wide, and the Board can still be moving
+  // when a rect captured in an earlier round trip has gone stale, so each
+  // drag press samples the live, hittable handle center in the round trip
+  // before it goes down, and takes its destination from the same sample (a
+  // number x drags to that viewport coordinate; a function x gets the sample
+  // and returns one). The drag only counts once the Board's rendered width
+  // moved off the baseline captured with that sample and matches the
+  // published aria-valuenow; a press whose width never moved is retried
+  // with a fresh sample, so a mover between the sample and the press cannot
+  // fail the guard on the board it left behind. The advertised limits stay
+  // asserted in assertTabletSplit, so the gate only distinguishes a
+  // published resize from a missed press. The double-click reset below still
+  // presses a rect from the snapshot it is resetting; its one-round-trip
+  // window risks only its own loud width-restore assertion.
+  async function dragDivider(x) {
+    const missed = [];
+    for (let i = 0; i < 3; i++) {
+      const sample = await waitForValue(send, `(() => {
+      const board = document.querySelector('[data-testid="board-column"]:not([inert]):not([data-motion])');
+      const handle = board?.querySelector('[role="separator"]');
+      if (!board || !handle) return null;
+      const r = handle.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return null;
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (!hit || !handle.contains(hit)) return null;
+      return { cx: r.left + r.width / 2, cy: r.top + r.height / 2,
+        boardWidth: board.getBoundingClientRect().width };
+    })()`, "settled, hittable tablet divider");
+      const where = typeof x === "function" ? x(sample) : x;
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: sample.cx, y: sample.cy });
+      await send("Input.dispatchMouseEvent", { type: "mousePressed", x: sample.cx, y: sample.cy, button: "left", clickCount: 1 });
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: where, y: sample.cy, button: "left", buttons: 1 });
+      let armed = false;
+      try {
+        await waitForDom(send, `(() => {
+        const board = document.querySelector('[data-testid="board-column"]:not([inert]):not([data-motion])');
+        const width = board?.getBoundingClientRect().width;
+        return width !== undefined && width !== ${sample.boardWidth}
+          && width === Number(board?.querySelector('[role="separator"]')?.getAttribute('aria-valuenow'));
+      })()`, "tablet drag moved and published its width before pointerup");
+        armed = true;
+      } catch (error) {
+        missed.push(JSON.stringify(await evaluate(send, `(() => {
+        const board = document.querySelector('[data-testid="board-column"]:not([inert])');
+        const handle = board?.querySelector('[role="separator"]');
+        const r = handle?.getBoundingClientRect();
+        return { baseline: ${sample.boardWidth}, width: board?.getBoundingClientRect().width,
+          now: Number(handle?.getAttribute('aria-valuenow')), handle: r ? { left: r.left, width: r.width } : null };
+      })()`)));
+      }
+      await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: where, y: sample.cy, button: "left", clickCount: 1 });
+      if (armed) return evaluate(send, snapState);
+    }
+    throw new Error(`tablet divider drag never moved the Board width: ${JSON.stringify(missed)}`);
+  }
+  let resized = null;
+  if (open.resizeHandle && open.resizeHandle.width > 0 && open.resizeHandle.height > 0) {
+    resized = await dragDivider((sample) => sample.cx + 60);
+    const resetHandle = resized.resizeHandle ?? open.resizeHandle;
+    const rx = resetHandle.left + resetHandle.width / 2;
+    const ry = resetHandle.top + resetHandle.height / 2;
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: rx, y: ry, button: "left", clickCount: 2 });
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: rx, y: ry, button: "left", clickCount: 2 });
+  }
+  await evaluate(send, "window.overviewPane('other')");
+  await waitForDom(
+    send,
+    `(() => {
+      const scaffold = document.querySelector('[data-pane-scaffold="session:local:p0-s1"]');
+      if (!scaffold || !document.querySelector('[data-session-overview-ref="local:p0-s1"][data-pane-id]')) return false;
+      const scroller = [scaffold, ...scaffold.querySelectorAll('*')].find(
+        el => el.scrollHeight > el.clientHeight + 80 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+      );
+      return Boolean(scroller);
+    })()`,
+    "tablet split session pane mounted with scrollable transcript",
+  );
+  const paneScrollCapture = await evaluate(
+    send,
+    `(() => {
+      const scaffold = document.querySelector('[data-pane-scaffold="session:local:p0-s1"]');
+      const scroller = scaffold && [scaffold, ...scaffold.querySelectorAll('*')].find(
+        el => el.scrollHeight > el.clientHeight + 80 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+      );
+      if (!scroller) return null;
+      const target = Math.min(180, Math.floor((scroller.scrollHeight - scroller.clientHeight) / 2));
+      scroller.scrollTop = target;
+      scroller.dispatchEvent(new Event('scroll'));
+      window.__tabletPaneScroller = scroller;
+      return { scrollTop: scroller.scrollTop, maxScroll: scroller.scrollHeight - scroller.clientHeight };
+    })()`,
+  );
+  const readPaneScroll = `(() => {
+    const scaffold = document.querySelector('[data-pane-scaffold="session:local:p0-s1"]');
+    const scroller = scaffold && [scaffold, ...scaffold.querySelectorAll('*')].find(
+      el => el.scrollHeight > el.clientHeight + 80 && ['auto', 'scroll'].includes(getComputedStyle(el).overflowY)
+    );
+    const saved = window.__tabletPaneScroller ?? null;
+    return {
+      sameNode: Boolean(saved && scroller && scroller === saved && saved.isConnected),
+      scrollTop: scroller?.scrollTop ?? null,
+      maxScroll: scroller ? scroller.scrollHeight - scroller.clientHeight : null,
+    };
+  })()`;
+  const sessionOpen = await evaluate(send, snapState);
+  await assertTabletActionGeometry(send);
+  await evaluate(send, `document.querySelector('[data-testid="board-toggle"]').focus({ preventScroll: true })`);
+  await pressKey(send, "Enter", "Enter", 13);
+  await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'collapsed'", "tablet board collapsed");
+  await settleFiniteAnimations(send);
+  const collapsed = await evaluate(send, snapState);
+  const paneScrollCollapsed = await evaluate(send, readPaneScroll);
+  const focusedToggle = `document.activeElement === document.querySelector('[data-testid="board-toggle"]')`;
+  if (!(await evaluate(send, focusedToggle))) throw new Error("collapsing the tablet board lost keyboard focus");
+  await pressKey(send, "Enter", "Enter", 13);
+  await waitForDom(send, "document.querySelector('[data-testid=\"board-split\"]')?.dataset.board === 'visible'", "tablet board re-expanded");
+  await settleFiniteAnimations(send);
+  const reopened = await evaluate(send, snapState);
+  const paneScrollReopened = await evaluate(send, readPaneScroll);
+  if (!(await evaluate(send, focusedToggle))) throw new Error("expanding the tablet board lost keyboard focus");
+  await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await applyViewport(send, { width: 768, height: TABLET_VIEWPORT.height });
+  // dragDivider samples the live, settled, hittable separator itself before
+  // each press, so this wait only needs the viewport change to have taken.
+  await waitForDom(send, `innerWidth === 768 && document.querySelector('[data-testid="board-column"] [role="separator"]')`,
+    "tablet viewport 768 with the board divider mounted");
+  const pointer = await evaluate(send, `({ fine: matchMedia('(pointer: fine)').matches, coarse: matchMedia('(any-pointer: coarse)').matches })`);
+  const narrowest = await dragDivider(1);
+  const wideDrag = await dragDivider(700);
+  await evaluate(send, `document.querySelector('[data-testid="board-column"] [role="separator"]').focus({ preventScroll: true })`);
+  await pressKey(send, "Home", "Home", 36);
+  const home = await evaluate(send, snapState);
+  await pressKey(send, "End", "End", 35);
+  await clickControl(send, '[data-testid="topbar"] button[aria-label="Find in session"]');
+  await waitForDom(send, `document.activeElement?.matches('[data-find-bar] input[type="search"]')`, "Find query focus at maximum board width");
+  const findQuery = "session";
+  await send("Input.insertText", { text: findQuery });
+  await waitForDom(send, `document.querySelector('[data-find-bar]:not([data-find-status="idle"])')`, "Find query result at maximum board width");
+  const widest = await evaluate(send, snapState);
+  const largerText = [];
+  for (const font of ["l", "xl"]) {
+    await evaluate(send, `window.configureOverview('light', '${font}')`);
+    await waitForFonts(send);
+    largerText.push([font, await evaluate(send, snapState)]);
+  }
+  await evaluate(send, `window.configureOverview('light', 'm')`);
+  await pressKey(send, "Escape", "Escape", 27);
+  await applyViewport(send, { ...MOBILE_VIEWPORT, width: 400 });
+  await waitForDom(send, `innerWidth === 400 && !document.querySelector('[data-testid="board-split"]')`,
+    "400px uses the phone stack without the tablet board");
+  await settleFiniteAnimations(send);
+  const paneScrollPhone = await evaluate(send, readPaneScroll);
+  await checkNotesReadingPosition(send);
+  const desktopDivider = '[data-testid="rail"] [data-testid="rail-resize-handle"]';
+  const desktopReady = `innerWidth === 1024 && !document.querySelector('[data-stacked-pane-type]') && document.querySelector('${desktopDivider}')`;
+  const desktopViewport = { ...TOUCH_DESKTOP_VIEWPORT, width: 1024, height: 768 };
+  const desktopMeasure = `(() => {
+    const divider = document.querySelector('${desktopDivider}');
+    return { width: divider.closest('[data-testid="rail"]').getBoundingClientRect().width,
+      max: Number(divider.getAttribute('aria-valuemax')) };
+  })()`;
+  await applyViewport(send, desktopViewport);
+  await waitForDom(send, desktopReady, "1024px uses the docked desktop rail without the tablet board");
+  await evaluate(send, `document.querySelector('${desktopDivider}').focus({ preventScroll: true })`);
+  await pressKey(send, "End", "End", 35);
+  const desktopBefore = await evaluate(send, desktopMeasure);
+  await applyViewport(send, { ...TABLET_VIEWPORT, width: 768 });
+  await waitForDom(send, `innerWidth === 768 && document.querySelector('[data-testid="board-column"]')`, "narrow tablet restores the board");
+  const narrowRestored = await evaluate(send, snapState);
+  const roomyViewport = { ...TABLET_VIEWPORT, width: 899 };
+  await applyViewport(send, roomyViewport);
+  await waitForDom(send, `innerWidth === 899`, "wider tablet viewport");
+  await settleFiniteAnimations(send);
+  const roomy = await evaluate(send, snapState);
+  await applyViewport(send, desktopViewport);
+  await waitForDom(send, desktopReady, "desktop restores the docked sidebar");
+  const desktopAfter = await evaluate(send, desktopMeasure);
+  await evaluate(send, `document.querySelector('${desktopDivider}').focus({ preventScroll: true })`);
+  for (let step = 0; step < 4; step++) await pressKey(send, "ArrowLeft", "ArrowLeft", 37);
+  const desktopFits = await evaluate(send, desktopMeasure);
+  await applyViewport(send, roomyViewport);
+  await waitForDom(send, `innerWidth === 899 && document.querySelector('[data-testid="board-column"]')`, "wide tablet restores a fitting desktop width");
+  const roomyFits = await evaluate(send, snapState);
+  return { open, scrolledBoard, resized, collapsed, reopened, sessionOpen,
+    paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone,
+    beforeArrowUp, arrowUpRows, pointer, narrowest, home, wideDrag, widest, findQuery, largerText,
+    desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits };
+}
+
+async function checkNotesReadingPosition(send) {
+  const port = "document.querySelector('[data-reading-scroll-host] > *')";
+  const notes = "document.querySelector('[data-notes-panel-ref]')";
+  // Start at the beginning, then scroll past the initial header. Real wheel
+  // input tells the transcript to give up following its initial end.
+  await evaluate(send, `${port}.scrollTop = 0`);
+  await waitForDom(send, `${port}.scrollTop < 1 && ${notes}?.offsetHeight > 0`, "Notes resting at the beginning");
+  const point = await evaluate(send, `(() => {
+    const r = ${port}.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  const wheel = (deltaY) => send("Input.dispatchMouseEvent", { type: "mouseWheel", ...point, deltaX: 0, deltaY });
+  await wheel(240);
+  await waitForDom(send, `${notes}.offsetHeight === 0`, "Notes tucked away while reading");
+  await evaluate(send, `window.__notesAnchor = [...${port}.querySelectorAll('p')].find(p => {
+    const y = p.getBoundingClientRect().y;
+    return y > innerHeight / 3 && y < innerHeight * 2 / 3;
+  })`);
+  const geometry = `({ port: ${port}.getBoundingClientRect().y, line: window.__notesAnchor.getBoundingClientRect().y })`;
+  const before = await evaluate(send, geometry);
+  await wheel(-16);
+  await waitForDom(send, `${notes}.offsetHeight > 0`, "Notes revealed on reversal");
+  const after = await evaluate(send, geometry);
+  if (Math.abs(after.port - before.port) > 1 || Math.abs(after.line - before.line - 16) > 1) {
+    throw new Error(`Notes reveal displaced the reader beyond the 16px gesture: ${JSON.stringify({ before, after })}`);
+  }
+  await evaluate(send, `document.querySelector('[data-testid="topbar"] button[aria-label="Find in session"]').click()`);
+  const query = "document.querySelector('[data-find-bar] input')";
+  await waitForDom(send, query, "Find opened from the phone header");
+  const visible = await evaluate(send, `(() => {
+    const input = ${query};
+    const r = input.getBoundingClientRect();
+    return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === input;
+  })()`);
+  if (!visible) throw new Error("The returning header covers the Find query");
+  await pressKey(send, "Escape", "Escape", 27);
+  await waitForDom(send, `!${query}`, "Find dismissed");
+}
+
+function assertTabletSplit(result) {
+  const failures = [];
+  const { open, scrolledBoard, resized, collapsed, reopened } = result;
+  const centerY = (box) => (box.top + box.bottom) / 2;
+  if (!open.board || !open.topbar || !open.title || !open.toggle) {
+    failures.push(`tablet split open missing required nodes: ${JSON.stringify(open)}`);
+    return failures;
+  }
+  if (Math.abs(open.board.top) > 1 || Math.abs(open.board.bottom - TABLET_VIEWPORT.height) > 1) {
+    failures.push(`tablet board does not span full height from y=0: ${JSON.stringify(open.board)}`);
+  }
+  if (!open.topbarInPane || open.topbar.left < open.board.right - 1 || Math.abs(open.topbar.top - open.board.top) > 1) {
+    failures.push(`tablet topbar is not beside board at y=0: board=${JSON.stringify(open.board)} topbar=${JSON.stringify(open.topbar)}`);
+  }
+  if (open.title.left < open.board.right - 1 || open.title.right > open.pane.right + 1 || open.title.width <= 0) {
+    failures.push(`tablet title is not beside board: board=${JSON.stringify(open.board)} title=${JSON.stringify(open.title)}`);
+  }
+  if (open.toggleCount !== 1 || !open.toggleInBoard || !open.toggleInBrand || open.toggleInTopbar) {
+    failures.push(`tablet open toggle must sit inside rail brand only: ${JSON.stringify({ count: open.toggleCount, inBoard: open.toggleInBoard, inBrand: open.toggleInBrand, inTopbar: open.toggleInTopbar })}`);
+  }
+  if (open.search !== null) {
+    failures.push(`tablet board header rendered duplicate rail-search button: ${JSON.stringify(open.search)}`);
+  }
+  if (open.settings.right > open.toggle.left + 0.5 || open.toggle.right > open.board.right + 0.5 || Math.abs(centerY(open.settings) - centerY(open.toggle)) > 1.5) {
+    failures.push(`tablet open toggle misaligned or overlapping board header: settings=${JSON.stringify(open.settings)} toggle=${JSON.stringify(open.toggle)} board=${JSON.stringify(open.board)}`);
+  }
+  if (!open.settingsHit || !open.filterHit || !open.toggleHit) {
+    failures.push(`tablet open header control failed hit-test: ${JSON.stringify({ settings: open.settingsHit, filter: open.filterHit, toggle: open.toggleHit })}`);
+  }
+  if (open.toggle.width < 44 || open.toggle.height < 44) {
+    failures.push(`tablet toggle below 44px touch floor: ${JSON.stringify(open.toggle)}`);
+  }
+  if (!open.resizeHandle || Math.abs(open.resizeHandle.right - open.board.right) > 2 || open.resizeHandle.left < open.board.right - 20 || !open.resizeHandleHit) {
+    failures.push(`tablet divider resize handle not hit-testable at board seam: board=${JSON.stringify(open.board)} handle=${JSON.stringify(open.resizeHandle)} hit=${open.resizeHandleHit}`);
+  }
+  if (!scrolledBoard?.scrolled || scrolledBoard.brandTop === null || Math.abs(scrolledBoard.brandTop - open.brand.top) > 1 || !scrolledBoard.toggleHit) {
+    failures.push(`tablet board header did not stay sticky on scroll: openBrand=${JSON.stringify(open.brand)} scrolled=${JSON.stringify(scrolledBoard)}`);
+  }
+  if (scrolledBoard?.handleTop !== null && Math.abs(scrolledBoard.handleTop - open.resizeHandle.top) > 1) {
+    failures.push(`tablet resize handle scrolled off seam top: open=${open.resizeHandle.top} scrolled=${scrolledBoard.handleTop}`);
+  }
+  if (!resized?.board || resized.board.width <= open.board.width + 20 || !resized.toggleInBrand || !resized.toggleHit) {
+    failures.push(`tablet divider drag did not widen board cleanly: before=${open.board.width} after=${resized?.board?.width}`);
+  }
+  if (collapsed.board !== null || collapsed.dataBoard !== "collapsed" || collapsed.toggleCount !== 1 || !collapsed.toggleInTopbar) {
+    failures.push(`tablet collapsed toggle must move into topbar leading edge: ${JSON.stringify(collapsed)}`);
+  }
+  if (!collapsed.toggle || collapsed.toggle.left < collapsed.pane.left - 1 || collapsed.toggle.left > collapsed.pane.left + 20 || collapsed.toggle.right > collapsed.title.left + 0.5 || !collapsed.toggleHit || collapsed.title.height <= 0) {
+    failures.push(`tablet collapsed toggle overlaps or escapes leading conversation edge: ${JSON.stringify({ toggle: collapsed.toggle, title: collapsed.title, toggleHit: collapsed.toggleHit })}`);
+  }
+  if (open.toggleExpanded !== "true" || collapsed.toggleExpanded !== "false" || reopened.toggleExpanded !== "true") {
+    failures.push("tablet sidebar toggle does not report the open, collapsed and reopened states");
+  }
+  if (!reopened.board || reopened.dataBoard !== "visible" || !reopened.toggleInBrand || !reopened.toggleHit) {
+    failures.push(`tablet re-expanded board did not return toggle to board header: ${JSON.stringify(reopened)}`);
+  } else if (Math.abs(reopened.board.width - open.board.width) > 1) {
+    failures.push(`tablet divider reset did not restore the initial width: ${reopened.board.width} vs ${open.board.width}`);
+  }
+  if (!result.sessionOpen?.topbarInPane || !result.sessionOpen.overviewHit || result.sessionOpen.topbar.left < result.sessionOpen.board.right - 1) {
+    failures.push(`tablet session pane topbar/overview geometry failed: ${JSON.stringify(result.sessionOpen)}`);
+  }
+  const { paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone } = result;
+  if (!paneScrollCapture || paneScrollCapture.scrollTop <= 0) {
+    failures.push(`tablet session pane did not scroll before layout changes: ${JSON.stringify(paneScrollCapture)}`);
+  }
+  for (const [phase, sample] of [
+    ["collapsed", paneScrollCollapsed],
+    ["reopened", paneScrollReopened],
+    ["phone", paneScrollPhone],
+  ]) {
+    if (!sample?.sameNode || sample.scrollTop === null || sample.scrollTop <= 0) {
+      failures.push(`tablet ${phase} remounted the active session scroller or lost its reading position: ${JSON.stringify({ capture: paneScrollCapture, sample })}`);
+    }
+  }
+  const { beforeArrowUp, arrowUpRows, narrowest, widest, pointer, findQuery } = result;
+  if (!beforeArrowUp.hit || !arrowUpRows.length || arrowUpRows.some((row, i) => row.index !== beforeArrowUp.index - i - 1 || !row.hit || row.coveredByHeader)) {
+    failures.push(`tablet ArrowUp focus is not visible around the board header: ${JSON.stringify({ beforeArrowUp, arrowUpRows })}`);
+  }
+  for (const [label, sample, edge] of [
+    ["minimum drag", narrowest, "min"], ["Home", result.home, "min"],
+    ["maximum drag", result.wideDrag, "max"], ["End", widest, "max"],
+  ]) {
+    if (sample.board.width !== sample.range?.[edge] || sample.range.now !== sample.range[edge]) {
+      failures.push(`tablet divider ${label} did not reach the advertised limit: ${JSON.stringify({ range: sample.range, width: sample.board.width })}`);
+    }
+  }
+  if (pointer.coarse || narrowest.search !== null || !narrowest.settingsHit || !narrowest.filterHit || !narrowest.toggleHit || narrowest.toggle?.right > narrowest.board.right) {
+    failures.push(`tablet minimum divider hides a header control: ${JSON.stringify({ pointer, board: narrowest.board, toggle: narrowest.toggle, toggleHit: narrowest.toggleHit, filterHit: narrowest.filterHit })}`);
+  }
+  for (const [font, sample] of [["m", widest], ...result.largerText]) {
+    const { board, pane, range, find } = sample;
+    if (board.width !== range?.max || !find?.focused || !find.hit || find.value !== findQuery ||
+        find.editableWidth < find.queryWidth + find.clearAllowance) {
+      failures.push(`tablet maximum divider starves the focused Find query at font ${font}: ${JSON.stringify({ board, pane, range, find })}`);
+    }
+  }
+  const { desktopBefore, narrowRestored, roomy, desktopAfter, desktopFits, roomyFits } = result;
+  if (desktopBefore.width !== desktopBefore.max || narrowRestored.board.width !== widest.board.width ||
+      roomy.pane.width !== narrowRestored.pane.width || desktopAfter.width !== desktopBefore.width ||
+      desktopFits.width >= roomy.range.max || roomyFits.board.width !== desktopFits.width) {
+    failures.push(`tablet did not show the usable part of the saved desktop width: ${JSON.stringify({ desktopBefore,
+      narrow: narrowRestored.board.width, roomy: roomy.board.width, desktopAfter, desktopFits, roomyFits: roomyFits.board.width })}`);
+  }
+  for (const [label, sample] of [["open", open], ["collapsed", collapsed]]) {
+    if (sample.document.scrollWidth > TABLET_VIEWPORT.width + 1 || sample.document.scrollHeight > TABLET_VIEWPORT.height + 1) {
+      failures.push(`tablet ${label} document overflow: ${JSON.stringify(sample.document)}`);
+    }
+  }
   return failures;
 }
 
 const OVERVIEW_VIEWPORTS = [VIEWPORT, MOBILE_VIEWPORT, { width: 320, height: 844, mobile: true, touch: true }];
 const OVERVIEW_THEMES = ["light", "dark"];
 const OVERVIEW = '[data-testid="activity-sidebar"][aria-label="Overview"]';
+const OVERVIEW_CHIP_HOST = '[data-overview-chip]';
+const OVERVIEW_CHIP = `${OVERVIEW_CHIP_HOST} [data-overview-toggle]`;
+const OVERVIEW_SELECTED_TAB = '[role="tab"][aria-selected="true"]';
+const overviewTabSelector = (labelFilter) => `${OVERVIEW} [role="tab"]${labelFilter}`;
 // The Overview sweep's tall task list renders this many live rows (40-row
 // fixture, every fourth settled into the collapsed fold). The wait gate and
 // the fixture-sanity assert below share it, so resizing the fixture cannot
@@ -690,6 +1655,7 @@ const LONG_VALUES = [
   `feature/${"branchidentifier".repeat(12)}`,
   `/work/${"directorysegment".repeat(12)}/session`,
 ];
+const LONG_LINK_URL = `https://artifacts.example.test/p/${"linksegment".repeat(8)}/final-suffix`;
 
 async function waitForDom(send, expression, label) {
   // Presence predicates can return DOM nodes, which must not cross CDP by value.
@@ -753,6 +1719,19 @@ async function settleOverview(send) {
     return box.right <= innerWidth + 1 && box.left >= -1;
   })()`,
     "Overview finishes its entrance",
+  );
+}
+
+async function waitForOverviewOpen(send, label) {
+  await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, label);
+  await settleOverview(send);
+}
+
+async function waitForShowChipFocus(send) {
+  await waitForDom(
+    send,
+    `document.activeElement === document.querySelector(${JSON.stringify(OVERVIEW_CHIP)})`,
+    "desktop Overview returns focus to the Show chip",
   );
 }
 
@@ -836,8 +1815,90 @@ async function chooseOverviewMenu(send, selector) {
   })()`,
   );
   await clickControl(send, "[data-overview-guard-item]");
-  await waitForDom(send, `document.querySelector(${JSON.stringify(OVERVIEW)})`, "opened Overview");
-  await settleOverview(send);
+  await waitForOverviewOpen(send, "opened Overview");
+}
+
+async function openDesktopOverview(send) {
+  await clickControl(send, OVERVIEW_CHIP);
+  await waitForOverviewOpen(send, "opened desktop Overview");
+}
+
+async function openPhoneOverview(send, selector, measure = false) {
+  let headerFind;
+  if (measure) {
+    await waitForDom(send, `document.querySelector(${JSON.stringify(selector)})`, "mounted phone Overview trigger");
+    headerFind = await evaluate(send, `(() => {
+      const find = document.querySelector('[data-testid="topbar"] button[aria-label="Find in session"]');
+      const overview = document.querySelector(${JSON.stringify(selector)})?.closest('button');
+      if (!find || !overview) return { present: false };
+      const tapMin = parseFloat(getComputedStyle(overview).getPropertyValue('--tap-min'));
+      const findBox = find.getBoundingClientRect();
+      const overviewBox = overview.getBoundingClientRect();
+      const hit = (box, el) => el.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+      const fits = (box, el) =>
+        box.width >= tapMin - 1 && box.height >= tapMin - 1 && box.left >= -1 && box.right <= innerWidth + 1 && hit(box, el);
+      return {
+        present: true,
+        tapMin,
+        findFits: fits(findBox, find),
+        overviewFits: fits(overviewBox, overview),
+        findBox: findBox.toJSON(),
+        overviewBox: overviewBox.toJSON(),
+      };
+    })()`);
+    if (!headerFind.present || !headerFind.findFits || !headerFind.overviewFits) {
+      throw new Error(`phone session header misses Find/Overview tap geometry: ${JSON.stringify(headerFind)}`);
+    }
+    await evaluate(send, `document.querySelector(${JSON.stringify(selector)}).closest('button').focus({ preventScroll: true })`);
+    await pressKey(send, "Enter", "Enter", 13);
+  } else {
+    await clickControl(send, selector);
+  }
+  await waitForOverviewOpen(send, "opened pane Overview");
+  let inspection;
+  if (measure) {
+    inspection = await evaluate(send, `(() => {
+      const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+      const rect = aside.getBoundingClientRect();
+      const active = document.activeElement;
+      const focus = active.getBoundingClientRect();
+      const hit = document.elementFromPoint(focus.left + focus.width / 2, focus.top + focus.height / 2);
+      const initialFocus = {
+        visible: aside.contains(active) && active.matches(':focus-visible') && active.contains(hit),
+        box: focus.toJSON(),
+        aside: rect.toJSON(),
+      };
+      const tapMin = parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min'));
+      const tabs = [...aside.querySelectorAll('[role="tablist"] [role="tab"]')].map(element => {
+        const box = element.getBoundingClientRect();
+        const labelNode = element.firstElementChild?.firstElementChild ?? element.firstElementChild;
+        return {
+          label: labelNode?.textContent?.trim() ?? element.textContent?.trim() ?? '',
+          selected: element.getAttribute('aria-selected') === 'true',
+          fits: box.height >= tapMin - 1 && box.width >= tapMin - 1,
+        };
+      });
+      return {
+        headerFind: ${JSON.stringify(headerFind)},
+        initialFocus,
+        tabs,
+        fits: rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1,
+      };
+    })()`);
+    if (!inspection.initialFocus.visible) {
+      throw new Error(`phone Overview starts with clipped keyboard focus: ${JSON.stringify(inspection.initialFocus)}`);
+    }
+    if (
+      !inspection.fits ||
+      JSON.stringify(inspection.tabs.map((tab) => tab.label)) !==
+        JSON.stringify(["About", "Links", "Agents", "Jobs", "Watches", "Tasks"]) ||
+      inspection.tabs.some((tab) => !tab.fits) ||
+      !inspection.tabs[0]?.selected
+    ) {
+      throw new Error(`phone Overview misses its underline tablist geometry: ${JSON.stringify(inspection)}`);
+    }
+  }
+  return inspection;
 }
 
 async function openRailOverview(send) {
@@ -855,16 +1916,17 @@ async function openRailOverview(send) {
   if (!visible.width) await clickControl(send, 'button[aria-label="Sessions"]');
   await settleOverview(send);
   await chooseOverviewMenu(send, RAIL_ACTION);
-  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
-  await waitForDom(
-    send,
-    `window.overviewGuardState().overview.tab === 'about' && document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
-    "hydrated About",
-  );
   await waitForDom(
     send,
     `document.querySelector('[data-session-actions-ref="local:p0-s0"][data-pane-id]')`,
     "hydrated receiving Session",
+  );
+  await settleOverview(send);
+  await clickControl(send, overviewTabSelector('[aria-label="About"]'));
+  await waitForDom(
+    send,
+    `window.overviewGuardState().overview.tab === 'about' && document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
+    "hydrated About",
   );
   await settleOverview(send);
 }
@@ -936,22 +1998,19 @@ async function measureOverview(send) {
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
     };
     const mobile = matchMedia('(max-width: 899px)').matches;
-    // A folded resting phone composer renders no activity line - the counts
-    // come back with the expanded card - so the phone measurement engages the
-    // editor first. That is the state whose chips this guard checks.
-    if (mobile) {
-      const editor = document.querySelector('[data-testid="composer-form"] [role="textbox"]');
-      if (editor && !document.querySelector('[data-testid="composer-activity-line"]')) {
-        editor.focus();
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      }
-    }
-    // A category is a label line over an optional detail line (the stacked
-    // SegmentedControl); each line must show its whole text.
-    const categories = Array.from(aside.querySelectorAll('[role="radio"]'), element => {
-      const lines = Array.from(element.children);
+    const tablist = aside.querySelector('[role="tablist"]');
+    const tablistScrollsX = Boolean(tablist && tablist.scrollWidth > tablist.clientWidth + 1);
+    const tabElements = Array.from(aside.querySelectorAll('[role="tab"]'));
+    // Capture resting boxes before fullTextMeasurement calls scrollIntoView.
+    const initialTabBoxes = tabElements.map(box);
+    // A category is a label plus optional detail in the shared underline
+    // tablist; each piece must show its whole text.
+    const categories = tabElements.map((element, index) => {
+      const lines = Array.from(element.firstElementChild?.children ?? element.children);
       return {
-        text: lines.map(line => line.textContent).join('\\n'), checked: element.getAttribute('aria-checked'), box: box(element),
+        text: lines.map(line => line.textContent).join('\\n'),
+        checked: element.getAttribute('aria-selected'),
+        box: initialTabBoxes[index],
         label: measure(lines[0], lines[0]?.textContent),
         detail: lines[1] ? measure(lines[1], lines[1].textContent) : null,
       };
@@ -961,34 +2020,23 @@ async function measureOverview(send) {
         !Array.from(e.children).some(child => child.textContent === expected));
       return measure(element, expected);
     });
-    const close = aside.querySelector('button[aria-label="Close Overview"]');
-    // The activity surface: the pane's status bar on desktop, the quiet line
-    // below the composer card on a phone (the phone pane renders no footer
-    // strip).
-    const surface = mobile
-      ? document.querySelector('[data-testid="composer-activity-line"]')
-      : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
-          .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
+    const close = aside.querySelector('button[aria-label="Hide Overview"]');
+    const resizeHandle = aside.querySelector('[data-testid="overview-resize-handle"]');
+    const surface = mobile ? null : Array.from(document.querySelectorAll('[data-testid="statusbar"]'))
+      .find(e => !e.closest('[data-pane-footer-fixture]')) ?? null;
     const chips = surface ? Array.from(surface.querySelectorAll('[data-activity-tab]')) : [];
-    const chipRow = chips[0]?.parentElement ?? null;
-    const path = surface?.querySelector('[data-testid="composer-repo-path"]');
     return {
       theme: document.documentElement.dataset.theme, font: document.body.dataset.fontSize,
-      sidebar: box(aside), categories, values, close: close && box(close),
+      sidebar: box(aside), tablistScrollsX, categories, values, close: close && box(close),
+      resizeHandle: resizeHandle ? {
+        role: resizeHandle.getAttribute('role'),
+        min: Number(resizeHandle.getAttribute('aria-valuemin')),
+        max: Number(resizeHandle.getAttribute('aria-valuemax')),
+        now: Number(resizeHandle.getAttribute('aria-valuenow')),
+        box: box(resizeHandle),
+      } : null,
       tapMin: parseFloat(getComputedStyle(aside).getPropertyValue('--tap-min')),
       footerTabs: surface ? [chips.map(button => button.dataset.activityTab)] : [],
-      footer: surface ? (() => {
-        return {
-          box: box(mobile ? (chipRow ?? surface) : surface),
-          path: !mobile && path ? box(path) : null,
-          chips: chips.map(element => ({
-            tab: element.dataset.activityTab, box: box(element)
-          })),
-          chipRow: chipRow && {
-            box: box(chipRow), scrollWidth: chipRow.scrollWidth, clientWidth: chipRow.clientWidth
-          },
-        };
-      })() : null,
       document: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
       errors: window.__shellGuardErrors || [], state: window.overviewGuardState()
     };
@@ -1015,7 +2063,7 @@ function overviewScrollContainers(root) {
 // document must not grow: a tall task list scrolling the whole page frame
 // is the bug this step exists to catch.
 async function measureOverviewTasks(send) {
-  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Tasks"]`);
+  await clickControl(send, overviewTabSelector('[aria-label^="Tasks"]'));
   await waitForDom(
     send,
     `document.querySelectorAll('[data-testid="task-row"]').length >= ${TALL_TASK_ROWS}`,
@@ -1071,7 +2119,7 @@ function assertOverviewTasks(result, viewport) {
 
 function assertOverview(result, viewport, theme) {
   const failures = [];
-  const labels = ["Agents\n100/100", "Jobs\n100/100", "Watches\n100/100", "Tasks\n100/100", "About"];
+  const labels = ["About", "Links\n1", "Agents\n100/100", "Jobs\n100/100", "Watches\n100/100", "Tasks\n100/100"];
   if (result.theme !== theme || result.font !== "xl") failures.push("XL/theme preferences did not apply");
   if (!viewport.mobile && Math.abs(result.sidebar.width - 320) > 1)
     failures.push(`desktop sidebar width ${result.sidebar.width}`);
@@ -1084,12 +2132,11 @@ function assertOverview(result, viewport, theme) {
     result.close.bottom > viewport.height + 1
   )
     failures.push(`close control escapes viewport: ${JSON.stringify(result.close)}`);
-  // The focused session pane carries its activity tabs on both viewports:
-  // desktop draws them in the pane's status bar, a phone keeps them in the
-  // engaged composer's control row, which is the pane's one bottom surface.
+  // Desktop activity retains its own pane footer. The trusted phone path
+  // measures those rows at their replacement owner, the inspection sheet.
   if (
-    result.footerTabs.length !== 1 ||
-    JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"])
+    !viewport.mobile && (result.footerTabs.length !== 1 ||
+      JSON.stringify(result.footerTabs[0]) !== JSON.stringify(["agents", "jobs", "watches", "tasks"]))
   )
     failures.push(`actual pane footer identities ${JSON.stringify(result.footerTabs)}`);
   if (JSON.stringify(result.categories.map((c) => c.text)) !== JSON.stringify(labels))
@@ -1101,7 +2148,35 @@ function assertOverview(result, viewport, theme) {
       .join() !== "About"
   )
     failures.push("About is not exclusively selected");
+  if (!viewport.mobile) {
+    if (!result.resizeHandle || result.resizeHandle.role !== "separator") {
+      failures.push(`desktop Overview missing resize handle: ${JSON.stringify(result.resizeHandle)}`);
+    } else if (
+      result.resizeHandle.min !== 280 ||
+      result.resizeHandle.max !== 640 ||
+      result.resizeHandle.now !== 320
+    ) {
+      failures.push(`desktop Overview resize handle bounds unexpected: ${JSON.stringify(result.resizeHandle)}`);
+    }
+  } else if (result.resizeHandle !== null) {
+    failures.push(`mobile Overview unexpectedly rendered a resize handle: ${JSON.stringify(result.resizeHandle)}`);
+  }
+  const firstTabTop = result.categories[0]?.box.top;
   for (const category of result.categories) {
+    if (firstTabTop !== undefined && Math.abs(category.box.top - firstTabTop) > 1) {
+      failures.push(
+        `Overview category ${category.text} wrapped onto a second row: top=${category.box.top} vs firstTop=${firstTabTop}`,
+      );
+    }
+    if (category.detail !== null) {
+      const labelBottom = category.label?.textRects?.[0]?.bottom;
+      const detailTop = category.detail?.textRects?.[0]?.top;
+      if (labelBottom === undefined || detailTop === undefined || detailTop < labelBottom - 2) {
+        failures.push(
+          `Overview category ${category.text} is not two-level stacked: labelBottom=${labelBottom} detailTop=${detailTop}`,
+        );
+      }
+    }
     for (const line of [category.label, category.detail]) {
       if (line === null) continue;
       if (
@@ -1133,39 +2208,6 @@ function assertOverview(result, viewport, theme) {
       if (!control || control.width < result.tapMin - 1 || control.height < result.tapMin - 1)
         failures.push(`sub-floor Overview target: ${JSON.stringify(control)}`);
     }
-    const footer = result.footer;
-    if (!footer) {
-      failures.push("engaged phone composer does not render its activity line");
-    } else {
-      // The phone pane renders no footer strip: the quiet line below the
-      // composer card carries the same four activity tabs, each at the tap
-      // floor and never clipped.
-      if (footer.chips.length !== 4) failures.push(`phone composer activity chips: ${JSON.stringify(footer.chips)}`);
-      for (const chip of footer.chips) {
-        if (
-          chip.box.width < result.tapMin - 1 ||
-          chip.box.height < result.tapMin - 1 ||
-          chip.box.top < footer.box.top - 1 ||
-          chip.box.bottom > footer.box.bottom + 1
-        )
-          failures.push(`phone composer activity chip ${chip.tab} misses the tap floor: ${JSON.stringify(chip.box)}`);
-      }
-      const row = footer.chipRow;
-      if (!row || row.box === null) {
-        failures.push(`phone composer chip row is missing: ${JSON.stringify(footer)}`);
-      } else {
-        if (row.scrollWidth > row.clientWidth + 1)
-          failures.push(
-            `phone composer chip row clips its chips (${row.scrollWidth}px in ${row.clientWidth}px): ${JSON.stringify(row)}`,
-          );
-        for (const chip of footer.chips) {
-          if (chip.box.left < row.box.left - 1 || chip.box.right > row.box.right + 1)
-            failures.push(
-              `phone composer activity chip ${chip.tab} is clipped by its row: ${JSON.stringify(chip.box)}`,
-            );
-        }
-      }
-    }
   }
   if (result.document.width > viewport.width + 1 || result.document.height > viewport.height + 1)
     failures.push(`page overflow ${JSON.stringify(result.document)}`);
@@ -1178,15 +2220,20 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     "window.overviewGuardState().panes.find(p => p.type === 'session' && p.params.ref === 'local:p0-s0').id",
   );
   const trigger = (id) => `[data-session-actions-ref="local:p0-s0"][data-pane-id="${id}"]`;
+  const overviewTrigger = (id, ref = "local:p0-s0") => `[data-session-overview-ref="${ref}"][data-pane-id="${id}"]`;
+  const expectedTabRole = "tab";
+  const expectedSelectedAttr = "aria-selected";
   await evaluate(
     send,
-    `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`,
+    `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector(${JSON.stringify(OVERVIEW_SELECTED_TAB)}).focus()`,
   );
   for (const [key, code, keyCode, tab] of [
-    ["Home", "Home", 36, "agents"],
-    ["ArrowRight", "ArrowRight", 39, "jobs"],
-    ["ArrowLeft", "ArrowLeft", 37, "agents"],
-    ["End", "End", 35, "about"],
+    ["End", "End", 35, "tasks"],
+    ["Home", "Home", 36, "about"],
+    ["ArrowRight", "ArrowRight", 39, "links"],
+    ["ArrowRight", "ArrowRight", 39, "agents"],
+    ["ArrowLeft", "ArrowLeft", 37, "links"],
+    ["ArrowLeft", "ArrowLeft", 37, "about"],
   ]) {
     await pressKey(send, key, code, keyCode);
     await waitForDom(
@@ -1199,26 +2246,98 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       `(() => {
       const active = document.activeElement;
       const style = getComputedStyle(active);
-      return { checked: active.getAttribute('aria-checked'), role: active.getAttribute('role'),
+      return { checked: active.getAttribute(${JSON.stringify(expectedSelectedAttr)}), role: active.getAttribute('role'),
         visible: active.matches(':focus-visible'), outline: style.outlineStyle,
         width: parseFloat(style.outlineWidth), color: style.outlineColor };
     })()`,
     );
     if (
-      focus.role !== "radio" ||
+      focus.role !== expectedTabRole ||
       focus.checked !== "true" ||
       !focus.visible ||
       focus.outline === "none" ||
       focus.width < 1 ||
       focus.color === "rgba(0, 0, 0, 0)"
     )
-      throw new Error(`${key} has no visible selected-radio focus: ${JSON.stringify(focus)}`);
+      throw new Error(`${key} has no visible selected-${expectedTabRole} focus: ${JSON.stringify(focus)}`);
+    if (tab === "links" && key === "ArrowRight") {
+      await waitForDom(
+        send,
+        `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid^="about-link-"]`)})`,
+        "Links tab rendered saved link",
+      );
+      await evaluate(
+        send,
+        `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid^="about-link-"]`)}).focus()`,
+      );
+      await waitForDom(
+        send,
+        `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid="session-links-destination"]`)})`,
+        "Links destination bar rendered on focus",
+      );
+      const linkUrlMeasure = await evaluate(
+        send,
+        `(() => {
+          const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+          const measure = ${fullTextMeasurement.toString()};
+          const bar = aside.querySelector('[data-testid="session-links-destination"] span');
+          const result = measure(bar, ${JSON.stringify(LONG_LINK_URL)});
+          aside.querySelector(${JSON.stringify(OVERVIEW_SELECTED_TAB)}).focus();
+          return result;
+        })()`,
+      );
+      if (
+        !linkUrlMeasure.fullText ||
+        !linkUrlMeasure.selectable ||
+        linkUrlMeasure.inlineOverflow ||
+        linkUrlMeasure.clips?.length ||
+        linkUrlMeasure.unselectable?.length ||
+        linkUrlMeasure.scrollContainers?.length ||
+        !linkUrlMeasure.textRects?.length
+      ) {
+        throw new Error(`unreadable saved link URL on Links tab: ${JSON.stringify(linkUrlMeasure)}`);
+      }
+    }
   }
   await waitForDom(
     send,
     `document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
     "About restored after keyboard selection",
   );
+  if (!viewport.mobile) {
+    // Exercise real desktop Overview resizing via keyboard and double-click reset:
+    // widening fits all five XL 100/100 two-level tabs with zero horizontal scroll.
+    await evaluate(
+      send,
+      `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid="overview-resize-handle"]`)}).focus()`,
+    );
+    await pressKey(send, "End", "End", 35);
+    await waitForDom(
+      send,
+      `Math.abs(document.querySelector(${JSON.stringify(OVERVIEW)}).getBoundingClientRect().width - 640) <= 1`,
+      "desktop Overview widens to maximum width",
+    );
+    const widened = await evaluate(
+      send,
+      `(() => {
+        const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+        const tablist = aside.querySelector('[role="tablist"]');
+        return { width: aside.getBoundingClientRect().width, scrollsX: tablist.scrollWidth > tablist.clientWidth + 1 };
+      })()`,
+    );
+    if (widened.scrollsX) {
+      throw new Error(`widened desktop Overview tablist still scrolls horizontally: ${JSON.stringify(widened)}`);
+    }
+    await evaluate(
+      send,
+      `document.querySelector(${JSON.stringify(`${OVERVIEW} [data-testid="overview-resize-handle"]`)}).dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`,
+    );
+    await waitForDom(
+      send,
+      `Math.abs(document.querySelector(${JSON.stringify(OVERVIEW)}).getBoundingClientRect().width - 320) <= 1`,
+      "desktop Overview double-click resets to default width",
+    );
+  }
   await settleOverview(send);
   const tabStops = await evaluate(
     send,
@@ -1269,11 +2388,42 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   }
 
   const dismiss = async (gesture, expectedPane, expectedButton = null) => {
-    if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Close Overview"]`);
+    // Capture the exit on the first DOM commit that has both the leaving pane
+    // and its Show chip. A separate CDP request is not deterministic here: the
+    // 180 ms exit can finish first. The observer runs as a microtask after the
+    // commit, while the pane is still mounted.
+    await evaluate(
+      send,
+      `(() => {
+        const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
+        window.__overviewWorkspace = aside?.previousElementSibling ?? null;
+        window.__overviewExitGeometry = null;
+        window.__overviewExitObserver?.disconnect();
+        const capture = () => {
+          if (window.__overviewExitGeometry) return;
+          const leaving = document.querySelector(${JSON.stringify(OVERVIEW)});
+          const chip = document.querySelector(${JSON.stringify(OVERVIEW_CHIP)});
+          if (!leaving || !chip) return;
+          const box = chip.getBoundingClientRect();
+          const workspace = window.__overviewWorkspace;
+          window.__overviewExitGeometry = {
+            position: getComputedStyle(leaving).position,
+            workspaceWidth: workspace?.getBoundingClientRect().width ?? null,
+            chip: box ? { left: box.left, right: box.right, top: box.top, bottom: box.bottom } : null,
+            scrollWidth: document.documentElement.scrollWidth,
+            clientWidth: document.documentElement.clientWidth,
+          };
+        };
+        window.__overviewExitObserver = new MutationObserver(capture);
+        window.__overviewExitObserver.observe(document.body, { childList: true, subtree: true });
+        capture();
+      })()`,
+    );
+    if (gesture === "close") await clickControl(send, `${OVERVIEW} button[aria-label="Hide Overview"]`);
     else {
       await evaluate(
         send,
-        `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector('[role="radio"][aria-checked="true"]').focus()`,
+        `document.querySelector(${JSON.stringify(OVERVIEW)}).querySelector(${JSON.stringify(OVERVIEW_SELECTED_TAB)}).focus()`,
       );
       await pressKey(send, "Escape", "Escape", 27);
     }
@@ -1282,6 +2432,38 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       `!document.querySelector(${JSON.stringify(OVERVIEW)})`,
       `${gesture} completes Overview exit`,
     );
+    const exiting = await evaluate(
+      send,
+      `(() => {
+        window.__overviewExitObserver?.disconnect();
+        window.__overviewExitObserver = null;
+        return window.__overviewExitGeometry;
+      })()`,
+    );
+    const closedWorkspace = await evaluate(
+      send,
+      `window.__overviewWorkspace?.getBoundingClientRect().width ?? null`,
+    );
+    if (exiting) {
+      if (!exiting.chip) throw new Error(`${gesture} removes the edge Show chip during Overview exit`);
+      if (exiting.position !== "absolute")
+        throw new Error(`${gesture} leaves the exiting Overview in the content row: ${JSON.stringify(exiting)}`);
+      if (exiting.scrollWidth > exiting.clientWidth + 1)
+        throw new Error(`${gesture} widens the document during Overview exit: ${JSON.stringify(exiting)}`);
+      if (
+        exiting.workspaceWidth === null ||
+        closedWorkspace === null ||
+        Math.abs(exiting.workspaceWidth - closedWorkspace) > 1
+      )
+        throw new Error(
+          `${gesture} does not settle the workspace before Overview exit: ${JSON.stringify({ during: exiting.workspaceWidth, closed: closedWorkspace })}`,
+        );
+      const box = exiting.chip;
+      if (box.left < -1 || box.right > viewport.width + 1 || box.top < -1 || box.bottom > viewport.height + 1)
+        throw new Error(`${gesture} puts the edge Show chip off-shell during Overview exit: ${JSON.stringify(box)}`);
+    } else if (!viewport.mobile && !(await evaluate(send, `matchMedia('(prefers-reduced-motion: reduce)').matches`))) {
+      throw new Error(`${gesture} removed the Overview before its exit geometry could be measured`);
+    }
     await waitForDom(
       send,
       `(() => {
@@ -1299,13 +2481,77 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   };
   // The rail opener is removed when a phone's Sessions drawer closes.
   await dismiss("close", pane);
-  await chooseOverviewMenu(send, trigger(pane));
-  await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
-  await evaluate(
+  // The closed desktop Overview mirrors the Sessions rail: the open sidebar's
+  // header Hide control gives way to one Show chip docked at the right shell
+  // edge. The phone keeps its in-sheet Hide control and has no edge chip.
+  const edgeShow = await evaluate(
     send,
-    `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(pane))}).closest('button'))`,
+    `(() => {
+    const chips = Array.from(document.querySelectorAll(${JSON.stringify(OVERVIEW_CHIP_HOST)}));
+    const chip = chips[0]?.querySelector('[data-overview-toggle]') ?? null;
+    if (!chip) return { chips: chips.length, box: null };
+    const r = chip.getBoundingClientRect();
+    return { chips: chips.length, box: { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height } };
+  })()`,
   );
-  await dismiss("escape", pane, true);
+  if (viewport.mobile) {
+    if (edgeShow.chips !== 0) throw new Error(`phone Overview offers an edge Show chip: ${JSON.stringify(edgeShow)}`);
+  } else {
+    const box = edgeShow.box;
+    if (
+      edgeShow.chips !== 1 ||
+      !box ||
+      box.width <= 0 ||
+      box.height <= 0 ||
+      box.left < -1 ||
+      box.right > viewport.width + 1 ||
+      box.top < -1 ||
+      box.bottom > viewport.height + 1
+    )
+      throw new Error(`desktop Overview edge Show chip is missing or off-shell: ${JSON.stringify(edgeShow)}`);
+    if (box.right < viewport.width - 64)
+      throw new Error(`desktop Overview edge Show chip is not docked at the right edge: ${JSON.stringify(edgeShow)}`);
+  }
+  let inspection;
+  if (viewport.mobile) {
+    inspection = await openPhoneOverview(send, overviewTrigger(pane), true);
+  } else {
+    await openDesktopOverview(send);
+  }
+  await clickControl(send, overviewTabSelector('[aria-label="About"]'));
+  if (viewport.mobile) {
+    await evaluate(
+      send,
+      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(overviewTrigger(pane))}).closest('button'))`,
+    );
+    await dismiss("escape", pane, true);
+  } else {
+    await dismiss("escape", pane);
+    await waitForShowChipFocus(send);
+  }
+
+  if (viewport.width === MOBILE_VIEWPORT.width && childGesture === "close") {
+    await evaluate(send, `(() => {
+      const button = window.__overviewExpectedButton;
+      button.blur();
+      // Keep the real click, but suppress Chromium's default mousedown focus.
+      button.addEventListener('mousedown', event => event.preventDefault(), { once: true });
+      button.addEventListener('click', event => {
+        window.__overviewUnfocusedClick = event.isTrusted && document.activeElement !== button;
+      }, { once: true });
+    })()`);
+    await clickControl(send, overviewTrigger(pane));
+    await waitForOverviewOpen(send, "pointer opens phone Overview");
+    if (!(await evaluate(send, "window.__overviewUnfocusedClick")))
+      throw new Error("phone Overview pointer fixture did not activate without default focus");
+    await pressKey(send, "Escape", "Escape", 27);
+    await waitForDom(send, `!document.querySelector(${JSON.stringify(OVERVIEW)})`, "Escape dismisses phone Overview");
+    await waitForDom(
+      send,
+      "document.activeElement === window.__overviewExpectedButton",
+      "phone Overview returns focus to its header after an unfocused pointer activation",
+    );
+  }
 
   const submitStatus = async (wrongFocusedPane = null) => {
     const editor =
@@ -1346,6 +2592,13 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
   if (!viewport.mobile) {
     const other = await evaluate(send, "window.overviewPane('other')");
     await settleOverview(send);
+    // The edge chip opens the focused session, not whichever pane last owned
+    // the header action.
+    await openDesktopOverview(send);
+    if ((await evaluate(send, "window.overviewGuardState().overview.ref")) !== "local:p0-s1")
+      throw new Error("desktop edge Show chip did not open the focused session's Overview");
+    await dismiss("escape", other);
+    await waitForShowChipFocus(send);
     // Keep the original composer DOM-focused while another real pane owns the
     // workspace focus. The command must capture its own session, not that pane.
     await submitStatus(other);
@@ -1354,28 +2607,23 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     const duplicate = await evaluate(send, "window.overviewPane('duplicate')");
     await settleOverview(send);
     for (const origin of [pane, duplicate]) {
-      await chooseOverviewMenu(send, trigger(origin));
-      await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
-      await evaluate(
-        send,
-        `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(origin))}).closest('button'))`,
-      );
-      await dismiss("escape", origin, true);
+      await evaluate(send, `window.overviewPane('focus', ${JSON.stringify(origin)})`);
+      await openDesktopOverview(send);
+      await clickControl(send, overviewTabSelector('[aria-label="About"]'));
+      await dismiss("escape", origin);
+      await waitForShowChipFocus(send);
     }
-    await chooseOverviewMenu(send, trigger(duplicate));
-    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+    await openDesktopOverview(send);
+    await clickControl(send, overviewTabSelector('[aria-label="About"]'));
     await evaluate(send, `window.overviewPane('close', ${JSON.stringify(duplicate)})`);
     await settleOverview(send);
-    await evaluate(
-      send,
-      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(trigger(pane))}).closest('button'))`,
-    );
-    await dismiss("close", pane, true);
+    await dismiss("close", pane);
+    await waitForShowChipFocus(send);
   }
   if (viewport.mobile) {
     if (!(await evaluate(send, "window.overviewGuardState().overview.open")))
-      await chooseOverviewMenu(send, trigger(pane));
-    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label^="Agents"]`);
+      await openPhoneOverview(send, overviewTrigger(pane));
+    await clickControl(send, overviewTabSelector('[aria-label^="Agents"]'));
     await waitForDom(
       send,
       `Array.from(document.querySelectorAll(${JSON.stringify(`${OVERVIEW} button`)})).some(e => e.textContent.includes('Open Overview child'))`,
@@ -1406,7 +2654,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
       throw new Error(`${error.message} child-open witness: ${JSON.stringify(witness)}`);
     }
     await settleOverview(send);
-    await clickControl(send, `${OVERVIEW} [role="radio"][aria-label="About"]`);
+    await clickControl(send, overviewTabSelector('[aria-label="About"]'));
     await waitForDom(
       send,
       `document.querySelector(${JSON.stringify(OVERVIEW)})?.textContent.includes(${JSON.stringify(LONG_VALUES[1])})`,
@@ -1415,10 +2663,10 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     // The read-only pane's ancestor breadcrumb is gone: the revealed child
     // conversation owns the return focus through its own actions control.
     const childPaneId = await evaluate(send, "window.overviewGuardState().focusedPaneId");
-    const childActions = `[data-session-actions-ref="local:overview-child"][data-pane-id="${childPaneId}"]`;
+    const childActions = overviewTrigger(childPaneId, "local:overview-child");
     await evaluate(
       send,
-      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)})?.closest('button') ?? null)`,
+      `void (window.__overviewExpectedButton = document.querySelector(${JSON.stringify(childActions)}).closest('button'))`,
     );
     await waitForDom(
       send,
@@ -1438,7 +2686,7 @@ async function trustedOverviewFlow(send, viewport, childGesture) {
     );
     await settleOverview(send);
   }
-  return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane };
+  return { tabStops, status: true, phoneTrap: !!viewport.mobile, childReturn: childGesture, originalPane: pane, inspection };
 }
 
 async function measureActivityRowPadding(send, viewport) {
@@ -1466,17 +2714,23 @@ async function measureActivityRowPadding(send, viewport) {
       `Array.from(document.querySelectorAll('[data-row-case]')).map(container => {
       const kind = container.dataset.rowCase;
       const row = kind === 'watch' || kind === 'task' ? container.querySelector('summary') : container.firstElementChild;
+      // The watch row's own box is the ListRow inside its disclosure summary;
+      // the summary contributes no inset, but the glyph inset is measured from
+      // the summary so it counts both boxes.
+      const rowBox = kind === 'watch' ? row.firstElementChild : row;
       let glyph = row.firstElementChild;
       let nested = null;
       if (kind === 'task') {
         glyph = row.querySelector('[data-testid="task-check"]');
       } else if (kind === 'watch') {
         glyph = row.querySelector('[data-testid^="sidebar-watch-"]').parentElement;
-        nested = getComputedStyle(glyph.parentElement);
+        // The row box now lives on the ListRow inside the summary; the summary
+        // itself must stay unpadded so the effective inset is the row's alone.
+        nested = getComputedStyle(row);
       }
-      const style = getComputedStyle(row), box = row.getBoundingClientRect();
+      const style = getComputedStyle(rowBox), box = row.getBoundingClientRect();
       const time = row.querySelector('time[data-activity-time]');
-      const title = kind === 'watch' || kind === 'task'
+      const title = kind === 'task'
         ? time?.parentElement?.querySelector('[data-struck], [class*="rowName"], [class*="description"]')
         : row.querySelector('[title]');
       const timeBox = time?.getBoundingClientRect();
@@ -1528,7 +2782,7 @@ async function measureActivityRowPadding(send, viewport) {
         failures.push(`${row.kind} row must have 8px glyph inset and 4px/8px padding: ${JSON.stringify(row)}`);
       }
       if (row.nestedPadding?.some((padding) => padding !== "0px"))
-        failures.push(`watch nested row adds padding: ${JSON.stringify(row.nestedPadding)}`);
+        failures.push(`watch summary adds padding: ${JSON.stringify(row.nestedPadding)}`);
       const { time } = row;
       const centerDelta = Math.abs((time.top + time.bottom) / 2 - (time.titleTop + time.titleBottom) / 2);
       if (centerDelta > 2.5) failures.push(`${row.kind} timestamp is not on the title line: ${JSON.stringify(row)}`);
@@ -1594,6 +2848,8 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
         const overviewScrollContainers = ${overviewScrollContainers.toString()};
         const aside = document.querySelector(${JSON.stringify(OVERVIEW)});
         for (const element of overviewScrollContainers(aside)) element.scrollTop = 0;
+        const tablist = aside.querySelector('[role="tablist"]');
+        if (tablist) tablist.scrollLeft = 0;
       })()`,
       );
       const screenshot = await send("Page.captureScreenshot", { format: "png" });
@@ -1681,6 +2937,9 @@ async function main() {
     // for a moment after /json/close, so "the first listed page" can be the
     // click-geometry tab just closed, whose socket fails or never answers (#3895).
     const sharedTab = await openPage(cdpEndpoint, "about:blank");
+    for (const duoClient of ["tab", "Home Screen", "hosted app"]) {
+      await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, { ...DUO_INNER_PORTRAIT, duoClient }, "true");
+    }
     console.log(`shellguard click geometry: ${JSON.stringify(await checkMovingControls(cdpEndpoint, clickControl))}`);
     const result = await measureOnPage(
       cdpEndpoint,
@@ -1698,7 +2957,14 @@ async function main() {
       sharedTab.id,
       vitePort,
       MOBILE_VIEWPORT,
-      "JSON.stringify({ sidebar: window.measureMobileSidebar(), tap: window.measureTapTargets() })",
+      "JSON.stringify({ sidebar: { ...window.measureMobileSidebar(), railFilter: document.querySelector('[role=\"dialog\"] [data-testid=\"rail-filter\"][role=\"searchbox\"][type=\"text\"]') !== null }, tap: window.measureTapTargets() })",
+    );
+    const phoneSearchPalette = await measureOnPage(
+      cdpEndpoint,
+      sharedTab.id,
+      vitePort,
+      PHONE_PALETTE_VIEWPORT,
+      measurePhoneSearchPalette,
     );
     // The header at the rail's own width floor on a coarse pointer. measureOnPage
     // already fails the whole case when the row overflows the rail, so this
@@ -1734,11 +3000,28 @@ async function main() {
     // in the page the page-height measurement above reads.
     const focusScroll = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, VIEWPORT, measureFocusScroll);
     const focusScrollFailures = assertFocusScroll(focusScroll);
+    const tabletSplit = await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, TABLET_VIEWPORT, measureTabletSplit);
+    const tabletSplitFailures = assertTabletSplit(tabletSplit);
+    await measureOnPage(cdpEndpoint, sharedTab.id, vitePort, IPAD_VIEWPORT, measureWideIPad);
+    const { pointer, narrowest, widest, beforeArrowUp, arrowUpRows, largerText, roomy, desktopBefore, desktopAfter, roomyFits, paneScrollCapture, paneScrollCollapsed, paneScrollReopened, paneScrollPhone } = tabletSplit;
+    console.log(`shellguard tablet usability: ${JSON.stringify({ pointer, min: narrowest.board.width, minToggleHit: narrowest.toggleHit,
+      max: widest.board.width, pane: widest.pane.width, find: widest.find, beforeArrowUp, arrowUpRows,
+      paneScroll: { capture: paneScrollCapture, collapsed: paneScrollCollapsed, reopened: paneScrollReopened, phone: paneScrollPhone },
+      largerText: largerText.map(([font, { find, pane }]) => ({ font, find, pane: pane.width })),
+      savedWidth: { desktopBefore, roomy: roomy.board.width, desktopAfter, fittingTablet: roomyFits.board.width } })}`);
     if (focusScrollFailures.length === 0) {
       console.log(
         `shellguard focus scroll: PASS - dismissed to rail row ${focusScroll.triggerRef}'s menu trigger ` +
           `with the row's actions reveal held by the fixture and the rail body's scrollTop unchanged at ` +
           `${focusScroll.pushed.scrollTopBefore}`,
+      );
+    }
+    if (tabletSplitFailures.length === 0) {
+      console.log(
+        `shellguard tablet split: PASS - board y=${tabletSplit.open.board.top}..${tabletSplit.open.board.bottom} ` +
+          `w=${tabletSplit.open.board.width}px (resized=${tabletSplit.resized?.board?.width}px), ` +
+          `topbar x=${tabletSplit.open.topbar.left}, handle x=${tabletSplit.open.resizeHandle.left}..${tabletSplit.open.resizeHandle.right}, ` +
+          `open toggle in rail-brand x=${tabletSplit.open.toggle.left}, collapsed toggle in topbar x=${tabletSplit.collapsed.toggle.left}`,
       );
     }
     const failures = [
@@ -1749,8 +3032,10 @@ async function main() {
       ...assertFloatingDock(floatingDock),
       ...assertMobileResult(mobile.sidebar),
       ...assertTapTargets(mobile.tap),
+      ...assertPhoneSearchPalette(phoneSearchPalette),
       ...assertTouchRailMinimum(touchMin),
       ...focusScrollFailures,
+      ...tabletSplitFailures,
     ];
     for (const viewport of OVERVIEW_VIEWPORTS) {
       for (const theme of OVERVIEW_THEMES) {
@@ -1777,6 +3062,7 @@ async function main() {
     console.log(`shellguard delayed workspace: ${JSON.stringify(delayedFloatingDock)}`);
     failures.push(...(await checkSessionHoverCards(cdpEndpoint, vitePort)));
     failures.push(...(await checkSettingsGeometry(cdpEndpoint, vitePort)));
+    failures.push(...(await checkTopBarDrawerPlacement(cdpEndpoint, vitePort)));
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +

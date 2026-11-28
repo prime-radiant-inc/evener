@@ -20,11 +20,11 @@
 
 import {
   decideSteerRoute,
+  type FileMentionTarget,
   markerText,
   mergeDraftText,
   mergeSlashCommands,
   NO_ACTIVE_TURN,
-  parseSlashToken,
   SHUT_DOWN_STATUSES,
   sessionActionError,
   slashCommandInvocation,
@@ -47,10 +47,14 @@ import {
   useSyncExternalStore,
 } from "react";
 import { activitySidebarStore } from "../../../shell/activitybar/activitySidebarStore";
+import { isAppleTouchDevice } from "../../../shell/iPhoneGlass";
+import { iPhoneHost, tellIPhoneHost, useIPhoneShare } from "../../../shell/iPhoneHost";
+import { alignCreateWithComposer } from "../../../shell/rail/alignCreateWithComposer";
+import { paneToURL } from "../../../shell/routing";
 import type { SessionMenuTurnVerbs } from "../../../shell/sessionMenu/SessionMenu";
-import { ActivityChips } from "../../../shell/statusbar/ActivityChips";
 import { useIsMobile } from "../../../shell/useIsMobile";
-import { mountAutofocusEnabled, useMountAutofocus } from "../../../shell/useMountAutofocus";
+import { useMountAutofocus } from "../../../shell/useMountAutofocus";
+import { useConnectionStore } from "../../../stores/connection";
 import {
   controlsFor,
   isRecoveryFenced,
@@ -75,11 +79,11 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome";
-import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
 import { AttachImageControl } from "./attachments/AttachImageControl";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
+import { ImagePickerInput } from "./attachments/ImagePickerInput";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
@@ -90,6 +94,7 @@ import {
   steerTooltipLabel,
   submitTooltipLabel,
 } from "./controlTooltips";
+import { FileCompletionMenu } from "./FileCompletionMenu";
 import { useDuoCoverLayout, useLandscapePhoneLayout, useNarrowComposer } from "./narrowComposer";
 import {
   editQueuedPendingTurn,
@@ -103,13 +108,16 @@ import {
   useQueueRowRestoreRequest,
 } from "./queueRowInsert";
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
+import { compositionIsEmpty } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu } from "./SlashCompletionMenu";
+import { StopIcon } from "./StopIcon";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
 import { pushRecoveryRefusal, unbackedImageMarkersIn } from "./submitProtocol";
 import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
+import { resolveCompletionTokens, useFileCompletion } from "./useFileCompletion";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
 
@@ -122,10 +130,6 @@ export interface ComposerProps {
   focused?: boolean;
   // The seat may suppress mount autofocus for a navigation or restore intent.
   mountAutofocus?: boolean;
-  // The seat's own chrome already renders this conversation's activity counts
-  // (a cascade column below its conversation footer), so the phone row must
-  // not mount a second set of chips beside the status chrome.
-  ownsActivityCounts?: boolean;
   source: ComposerSourceState;
   submission?: ComposerSubmission;
   // An in-progress IME composition, reported for the floating attention
@@ -140,10 +144,14 @@ const CLASS = {
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
+  attachSlot: requireClass(styles.attachSlot, "composer.module.css", "attachSlot"),
+  editorSlot: requireClass(styles.editorSlot, "composer.module.css", "editorSlot"),
+  menuSlot: requireClass(styles.menuSlot, "composer.module.css", "menuSlot"),
   chromeSlot: requireClass(styles.chromeSlot, "composer.module.css", "chromeSlot"),
-  activityRow: requireClass(styles.activityRow, "composer.module.css", "activityRow"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
+  stopLabelStack: requireClass(styles.stopLabelStack, "composer.module.css", "stopLabelStack"),
+  stopMeasure: requireClass(styles.stopMeasure, "composer.module.css", "stopMeasure"),
 };
 
 // The composer re-renders on every draft keystroke and nothing in the chrome
@@ -162,7 +170,7 @@ const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
 
 // Whether a node belongs to the composer: its own subtree, or one of the
 // menus it portals outside it (the session menu, a completion list, a dialog).
-// A press or focus inside keeps the card expanded.
+// A press or focus inside keeps composer editing active.
 function isComposerOwned(root: HTMLElement, node: Node | null): boolean {
   if (node === null) return false;
   if (root.contains(node)) return true;
@@ -189,7 +197,6 @@ function ComposerWithSubmission({
   paneId,
   focused = false,
   mountAutofocus = true,
-  ownsActivityCounts = false,
   source,
   submission,
   onEditingChange,
@@ -211,6 +218,8 @@ function ComposerWithSubmission({
   const mutationAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
   const toasts = useToasts();
+  const connectionClient = useConnectionStore((s) => s.client);
+  const connectionReady = useConnectionStore((s) => s.state === "ready");
   const isMobile = useIsMobile();
   const editorRef = useRef<SkillEditorHandle>(null);
   // An in-progress IME composition drives the floating attention control's
@@ -254,11 +263,10 @@ function ComposerWithSubmission({
   // Whether the press in flight began outside the composer and is waiting for
   // its click. The card is in flow, so ending editing at the press would shrink
   // it before mouseup and move the pressed control out from under the pointer,
-  // swallowing that control's click. The fold waits for the click instead; a
+  // swallowing that control's click. The editing exit waits for the click instead; a
   // press that never clicks never ends editing.
   const outsidePressRef = useRef(false);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
-  const tasksPanelRef = useRef<TasksPanelHandle>(null);
   // Set by scheduleCursorRestore below; consumed (and cleared) by the
   // cursor-restore layout effect in the commit that carries the edit.
   const cursorToRestoreRef = useRef<number | null>(null);
@@ -280,6 +288,34 @@ function ComposerWithSubmission({
     adoptedImageRanges,
     stagedImageRanges,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  const sharePath = paneToURL("session", { ref });
+  const [shareWriteFailure, setShareWriteFailure] = useState<{
+    id: string;
+    text: string;
+    path: string;
+    ownerId: string;
+  } | null>(null);
+  const compositionOwnerId = source.compositionOwnerId;
+  const shareFailureIsCurrent =
+    shareWriteFailure?.path === sharePath && shareWriteFailure.ownerId === compositionOwnerId;
+  useEffect(() => {
+    if (shareWriteFailure && (shareWriteFailure.path !== sharePath || shareWriteFailure.ownerId !== compositionOwnerId))
+      setShareWriteFailure(null);
+  }, [shareWriteFailure, sharePath, compositionOwnerId]);
+  function acknowledgeShare(id: string, path: string): void {
+    tellIPhoneHost({ type: "sharePlaced", id, path });
+    setShareWriteFailure((pending) => (pending?.id === id ? null : pending));
+  }
+  useIPhoneShare(focused && !activeRecoveryId ? sharePath : null, (id, text) => {
+    if (!sharePath) return;
+    if (source.placeShare(id, text)) acknowledgeShare(id, sharePath);
+    else setShareWriteFailure({ id, text, path: sharePath, ownerId: compositionOwnerId });
+  });
+  function retryShareWrite(): void {
+    if (!shareFailureIsCurrent || !shareWriteFailure || !sharePath) return;
+    const { id, text, path } = shareWriteFailure;
+    if (source.placeShare(id, text)) acknowledgeShare(id, path);
+  }
   // The anchors this composer read out of a draft it did not write and cannot
   // back with bytes: the source's adoption record intersected with the text as
   // it stands. Read once here so the refusal, the reason beside the draft, and
@@ -323,28 +359,19 @@ function ComposerWithSubmission({
   const { availability, busy: actionPending, showStop, submit: submitAction, stop: handleInterruptClick } = actions;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
-  // Track live focus too, so stopping does not collapse a focused editor.
-  // React focus events follow the composer's controls and portaled menus.
-  const [followUpFocused, setFollowUpFocused] = useState(false);
-  // Editor engagement is narrower than the card's focus above: it turns on
-  // only when the textbox itself is focused, and turns off only once focus
-  // rests outside the card (reconcileEditorEngagement decides from where
-  // focus actually sits, deferring through an in-flight press), so a press
-  // on a resting row's own controls - the session menu, Send - never counts
-  // as editor engagement. The phone collapse below keys on it, so pressing
-  // a resting control cannot expand the row out from under that press.
-  // A focused pane's mount autofocus puts the caret in this editor after
-  // paint. Start engaged so the card does not paint folded and then animate
-  // open on every session load; the DOM attribute still follows the real
-  // focus event.
-  const [editorEngaged, setEditorEngaged] = useState(() => mountAutofocusEnabled(focused && !!mountAutofocus));
-  const followUpFocusSequenceRef = useRef(0);
-
+  // Content latches the expanded shape while its editor remains in use. Focus
+  // alone never sets this, so mount autofocus still gets the resting row.
+  const [contentEngaged, setContentEngaged] = useState(false);
+  const hasContentRef = useRef(false);
   // Steer moves into the menu below the phone-width boundary.
   // narrowComposer.ts measures the pane, not the viewport.
   const [narrow, attachNarrowRef] = useNarrowComposer();
   const duoCoverLayout = useDuoCoverLayout();
   const landscapePhoneLayout = useLandscapePhoneLayout();
+  // The phone shell's control row is menu-only in every state; model and
+  // effort live in Overview and Settings (design-system.md section 12).
+  const phoneShellLayout = isMobile || landscapePhoneLayout;
+  const appleComposer = isAppleTouchDevice() || !!iPhoneHost();
   const composerRootRef = useRef<HTMLDivElement | null>(null);
   const attachComposerRoot = useCallback(
     (element: HTMLDivElement | null) => {
@@ -374,24 +401,19 @@ function ComposerWithSubmission({
       anchor.removeAttribute("data-composer-editing");
     });
   };
-  // Where focus actually sits decides the resting row: inside the composer
-  // or one of its portaled menus keeps the expanded row, body or anywhere
-  // else rests it. A blur's frame can fire before a press's focus transfer
-  // lands, so the blur path defers to the press's release, which reconciles
-  // here once the transfer has settled.
-  const reconcileEditorEngagement = useCallback((): void => {
+  const reconcileContentEngagement = useCallback((): void => {
     const root = composerRootRef.current;
-    if (!root) return;
-    // Held through a press for the same reason; see outsidePressRef.
-    if (outsidePressRef.current) return;
-    const active = root.ownerDocument.activeElement;
-    if (isComposerOwned(root, active)) return;
-    setEditorEngaged(false);
+    if (!root || outsidePressRef.current || hasContentRef.current) return;
+    if (isComposerOwned(root, root.ownerDocument.activeElement)) return;
+    setContentEngaged(false);
   }, []);
   const holdComposerPress = (event: ReactPointerEvent<HTMLDivElement>): void => {
     // Only the primary press can hold editing: a right or middle press fires
     // pointerdown but no click, so a hold armed here could never be released.
     if (event.button !== 0) return;
+    if (appleComposer && isEditorEvent(event.target)) {
+      formAnchorRef.current?.toggleAttribute("data-touch-editing", event.pointerType === "touch");
+    }
     // Drop the previous press's listeners without its deferred clear: the new
     // press owns the hold from this moment.
     composerPressReleaseRef.current?.();
@@ -409,7 +431,7 @@ function ComposerWithSubmission({
       setTimeout(() => {
         if (composerPressSeqRef.current !== press) return;
         composerPointerRef.current = false;
-        reconcileEditorEngagement();
+        reconcileContentEngagement();
       }, 0);
     };
     composerPressReleaseRef.current = release;
@@ -432,14 +454,14 @@ function ComposerWithSubmission({
     // The exit runs on the completed click, not the press: the card is in flow,
     // so clearing at the press shrinks it before mouseup and the control under
     // the pointer moves away before it can receive its click. widgets/internal/
-    // useDismissOnOutsidePress.ts states the same rule for in-flow collapses.
+    // useDismissOnOutsidePress.ts states the same rule for in-flow exits.
     // A click only fires when press and release share a target, so a drag or a
-    // cancelled press leaves the composer alone (Jesse's ruling: fold only
+    // cancelled press leaves the composer alone (Jesse's ruling: exit only
     // ever on a click).
     let releaseTimer: ReturnType<typeof setTimeout> | null = null;
-    let foldTimer: ReturnType<typeof setTimeout> | null = null;
+    let editingTimer: ReturnType<typeof setTimeout> | null = null;
     // Bumped by every press that can end a hold (pointerdown, pointercancel,
-    // and the release timer), so a deferred fold can tell that its own press
+    // and the release timer), so a deferred exit can tell that its own press
     // was superseded and drop out.
     let outsidePressSeq = 0;
     function cancelRelease(): void {
@@ -447,10 +469,10 @@ function ComposerWithSubmission({
       clearTimeout(releaseTimer);
       releaseTimer = null;
     }
-    function cancelFold(): void {
-      if (foldTimer === null) return;
-      clearTimeout(foldTimer);
-      foldTimer = null;
+    function cancelEditingEnd(): void {
+      if (editingTimer === null) return;
+      clearTimeout(editingTimer);
+      editingTimer = null;
     }
     const onPointerDown = (event: PointerEvent) => {
       const anchor = formAnchorRef.current;
@@ -467,11 +489,11 @@ function ComposerWithSubmission({
       outsidePressRef.current = true;
       outsidePressSeq += 1;
     };
-    // The click resolves the hold and folds the card, only after the click has
+    // The click resolves the hold and ends editing, only after the click has
     // finished dispatching. It is captured, not bubbled, because transcript
     // controls that call stopPropagation() on their own click never reach a
-    // bubble listener and would otherwise leave the card expanded. The fold
-    // itself waits for a later task: the card is in flow, so dropping it inside
+    // bubble listener and would otherwise leave editing active. The exit
+    // itself waits for a later task: the footer is in flow, so dropping it inside
     // dispatch would move layout under the control's own handlers.
     const onClick = (event: MouseEvent) => {
       if (!outsidePressRef.current) return;
@@ -480,11 +502,11 @@ function ComposerWithSubmission({
       cancelRelease();
       const press = outsidePressSeq;
       const target = event.target as Node | null;
-      cancelFold();
+      cancelEditingEnd();
       // The hold stays armed across the deferral, so a blur or frame
-      // reconciliation that runs between here and the fold still sees it.
-      foldTimer = setTimeout(() => {
-        foldTimer = null;
+      // reconciliation that runs between here and the exit still sees it.
+      editingTimer = setTimeout(() => {
+        editingTimer = null;
         if (outsidePressSeq !== press) return;
         outsidePressRef.current = false;
         const anchor = formAnchorRef.current;
@@ -499,16 +521,12 @@ function ComposerWithSubmission({
         const active = doc.activeElement;
         if (active && root.contains(active) && active.closest('[role="textbox"]')) return;
         anchor.removeAttribute("data-composer-editing");
-        // The ended-session card's writing height followed the editor's focus
-        // through the press; the click is where it rests again.
-        setFollowUpFocused(false);
-        // Focus has settled by now, so the resting row can follow it.
-        reconcileEditorEngagement();
+        reconcileContentEngagement();
       }, 0);
     };
     const onPointerCancel = () => {
       outsidePressSeq += 1;
-      cancelFold();
+      cancelEditingEnd();
       outsidePressRef.current = false;
     };
     // A press that ends without a click (a text-selection drag, a scroll drag)
@@ -532,10 +550,10 @@ function ComposerWithSubmission({
       doc.removeEventListener("pointerup", onPointerUp, true);
       doc.removeEventListener("pointercancel", onPointerCancel, true);
       cancelRelease();
-      cancelFold();
+      cancelEditingEnd();
       outsidePressRef.current = false;
     };
-  }, [reconcileEditorEngagement]);
+  }, [reconcileContentEngagement]);
 
   // The session menu's turn-verb items press the same handlers the row
   // buttons press. Those handlers are recreated every render (they close
@@ -552,42 +570,6 @@ function ComposerWithSubmission({
   const steerClickRef = useRef<() => void>(() => {});
   interruptClickRef.current = handleInterruptClick;
   steerClickRef.current = handleSteerClick;
-
-  // The menu's turn-verb offerings. Identity-stable across draft
-  // keystrokes - the deps are the model, the gate, and our own in-flight
-  // request, none of which a keystroke moves - so the memoized chrome sees a
-  // new prop only when the offering actually changed. Presence mirrors the
-  // row buttons' own gate (controlsFor), recomputed here because the row's
-  // own `controls` binding sits behind the null-model guard. Steer's
-  // recovery fence is deliberately NOT a disabled state here: the press
-  // re-reads the fence live and toasts the reason (kata 2f41), which a
-  // disabled menu item cannot explain.
-  const turnVerbs = useMemo<SessionMenuTurnVerbs>(() => {
-    if (!model) return NO_TURN_VERBS;
-    const available = controlsFor(model);
-    const items: SessionMenuTurnVerbs = {};
-    if (available.stop) {
-      items.stop = {
-        onSelect: () => {
-          void interruptClickRef.current();
-        },
-        disabled: actionPending,
-      };
-    }
-    if (available.steer && narrow) {
-      items.steer = {
-        onSelect: () => steerClickRef.current(),
-        // A draft the send-time check refuses cannot be steered either, and a
-        // press that silently returns is the bug (the same reason the recovery
-        // fence is not a native disable here: the press names its reason). The
-        // menu item's own surface cannot show a tooltip, so the reason reaches
-        // the person through the notice beside the draft, which is what the
-        // press-time guard leaves in place.
-        disabled: actionPending || hasUnbackedImage,
-      };
-    }
-    return items;
-  }, [narrow, model, actionPending, hasUnbackedImage]);
 
   // The composer's own single command line (2026-08-14: "the composer is
   // where you act on this session"): the session-scoped BUILT-IN registry
@@ -613,37 +595,66 @@ function ComposerWithSubmission({
             : { start: cursor, end: cursor };
         return { text: textRef.current, cursor, selection };
       },
-      write: (nextText, cursor, editSource, splice) => {
+      write: (nextText, cursor, editSource, splice, restoredMentions) => {
         // Background cleanup changes this editor without claiming a shared
         // draft that another composer has edited in the meantime. Ownership is
         // the persisted revision identity, not a tab-local counter: two tabs
         // share one draft, and the counter cannot see the other tab's write.
         const mayPersist = editSource === undefined || editSource === "edit" || source.ownsDraftRevision();
-        writeDraft(nextText, mayPersist, editSource, splice);
+        writeDraft(nextText, mayPersist, editSource, splice, restoredMentions);
         scheduleCursorRestore(cursor);
       },
     }),
     [textRef, source, writeDraft, scheduleCursorRestore],
   );
-  // Scoped by `ref`: dockview can have several session panes - and so several
-  // mounted Composers - open at once, and a bare literal id would collide.
-  const slashListboxId = `composer-slash-listbox-${ref}`;
   const {
     setToken: setSlashToken,
     items: slashItems,
     open: slashOpen,
-    activeIndex: slashActiveIndex,
+    activeKey: slashActiveKey,
     activeId: slashActiveId,
+    listboxId: slashListboxId,
     commit: commitSlashCompletion,
     handleKeyDown: handleSlashKeyDown,
     reset: resetSlashCompletion,
   } = useSlashCompletion({
     catalog: slashMenuCatalog,
-    listboxId: slashListboxId,
     editorRef,
     textRef,
     textEditor,
   });
+  const askPending = useAskDockPending(ref);
+  const fileTarget = useMemo<FileMentionTarget>(() => ({ kind: "session", ref }), [ref]);
+  const getProtectedFileMentionRanges = useCallback(() => {
+    const snap = source.getSnapshot();
+    return [...snap.stagedImageRanges, ...snap.adoptedImageRanges];
+  }, [source]);
+  const {
+    token: fileToken,
+    setToken: setFileToken,
+    items: fileItems,
+    open: fileOpen,
+    showLoader: fileShowLoader,
+    truncated: fileTruncated,
+    activeIndex: fileActiveIndex,
+    activeId: fileActiveId,
+    listboxId: fileListboxId,
+    commit: commitFileCompletion,
+    handleKeyDown: handleFileKeyDown,
+    reset: resetFileCompletion,
+  } = useFileCompletion({
+    client: connectionClient,
+    target: fileTarget,
+    enabled: connectionReady && connectionClient !== null && !askPending,
+    editorRef,
+    textRef,
+    draft: text,
+    plainKeysOnly: true,
+    getProtectedRanges: getProtectedFileMentionRanges,
+  });
+  useEffect(() => {
+    if (text === "") resetFileCompletion();
+  }, [text, resetFileCompletion]);
   useLayoutEffect(() => {
     mountedRef.current = true;
     const unbind = source.bindEditor(textEditor);
@@ -673,6 +684,7 @@ function ComposerWithSubmission({
     updateSkillNames([]);
     updateSelectionMeta({ text: "", skillNames: [] });
     resetSlashCompletion();
+    resetFileCompletion();
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
     setPendingGoalReplacement(null);
@@ -697,25 +709,10 @@ function ComposerWithSubmission({
   };
 
   const showTasks = (): void => {
-    // Desktop Tasks everywhere is the activity sidebar, preselected to its
-    // Tasks tab; on mobile there is no sidebar, so the per-session Sheet
-    // keeps its behavior.
-    if (isMobile) tasksPanelRef.current?.open();
-    else {
-      // The owning pane rides along, like every other embedded-column
-      // request: the sidebar opens THIS conversation's Tasks and holds its
-      // scope, keeping the cascade focused even when an ordinary pane for
-      // the same conversation exists.
-      activitySidebarStore.getState().openFor(ref, "tasks", undefined, paneId);
-    }
+    // Desktop CurrentWork opens its own conversation's Tasks, including when
+    // a cascade and an ordinary pane both show the same session.
+    activitySidebarStore.getState().openFor(ref, "tasks", undefined, paneId);
   };
-
-  // askPending gates hiding/inerting the input row below (AskDock's own
-  // seam - see AskDock.tsx's header comment: "that is the composer's own
-  // surface to show/hide, and T2 owns it") - read unconditionally alongside
-  // the rest of this component's hooks, ahead of the `!model` early return
-  // below, per the rules of hooks.
-  const askPending = useAskDockPending(ref);
 
   // enterToSend drives the Steer/Send kbd-hint labels below - read via the
   // reactive usePrefsStore hook (Settings -> Display's own live toggle,
@@ -874,8 +871,9 @@ function ComposerWithSubmission({
         consumeQueueRowRestore(ref);
         return;
       }
-      if (attachments.hasPending) {
-        toasts.push("error", "Image attachment is still processing");
+      const refusal = attachments.refusalReason();
+      if (refusal) {
+        toasts.push("error", refusal);
         releaseRecoveryOperation();
         consumeQueueRowRestore(ref);
         return;
@@ -914,7 +912,7 @@ function ComposerWithSubmission({
       editorRef.current?.focus();
       consumeQueueRowRestore(ref);
     }
-  }, [queueRowRestoreRequest, ref, actions.queueRowActions, source, toasts, attachments.hasPending]);
+  }, [queueRowRestoreRequest, ref, actions.queueRowActions, source, toasts, attachments.refusalReason]);
 
   // composerFocus.ts's own seam: a global chord (owned elsewhere) asks this
   // ref's Composer to move keyboard focus into its textarea. Exactly the
@@ -940,9 +938,63 @@ function ComposerWithSubmission({
 
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
-  const hasContent = hasText || hasAttachments || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
+  // Mentions count as content: they name a selected skill or command, and the
+  // fold and Send must agree with recovery on what the composer holds.
+  const hasContent = useMemo(
+    () => !compositionIsEmpty({ text, attachments: attachments.items, skillNames, commandNames, mentions }),
+    [text, attachments.items, skillNames, commandNames, mentions],
+  );
+  hasContentRef.current = hasContent;
+  useEffect(() => {
+    if (hasContent) {
+      setContentEngaged(true);
+      return;
+    }
+    reconcileContentEngagement();
+  }, [hasContent, reconcileContentEngagement]);
+  // Presence mirrors the row's capability gate. A folded empty row hides inline
+  // Steer, so Session actions keeps queue draining available at every width.
+  const resting = !contentEngaged && !hasContent && !mutationWriteStalled;
+  const folded = !askPending && resting;
+  const queueDepth = model?.queue?.depth ?? 0;
+  const menuSteer = (narrow && hasContent) || ((narrow || folded) && queueDepth > 0);
+  const turnVerbs = useMemo<SessionMenuTurnVerbs>(() => {
+    if (!model) return NO_TURN_VERBS;
+    const available = controlsFor(model);
+    const items: SessionMenuTurnVerbs = {};
+    if (available.stop) {
+      items.stop = {
+        onSelect: () => {
+          void interruptClickRef.current();
+        },
+        disabled: actionPending,
+      };
+    }
+    if (available.steer && menuSteer) {
+      items.steer = {
+        onSelect: () => steerClickRef.current(),
+        // A refused draft cannot be steered either. The press names its reason
+        // through the notice beside the draft because menu items have no tooltip.
+        disabled: actionPending || hasUnbackedImage,
+      };
+    }
+    return items;
+  }, [menuSteer, model, actionPending, hasUnbackedImage]);
   const inlineStop = !!model && controlsFor(model).stop && !hasContent;
   const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
+  const alignRailAction = appleComposer && !isMobile && focused && !askPending ? alignCreateWithComposer : undefined;
+  const attachSubmitButton = useCallback(
+    (button: HTMLButtonElement | null) => {
+      submitButtonRef.current = button;
+      if (!button) return;
+      const release = alignRailAction?.(button);
+      return () => {
+        submitButtonRef.current = null;
+        release?.();
+      };
+    },
+    [alignRailAction],
+  );
 
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
@@ -973,7 +1025,6 @@ function ComposerWithSubmission({
     mutationStateAuthoritative: mutationAuthoritative,
   };
   const fence = recoveryFence(model, recoveryRequired, resumeOnlySignals);
-  const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
   // activeTurnId; capability is the harness's) in @evener/appwire-client's
@@ -1017,40 +1068,32 @@ function ComposerWithSubmission({
   const showFollowUpCard = ended && (canSendWhenEnded || fence.fencedLocal || fence.sendDriven);
   // A resting composer folds to one line below; a draft or attachment keeps
   // the writing space it needs after blur.
-  const followUpEngaged = fence.fencedLocal || fence.sendDriven || followUpFocused || hasContent;
-  // The resting shape: an empty composer whose editor is not engaged folds
-  // its field and control row onto one line, giving the transcript back the
-  // height without hiding the model that the next turn will use. Focus in
-  // the editor, a draft, a staged attachment or a pending question restores
-  // the full card. Focus on the row's own controls does not: the folded row
-  // is usable as it stands.
-  const resting = !editorEngaged && !hasContent && !mutationWriteStalled;
-  const folded = !askPending && resting;
+  const followUpEngaged = fence.fencedLocal || fence.sendDriven || contentEngaged || hasContent;
+  // Focus alone never changes the composer's size: session autofocus and an
+  // explicit click keep the same resting row. Content restores the full card
+  // and keeps it stable until focus leaves an empty editor.
   let minLines = 2;
-  if (folded) minLines = 1;
+  if (folded || (appleComposer && phoneShellLayout)) minLines = 1;
   else if (ended) minLines = followUpEngaged ? 3 : 1;
   else if (duoCoverLayout && !followUpEngaged) minLines = 1;
 
-  // The phone layout's one bottom surface is this card's own control row,
-  // and a resting card sheds what an empty editor does not need: no attach,
-  // no status chrome, no activity chips. The session menu and Send stay -
-  // both remain useful with nothing drafted, and the menu is a phone's one
-  // surface for session actions. That resting card is one line; editor
-  // engagement (a draft, the editor's own focus, a send in flight, a stalled
-  // storage write) brings the full row back, including the model picker and
-  // Attach. The actions slot never sheds, so Stop stays reachable while a
-  // turn runs, and the resting leading never swaps while one of its own
-  // controls is pressed.
-  const controlsCollapsed = (isMobile || landscapePhoneLayout) && resting;
+  // Geometry keys stay keyed to the resting state so the folded card's
+  // measurements do not move. The actions slot never sheds, so Stop stays
+  // reachable while a turn runs.
+  const controlsCollapsed = phoneShellLayout && resting;
 
-  // The phone's activity counts are a glance line below the card. A folded
-  // resting card is the phone's smallest surface, so it shows no line; the
-  // counts return with the expanded card. The composer publishes the line's
-  // presence so the pane footer can drop the home-indicator band the chips
-  // already fill.
-  const showActivityLine = isMobile && !ownsActivityCounts && !folded && (!ended || showFollowUpCard);
+  function updateCompletionTokens(
+    masked: string,
+    caret: number,
+    isPaste: boolean,
+    protectedRanges?: readonly { start: number; end: number }[],
+  ): void {
+    const tokens = resolveCompletionTokens(masked, caret, isPaste, protectedRanges);
+    setSlashToken(tokens.slashToken);
+    setFileToken(tokens.fileToken);
+  }
 
-  function handleTextChange(value: SkillEditorValue, caret: number): void {
+  function handleTextChange(value: SkillEditorValue, caret: number, meta?: { isPaste?: boolean }): void {
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
     editText(value.text);
@@ -1067,7 +1110,19 @@ function ComposerWithSubmission({
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (useSlashCompletion's token) reopens on the
     // very next text change rather than staying closed indefinitely.
-    setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
+    updateCompletionTokens(maskSkillAtoms(value), caret, Boolean(meta?.isPaste), [
+      ...(value.stagedImageRanges ?? []),
+      ...(value.adoptedImageRanges ?? []),
+    ]);
+  }
+
+  function handleSelectionChange(caret: number): void {
+    const masked = maskSkillAtoms({
+      text: textRef.current,
+      skillNames: skillNamesRef.current,
+      ...selectionMetaRef.current,
+    });
+    updateCompletionTokens(masked, caret, false, getProtectedFileMentionRanges());
   }
 
   // The repair the notice offers. It removes the exact occurrences that carry
@@ -1132,8 +1187,9 @@ function ComposerWithSubmission({
     event.preventDefault();
     if (actionPending) return;
     if (!hasContent) return; // empty composer: no-op, no request, no message
-    if (attachments.hasPending) {
-      toasts.push("error", "Image attachment is still processing");
+    const refusal = attachments.refusalReason();
+    if (refusal) {
+      toasts.push("error", refusal);
       return;
     }
     // A marker whose bytes this composer does not hold is not sendable: the
@@ -1167,8 +1223,9 @@ function ComposerWithSubmission({
       toasts.push("error", STEER_RECOVERY_FENCED_REASON);
       return;
     }
-    if (attachments.hasPending) {
-      toasts.push("error", "Image attachment is still processing");
+    const refusal = attachments.refusalReason();
+    if (refusal) {
+      toasts.push("error", refusal);
       return;
     }
     // Steer and drain carry the same composition Send does, so the same
@@ -1213,7 +1270,7 @@ function ComposerWithSubmission({
   // isInPane()-equivalent check to port.
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     // The slash menu's keys come first: with it open, a committing Enter must not reach the Enter-to-send routing below.
-    if (handleSlashKeyDown(event)) return;
+    if (handleSlashKeyDown(event) || handleFileKeyDown(event)) return;
     // SHOULD-FIX (product decision): "/" as the first character of an EMPTY
     // composer used to preventDefault and open the MODAL command palette
     // instead of typing (floor §2.1, legacy renderer.js:6914) - which made
@@ -1257,38 +1314,16 @@ function ComposerWithSubmission({
     // composer.md §G).
   }
 
-  function handleFilePickerChange(event: { target: HTMLInputElement }): void {
-    const files = Array.from(event.target.files ?? []);
-    if (files.length > 0) attachments.ingestFiles(files, (message) => toasts.push("error", message));
-    event.target.value = ""; // re-picking the identical file must re-fire change
-  }
-
   function handleFollowUpFocus(event: ReactFocusEvent<HTMLDivElement>): void {
-    followUpFocusSequenceRef.current += 1;
-    setFollowUpFocused(true);
     if ((event.target as Element).closest('[role="textbox"]')) {
-      setEditorEngaged(true);
       formAnchorRef.current?.setAttribute("data-composer-editing", "");
     }
   }
 
   function handleFollowUpBlur(): void {
-    const sequence = ++followUpFocusSequenceRef.current;
-    // Native focus transfers run microtasks between blur and destination focus.
-    // Wait until the next frame so a control or portal keeps the empty editor
-    // expanded without shrinking it during a focus transfer.
     requestAnimationFrame(() => {
-      if (!mountedRef.current || followUpFocusSequenceRef.current !== sequence) return;
-      // The ended-session card's height keys on this, so clearing it mid-press
-      // collapses the card exactly as the fold does: a third collapser, held
-      // for the same reason. The click clears it instead.
-      if (!outsidePressRef.current) setFollowUpFocused(false);
-      // A press inside the composer can blur the editor to body before the
-      // press's own focus transfer lands; clearing engagement here would
-      // collapse the row out from under the pressed control. Hold off during
-      // the press; its release reconciles once the transfer has settled.
-      if (composerPointerRef.current) return;
-      reconcileEditorEngagement();
+      if (!mountedRef.current || composerPointerRef.current) return;
+      reconcileContentEngagement();
     });
     endComposerEditingSoon();
   }
@@ -1306,7 +1341,9 @@ function ComposerWithSubmission({
   }
 
   function handleEditorBlur(): void {
+    formAnchorRef.current?.removeAttribute("data-touch-editing");
     setSlashToken(null);
+    setFileToken(null);
   }
 
   function handleEditorCompositionStart(event: { target: EventTarget | null }): void {
@@ -1329,6 +1366,16 @@ function ComposerWithSubmission({
     <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" turnVerbs={turnVerbs} compactRung />
   );
   const askChrome = <MemoizedSessionChrome ref={ref} paneId={paneId} placement="composer" turnVerbs={turnVerbs} />;
+  const menuChrome = (
+    <div className={CLASS.menuSlot}>
+      <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" turnVerbs={turnVerbs} />
+    </div>
+  );
+  const attachControl = (
+    <div className={CLASS.attachSlot}>
+      <AttachImageControl inputRef={fileInputRef} testId="composer-attach" tooltip="Attach an image" />
+    </div>
+  );
 
   // data-testid on every control in this row: two different buttons here
   // start with "Steer" (this one and the pending rows' "Steer now"), so
@@ -1336,23 +1383,23 @@ function ComposerWithSubmission({
   // accessible name - the naming style follows StatusRow's own
   // status-row-* testids.
   //
-  // While the phone card rests (controlsCollapsed), the leading slot
-  // shrinks to the menu-only chrome: the session menu stays reachable, and
-  // that placement's chrome keeps initial activity discovery following the
-  // pane on screen (issue #1335) with no status chips.
-  // The attach control is a resting-card affordance, so the folded row drops
-  // it: focusing the editor brings it back with the rest of the full row.
+  // The phone shell's leading slot is Attach and the session menu in every
+  // state; the menu placement keeps activity discovery following the pane,
+  // and the status chrome never mounts.
   const leadingControls = (
     <div
       className={CLASS.leading}
       data-folded={folded ? "true" : undefined}
       data-compact={controlsCollapsed ? "true" : undefined}
     >
-      {controlsCollapsed ? (
-        <MemoizedSessionChrome ref={ref} paneId={paneId} placement="menu" turnVerbs={turnVerbs} />
+      {phoneShellLayout ? (
+        <>
+          {attachControl}
+          {!askPending && menuChrome}
+        </>
       ) : (
         <>
-          {!folded && <AttachImageControl inputRef={fileInputRef} testId="composer-attach" tooltip="Attach an image" />}
+          {attachControl}
           {!askPending && <div className={CLASS.chromeSlot}>{leadingChrome}</div>}
         </>
       )}
@@ -1362,7 +1409,6 @@ function ComposerWithSubmission({
     <div
       className={CLASS.composer}
       ref={attachComposerRoot}
-      data-composer-activity-line={showActivityLine ? "true" : undefined}
       onFocusCapture={handleFollowUpFocus}
       onBlurCapture={handleFollowUpBlur}
       onPointerDown={holdComposerPress}
@@ -1399,7 +1445,7 @@ function ComposerWithSubmission({
           region (PendingRowStack, ConversationBody's trailingRow), so the
           composer's footer carries no message renderings. The queue count
           pill stays a count only (StatusRow's queue depth figure). */}
-      {askPending && askChrome}
+      {askPending && (phoneShellLayout ? menuChrome : askChrome)}
       {/* Staged attachments. One rendering for every state, so nothing here
           swaps element types under a user mid-gesture - AttachmentTile.tsx's
           own header comment has the mechanism and the bug it closed. */}
@@ -1411,16 +1457,14 @@ function ComposerWithSubmission({
         </div>
       )}
       {!askPending && (
-        <>
-          <TasksPanel ref={tasksPanelRef} sessionRef={ref} model={model} hideTrigger />
-          <CurrentWork
-            task={model.tasks?.current?.description}
-            goal={model.goal?.objective}
-            goalStatus={model.goal?.status}
-            onOpenTasks={showTasks}
-            onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
-          />
-        </>
+        <CurrentWork
+          task={model.tasks?.current?.description}
+          goal={model.goal?.objective}
+          goalStatus={model.goal?.status}
+          phoneShellLayout={phoneShellLayout}
+          onOpenTasks={showTasks}
+          onEditGoal={() => editGoal((model.goal?.objective ?? "").trim())}
+        />
       )}
       {pendingGoalReplacement !== null && (
         <ConfirmDialog
@@ -1443,7 +1487,13 @@ function ComposerWithSubmission({
         // owning pane id, so the overlay can anchor to the FOCUSED pane's
         // composer when several are mounted - including an ordinary pane and a
         // cascade column showing the same conversation.
-        <div ref={formAnchorRef} className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
+        <div
+          ref={formAnchorRef}
+          className={CLASS.formAnchor}
+          data-composer={ref}
+          data-composer-pane={paneId}
+          data-iphone-composer={appleComposer ? (focused ? "focused" : "") : undefined}
+        >
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only
@@ -1453,8 +1503,19 @@ function ComposerWithSubmission({
             <SlashCompletionMenu
               id={slashListboxId}
               items={slashItems}
-              highlightedIndex={slashActiveIndex}
+              activeKey={slashActiveKey}
               onSelect={commitSlashCompletion}
+            />
+          )}
+          {fileOpen && (
+            <FileCompletionMenu
+              id={fileListboxId}
+              query={fileToken?.query ?? ""}
+              items={fileItems}
+              highlightedIndex={fileActiveIndex}
+              showLoader={fileShowLoader}
+              truncated={fileTruncated}
+              onSelect={commitFileCompletion}
             />
           )}
           <form
@@ -1492,6 +1553,20 @@ function ComposerWithSubmission({
                   )} referred to here is not attached in this composer. Attach the replacement beside it first, then use Remove the reference once the preview appears, before sending.`}
               </InlineNotice>
             )}
+            {!askPending && shareFailureIsCurrent && (
+              <InlineNotice
+                tone="danger"
+                live="alert"
+                data-testid="composer-share-write-error"
+                action={
+                  <Button size="sm" type="button" onClick={retryShareWrite}>
+                    Retry
+                  </Button>
+                }
+              >
+                The share is saved on your iPhone. Retry to add it to this draft.
+              </InlineNotice>
+            )}
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
               <PromptCard
                 data-testid="composer-input-card"
@@ -1500,36 +1575,71 @@ function ComposerWithSubmission({
                 folded={folded}
                 foldedCompact={controlsCollapsed}
                 field={
-                  <SkillEditor
-                    ref={editorRef}
-                    value={{
-                      text,
-                      skillNames,
-                      ...selectionMeta,
-                      adoptedImageMarkers,
-                      adoptedImageRanges,
-                      stagedImageRanges,
-                    }}
-                    restoreEpoch={restoreEpoch}
-                    skillDetails={skillChipDetails}
-                    commandDetails={(name) =>
-                      visibleSlashCatalog.find((item) => slashCommandInvocation(item) === `/${name}`)?.description ??
-                      `${name} — no longer in this session's command catalog`
-                    }
-                    onChange={handleTextChange}
-                    onKeyDown={handleKeyDown}
-                    onPaste={handlePaste}
-                    aria-controls={slashActiveId ? slashListboxId : undefined}
-                    aria-activedescendant={slashActiveId ?? undefined}
-                    minLines={minLines}
-                    onBlur={handleEditorBlur}
-                    placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
-                    aria-label="Message"
-                  />
+                  <div className={CLASS.editorSlot} data-folded={folded ? "true" : undefined}>
+                    <SkillEditor
+                      ref={editorRef}
+                      value={{
+                        text,
+                        skillNames,
+                        ...selectionMeta,
+                        adoptedImageMarkers,
+                        adoptedImageRanges,
+                        stagedImageRanges,
+                      }}
+                      restoreEpoch={restoreEpoch}
+                      skillDetails={skillChipDetails}
+                      commandDetails={(name) =>
+                        visibleSlashCatalog.find((item) => slashCommandInvocation(item) === `/${name}`)?.description ??
+                        `${name} — no longer in this session's command catalog`
+                      }
+                      onChange={handleTextChange}
+                      onSelectionChange={handleSelectionChange}
+                      onKeyDown={handleKeyDown}
+                      onPaste={handlePaste}
+                      aria-controls={slashActiveId ? slashListboxId : fileOpen ? fileListboxId : undefined}
+                      aria-activedescendant={slashActiveId ?? fileActiveId ?? undefined}
+                      minLines={minLines}
+                      onBlur={handleEditorBlur}
+                      placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
+                      aria-label="Message"
+                    />
+                  </div>
                 }
                 leading={leadingControls}
                 actions={
                   <>
+                    {/* Steer enters to the LEFT of Send/Stop when expanded, keeping the
+                        primary action's right edge fixed while leaving no blank gap beside
+                        Stop on an empty folded row. */}
+                    {showSteer && !narrow && !folded && (
+                      <Tooltip
+                        label={steerTooltipLabel({
+                          recoveryFenced: steerRecoveryFenced,
+                          unbackedImage: hasUnbackedImage,
+                          enterToSend,
+                        })}
+                      >
+                        <Button
+                          variant="primary"
+                          size="xs"
+                          type="button"
+                          data-testid="composer-steer"
+                          onClick={handleSteerClick}
+                          // Same as Stop above: busy + the steer capability
+                          // already gate this control's existence. The recovery
+                          // fence gates the press the same way the Send button's
+                          // does, and the tooltip says why (kata 2f41) instead of
+                          // describing an action the fence refuses. The fence is
+                          // an aria-disabled refusal, not the native attribute, so
+                          // the button keeps focus and hover and that reason
+                          // stays reachable.
+                          aria-disabled={steerRecoveryFenced || hasUnbackedImage || undefined}
+                          disabled={actionPending}
+                        >
+                          Steer
+                        </Button>
+                      </Tooltip>
+                    )}
                     {/* Distinct keys replace the actual button, so a press
                         begun on Send cannot finish on Stop. */}
                     {inlineStop ? (
@@ -1539,21 +1649,33 @@ function ComposerWithSubmission({
                           size="xs"
                           type="button"
                           data-testid="composer-stop"
+                          data-compact-action=""
+                          ref={alignRailAction}
+                          aria-label="Stop"
+                          icon={<StopIcon />}
                           onClick={() => void handleInterruptClick()}
                           // Keep pending gates after the brief swap guard ends.
                           disabled={actionPending || !inlineStopReady}
                         >
-                          Stop
+                          <span className={CLASS.stopLabelStack}>
+                            <span>Stop</span>
+                            {/* Keep Stop's slot as wide as Send's existing label
+                                without widening Send or moving the menu. */}
+                            <span className={CLASS.stopMeasure} aria-hidden="true">
+                              Send
+                            </span>
+                          </span>
                         </Button>
                       </Tooltip>
                     ) : (
                       <Tooltip key="send" label={submitTooltip}>
                         <Button
-                          ref={submitButtonRef}
+                          ref={attachSubmitButton}
                           type="submit"
                           variant={showSteer ? "quiet" : "primary"}
                           size="xs"
                           data-testid="composer-submit"
+                          data-compact-action=""
                           aria-label="Send"
                           icon={<SendIcon />}
                           // canCompose comes from the availability table, which
@@ -1589,52 +1711,15 @@ function ComposerWithSubmission({
                         </Button>
                       </Tooltip>
                     )}
-                    {/* Steer rides in the menu when the row cannot fit it. */}
-                    {showSteer && !narrow && (
-                      <Tooltip
-                        label={steerTooltipLabel({
-                          recoveryFenced: steerRecoveryFenced,
-                          unbackedImage: hasUnbackedImage,
-                          enterToSend,
-                        })}
-                      >
-                        <Button
-                          variant="primary"
-                          size="xs"
-                          type="button"
-                          data-testid="composer-steer"
-                          onClick={handleSteerClick}
-                          // Same as Stop above: busy + the steer capability
-                          // already gate this control's existence. The recovery
-                          // fence gates the press the same way the Send button's
-                          // does, and the tooltip says why (kata 2f41) instead of
-                          // describing an action the fence refuses. The fence is
-                          // an aria-disabled refusal, not the native attribute, so
-                          // the button keeps focus and hover and that reason
-                          // stays reachable.
-                          aria-disabled={steerRecoveryFenced || hasUnbackedImage || undefined}
-                          disabled={actionPending}
-                        >
-                          Steer
-                        </Button>
-                      </Tooltip>
-                    )}
                   </>
                 }
               />
             </Dropzone>
-            <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
+            <ImagePickerInput
+              inputRef={fileInputRef}
+              onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}
+            />
           </form>
-        </div>
-      )}
-      {/* The phone's activity counts are a glance line below the card, the
-          same place the desktop status bar puts them. They are not a control
-          in the writing row. A folded resting card is the phone's smallest
-          surface, so it shows no line: the counts come back with the expanded
-          card, which is also when the transcript can spare the height. */}
-      {showActivityLine && (
-        <div className={CLASS.activityRow} data-testid="composer-activity-line">
-          <ActivityChips sessionRef={ref} paneId={paneId} />
         </div>
       )}
     </div>

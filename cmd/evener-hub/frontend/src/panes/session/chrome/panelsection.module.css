@@ -1,0 +1,19 @@
+/* Titled groups separated by a rule, so a dozen rows read as short lists
+ * instead of one long one. The last group needs no trailing rule - there is
+ * nothing below it to divide from. */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-block-end: var(--space-3);
+  border-block-end: 1px solid var(--edge);
+}
+
+.section:last-child {
+  padding-block-end: 0;
+  border-block-end: none;
+}
+
+.section + .section {
+  padding-block-start: var(--space-3);
+}

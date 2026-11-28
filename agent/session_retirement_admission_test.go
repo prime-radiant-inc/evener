@@ -206,7 +206,7 @@ func TestRetirementAdmissionDirectEffects(t *testing.T) {
 		name   string
 		effect func(*Session) error
 	}{
-		{"model", func(s *Session) error { return s.SetModel("gpt-5.2") }},
+		{"model", func(s *Session) error { return s.SetModel("", "gpt-5.2") }},
 		{"vision", func(s *Session) error { return s.SetVisionModel("off") }},
 		{"compact", func(s *Session) error { return s.Compact(context.Background()) }},
 		{"goal", func(s *Session) error { _, err := s.SetGoal(context.Background(), "opaque-goal"); return err }},

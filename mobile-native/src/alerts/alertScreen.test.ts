@@ -9,7 +9,17 @@ const reader = { name: "Reader", params: { hubId: "hub-1", sessionRef: "local:a"
 
 it.each([
 	["the Board", [board], { kind: "board" }],
+	[
+		"the web welcome page with the drawer closed",
+		[{ name: "Workspace", params: { hubId: "hub-1", path: "/" } }],
+		{ kind: "other" },
+	],
 	["a session", [board, session("local:a")], { kind: "session", ref: "local:a" }],
+	[
+		"a web session",
+		[{ name: "Workspace", params: { hubId: "hub-1", path: "/s/remote%3Aa%2Fb" } }],
+		{ kind: "session", ref: "remote:a/b" },
+	],
 	[
 		"a sheet over a session, which keeps it in front",
 		[board, session("local:a"), tasks],
@@ -27,10 +37,11 @@ it("counts a session screen only for its own hub, since refs are per hub", () =>
 	expect(alertScreenFor([board, session("local:a")], "hub-2")).toEqual({ kind: "other" });
 });
 
-it("counts a sheet route and phase 5's modals as covering banners, and nothing else", () => {
+it("holds banners while a sheet or native modal covers the workspace", () => {
 	expect(coversBanners(tasks)).toBe(true);
 	expect(coversBanners(hub)).toBe(true);
 	expect(coversBanners({ name: "NewSession" })).toBe(true);
+	expect(coversBanners({ name: "ShareTarget" })).toBe(true);
 	expect(coversBanners(session("local:a"))).toBe(false);
 	expect(coversBanners(reader)).toBe(false);
 	expect(coversBanners(undefined)).toBe(false);

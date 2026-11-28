@@ -61,6 +61,7 @@ import {
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { diagnoseRealizedViewport } from "../layoutguard/viewport.mjs";
 import {
+  assertComposerContainment,
   measureComposerPlacement,
   typeComposerDraft,
   verifyComposerGesture,
@@ -237,6 +238,9 @@ async function measureAt(cdpEndpoint, url, width) {
         })()`,
       );
       if (!closed) throw new Error("the Verbosity dialog did not close after Escape");
+      // Pressure assertions inspect the content-expanded chrome. Empty focus
+      // deliberately keeps the compact phone row.
+      await typeComposerDraft(send, "footer pressure draft");
       await waitForComposerSettled(send);
       const engaged = JSON.parse(await evaluate(send, "window.measure().then((result) => JSON.stringify(result))"));
       engagedFooter = engaged.footer;
@@ -456,9 +460,8 @@ async function measureComposerFooter(
             const attach = form?.querySelector('[data-testid="composer-attach"]');
             const submit = form?.querySelector('[data-testid="composer-submit"]');
             const stop = form?.querySelector('[data-testid="composer-stop"]');
-            const rowChips = form ? [...form.querySelectorAll('[data-activity-tab]')] : [];
-            const activityLine = pane?.querySelector('[data-testid="composer-activity-line"]');
-            const activityChips = activityLine ? [...activityLine.querySelectorAll('[data-activity-tab]')] : [];
+            const sessionMenu = form?.querySelector('[data-session-actions-ref]')?.closest('button');
+            const paneActivity = pane?.querySelector('[data-activity-tab]');
             const cards = [...(footer?.querySelectorAll('[data-testid="composer-input-card"]') ?? [])]
               .filter((card) => card.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
             const lastBottom = cards.length ? Math.max(...cards.map((card) => card.getBoundingClientRect().bottom)) : null;
@@ -496,19 +499,44 @@ async function measureComposerFooter(
               statusPaddingBottom: statusbar ? Number.parseFloat(getComputedStyle(statusbar).paddingBottom) : null,
               tapMin: statusbar ? Number.parseFloat(getComputedStyle(statusbar).getPropertyValue('--tap-min')) || 44 : null,
               statusbar: rect(statusbar),
+              attach: rect(attach),
               attachVisible: visible(attach),
               submitVisible: visible(submit),
               stopVisible: visible(stop),
-              rowChipCount: rowChips.filter((chip) => visible(chip)).length,
-              activityChipCount: activityChips.filter((chip) => visible(chip)).length,
-              activityLine: rect(activityLine),
-              activityLineOutsideForm: activityLine !== null && activityLine.closest('form') === null,
+              // Send and Stop swap the same slot; measure whichever one the
+              // row shows so the coarse landscape tap-floor check reads the
+              // control the user actually presses.
+              primaryAction: rect([submit, stop].find((button) => visible(button))),
+              hasPaneActivity: Boolean(paneActivity),
               // The resting field must keep most of the card's width. A leading
               // slot reserving width it cannot fill starves the field while
               // looking like a rendering quirk rather than a clipped control.
               card: rect(cards[0]),
               foldedCompact: cards[0]?.getAttribute('data-folded-compact') === 'true',
               field: rect(form?.querySelector('[class*="field"]')),
+              // The writing surface itself, not its wrapper: the folded
+              // editor's Attach inset lives between the two, and a clipped
+              // placeholder is invisible to a wrapper measurement.
+              textbox: rect(textbox),
+              textboxContent: textbox
+                ? {
+                    clientWidth: textbox.clientWidth,
+                    scrollWidth: textbox.scrollWidth,
+                    clientHeight: textbox.clientHeight,
+                    scrollHeight: textbox.scrollHeight,
+                    empty: textbox.dataset.empty === 'true',
+                    placeholderTextWidth:
+                      textbox.dataset.empty === 'true'
+                        ? (() => {
+                            const context = document.createElement('canvas').getContext('2d');
+                            if (context === null) return null;
+                            context.font = getComputedStyle(textbox).font;
+                            return context.measureText(textbox.dataset.placeholder ?? '').width;
+                          })()
+                        : null,
+                  }
+                : null,
+              sessionMenu: rect(sessionMenu),
               controls: rect(cards[0]?.querySelector('[data-testid="composer-controls"]')),
               modelTrigger: modelTrigger
                 ? {
@@ -517,6 +545,7 @@ async function measureComposerFooter(
                     scrollWidth: modelTrigger.scrollWidth,
                   }
                 : null,
+              effortVisible: visible(form?.querySelector('[data-testid="status-row-effort"]')),
               pathBox: rect(path),
               statusChips: statusbar
                 ? [...statusbar.querySelectorAll('[data-activity-tab]')].map((element) => rect(element))
@@ -557,11 +586,7 @@ function assertComposerFooter(measurement) {
   }
   if (measurement.cards !== 1) failures.push(`visible composer cards=${measurement.cards}, expected 1`);
   // The phone pane keeps one bottom surface: no edge footer at all, so the
-  // composer's own dock is the pane's bottom edge. When its activity line
-  // renders, that line IS the bottom surface - the chips fill the safe-area
-  // band themselves, so the dock reserves nothing below them (Jesse,
-  // 2026-11-11: the band was eating the transcript). Without the line, the
-  // dock keeps owning the band.
+  // composer's own dock is the pane's bottom edge.
   if (mobile) {
     if (measurement.edgeFooterCount !== 0) failures.push("phone pane still renders an edge footer");
     if (measurement.statusbar !== null) failures.push("phone pane still renders a status bar");
@@ -574,20 +599,35 @@ function assertComposerFooter(measurement) {
     ) {
       failures.push(`composer dock bottom=${measurement.footerBottom}px, pane bottom=${measurement.paneBottom}px`);
     }
-    const lineCarriesBand = measurement.focus === "editor" && measurement.activityLine !== null;
-    const expectedPadding = lineCarriesBand ? 0 : requiredClearance;
+    const expectedPadding = requiredClearance;
     if (measurement.paddingBottom === null || !nearlyEqual(measurement.paddingBottom, expectedPadding)) {
       failures.push(
-        `composer dock padding=${measurement.paddingBottom}px, expected ${expectedPadding}px (${lineCarriesBand ? "activity line owns the band" : `safe-area clearance=${requiredClearance}px`})`,
+        `composer dock padding=${measurement.paddingBottom}px, expected safe-area clearance=${requiredClearance}px`,
       );
     }
-    // The resting row sheds attach but never its actions control - Send, or
-    // Stop while the harness session runs a turn. The activity counts live on
-    // their own line below the card, outside the form, in every focus state.
+    // Empty focus keeps the same compact row as rest: Attach, Send/Stop and
+    // the session menu stay available without restoring the status chrome.
     if (!measurement.submitVisible && !measurement.stopVisible)
       failures.push("phone resting row lost its Send/Stop actions control");
-    if (measurement.rowChipCount !== 0) failures.push("activity chips must not ride in the composer control row");
-    if (measurement.focus !== "editor" && measurement.card !== null && measurement.field !== null) {
+    if (!measurement.attachVisible) failures.push("phone folded row lost Attach");
+    if (measurement.editorMinLines !== "1lh") failures.push("empty focus expanded the one-line editor");
+    if (measurement.modelTrigger?.visible) failures.push("empty focus restored the model picker before content");
+    if (measurement.hasPaneActivity) failures.push("phone activity counters belong in the Overview sheet");
+    // The folded row keeps Attach, the session menu, and Send/Stop as real
+    // 44px targets on every phone width, including the 320px card where the
+    // writing surface has the least room.
+    for (const [label, box] of [
+      ["Attach", measurement.attach],
+      ["the session menu", measurement.sessionMenu],
+      ["Send/Stop", measurement.primaryAction],
+    ]) {
+      if (box === null || box.width < 44 - GEOMETRY_TOLERANCE || box.height < 44 - GEOMETRY_TOLERANCE) {
+        failures.push(
+          `${label} is ${box === null ? "missing" : `${box.width.toFixed(1)}x${box.height.toFixed(1)}`}px, below the 44px tap floor`,
+        );
+      }
+    }
+    if (measurement.card !== null && measurement.field !== null) {
       const fieldShare = measurement.field.width / measurement.card.width;
       if (fieldShare < 0.5) {
         failures.push(
@@ -596,47 +636,27 @@ function assertComposerFooter(measurement) {
       }
       failures.push(...assertCompactFoldedRow(measurement));
     }
-    // The folded resting card is the phone's smallest surface: it shows no
-    // activity line, and the counts come back with the expanded card.
-    if (measurement.focus === "editor") {
-      if (measurement.activityChipCount === 0) failures.push("engaged composer lost its activity chips");
-      if (!measurement.activityLineOutsideForm) failures.push("activity chips are inside the composer form");
-      if (measurement.activityLine !== null && measurement.card !== null) {
-        const lineBottom = measurement.activityLine.bottom;
-        if (measurement.paneBottom !== null && lineBottom < measurement.paneBottom - 1) {
-          failures.push(
-            `activity line leaves ${Math.round(measurement.paneBottom - lineBottom)}px below itself at the pane's bottom edge`,
-          );
-        }
-      }
-    } else if (measurement.activityLine !== null) {
-      failures.push("resting composer still renders its activity line");
-    }
-    if (
-      measurement.activityLine !== null &&
-      measurement.lastBottom !== null &&
-      measurement.activityLine.top < measurement.lastBottom - 1
-    ) {
-      failures.push("activity line is not below the card");
-    }
-    if (measurement.focus === "editor") {
-      if (!measurement.attachVisible) failures.push("focused editor did not bring the full row back (attach hidden)");
-      // The model picker must stay a real control in the engaged row at
-      // every width: the status chrome's basis (its compact rung) keeps the
-      // row honest beside the chips, so the trigger never renders clipped
-      // or collapsed to nothing.
-      const model = measurement.modelTrigger;
-      if (model === null || !model.visible || model.clientWidth <= 1) {
-        failures.push(`engaged row lost its model picker (${JSON.stringify(model)})`);
-      } else if (model.clientWidth + 1 < model.scrollWidth) {
+    // An empty folded row must show the whole placeholder: the editor clips
+    // its own horizontal overflow, so a writing surface narrower than the
+    // placeholder spends the excess invisibly. At 320px this measured 82px
+    // (issue #7500); the real placeholder width is reported in the failure.
+    if (measurement.textbox === null || measurement.textboxContent === null) {
+      failures.push("the folded writing surface is missing");
+    } else if (measurement.textboxContent.empty) {
+      // The placeholder pseudo-element is absolutely positioned inside the
+      // editor, which is the scroll container: a placeholder wider than the
+      // writing surface wraps inside it and the second line is clipped away.
+      if (
+        measurement.textboxContent.scrollWidth > measurement.textboxContent.clientWidth + GEOMETRY_TOLERANCE ||
+        measurement.textboxContent.scrollHeight > measurement.textboxContent.clientHeight + GEOMETRY_TOLERANCE
+      ) {
         failures.push(
-          `model picker clipped to ${model.clientWidth}px of ${model.scrollWidth}px beside the row's other content`,
+          `the empty placeholder clips on a ${measurement.textboxContent.clientWidth.toFixed(1)}x` +
+            `${measurement.textboxContent.clientHeight.toFixed(1)}px writing surface ` +
+            `(${measurement.textboxContent.scrollWidth.toFixed(1)}x${measurement.textboxContent.scrollHeight.toFixed(1)}px of placeholder, ` +
+            `${measurement.textboxContent.placeholderTextWidth?.toFixed(1) ?? "unknown"}px of placeholder text)`,
         );
       }
-    } else if (measurement.attachVisible) {
-      failures.push(
-        `phone row must shed attach while resting (${measurement.focus} focus, attach=${measurement.attachVisible})`,
-      );
     }
     return failures;
   }
@@ -660,15 +680,14 @@ function assertComposerFooter(measurement) {
 
 function assertCompactFoldedRow(measurement) {
   const failures = [];
-  if (!measurement.foldedCompact) failures.push("the resting phone did not compact its controls");
+  if (!measurement.foldedCompact) failures.push("the empty phone did not compact its controls");
   if (measurement.field === null || measurement.controls === null) {
     failures.push("the folded field or control row is missing");
   } else {
-    const fieldCenter = (measurement.field.top + measurement.field.bottom) / 2;
-    const controlsCenter = (measurement.controls.top + measurement.controls.bottom) / 2;
-    if (!nearlyEqual(fieldCenter, controlsCenter)) {
+    const centers = foldedOneRowCenters(measurement);
+    if (centers !== null) {
       failures.push(
-        `folded field and controls remain stacked (centres ${fieldCenter}/${controlsCenter}, card ${JSON.stringify(measurement.card)})`,
+        `folded field and controls remain stacked (centres ${centers.fieldCenter}/${centers.controlsCenter}, card ${JSON.stringify(measurement.card)})`,
       );
     }
   }
@@ -676,24 +695,24 @@ function assertCompactFoldedRow(measurement) {
 }
 
 function assertDuoLandscapeComposer(measurement) {
-  const resting = measurement.focus !== "editor";
-  const failures = resting ? assertCompactFoldedRow(measurement) : [];
-  if (!measurement.primaryTouch) failures.push("the wide touch landscape fixture did not realize its primary touch pointer");
+  const failures = assertCompactFoldedRow(measurement);
+  if (!measurement.primaryTouch)
+    failures.push("the wide touch landscape fixture did not realize its primary touch pointer");
   if (measurement.card === null || measurement.card.width >= 620) {
     failures.push("the fixture no longer exercises a folded card below the desktop one-line threshold");
   }
-  if (!resting) {
-    if (measurement.foldedCompact) failures.push("editor focus left the landscape phone controls compact");
-    if (!measurement.attachVisible) failures.push("editor focus did not restore Attach");
-    if (!measurement.modelTrigger?.visible) failures.push("editor focus did not restore the model picker");
-    if (measurement.editorMinLines !== "2lh") failures.push("editor focus did not restore the two-line field");
-    if (
-      measurement.field === null ||
-      measurement.controls === null ||
-      measurement.field.bottom > measurement.controls.top + GEOMETRY_TOLERANCE
-    ) {
-      failures.push("the engaged field and controls did not return to their stacked rows");
-    }
+  if (!measurement.attachVisible) failures.push("the empty landscape phone lost Attach");
+  if (measurement.modelTrigger?.visible) failures.push("empty landscape focus restored the model picker");
+  if (measurement.editorMinLines !== "1lh") failures.push("empty landscape focus expanded the one-line field");
+  // A 951pt-wide coarse landscape phone is past the 899px phone boundary, so
+  // only the composer's own container query drops the Send/Stop words. The
+  // icon-only action still has to keep the 44px tap floor beside the other
+  // controls.
+  const action = measurement.primaryAction;
+  if (action === null || action.width < 44 - GEOMETRY_TOLERANCE || action.height < 44 - GEOMETRY_TOLERANCE) {
+    failures.push(
+      `the icon-only landscape Send/Stop is ${action === null ? "missing" : `${action.width.toFixed(1)}x${action.height.toFixed(1)}`}px, below the 44px tap floor`,
+    );
   }
   failures.push(...assertLandscapeEdgeFooter(measurement));
   return failures;
@@ -725,6 +744,18 @@ function assertLandscapeEdgeFooter(measurement) {
   return failures;
 }
 
+// The folded card's one-row geometry, shared by the compact phone fixture
+// and the fine-pointer landscape one: the field and the control row must
+// share a line. Returns null when they do (or when either box is missing,
+// which the callers report in their own words), and the two measured centres
+// otherwise.
+function foldedOneRowCenters(measurement) {
+  if (measurement.field === null || measurement.controls === null) return null;
+  const fieldCenter = (measurement.field.top + measurement.field.bottom) / 2;
+  const controlsCenter = (measurement.controls.top + measurement.controls.bottom) / 2;
+  return nearlyEqual(fieldCenter, controlsCenter) ? null : { fieldCenter, controlsCenter };
+}
+
 function assertFinePointerLandscapeComposer(measurement) {
   const failures = [];
   if (measurement.primaryTouch) failures.push("the fine-pointer landscape fixture realized a touch pointer");
@@ -733,13 +764,28 @@ function assertFinePointerLandscapeComposer(measurement) {
   }
   if (measurement.foldedCompact) failures.push("a fine-pointer landscape desktop incorrectly compacted its controls");
   if (!measurement.modelTrigger?.visible) failures.push("the fine-pointer resting row lost its model picker");
+  // The model trigger's fully-compressed geometry (zero padding, 1rem value
+  // floor, chevron) is ~30px; below that the row is clipping the picker's
+  // chevron and hit area instead of compressing its facts in priority order.
+  if (measurement.modelTrigger !== null && measurement.modelTrigger.clientWidth < 28) {
+    failures.push(`the model trigger is clipped to ${measurement.modelTrigger.clientWidth}px, below its usable floor`);
+  }
   if (measurement.editorMinLines !== "1lh") failures.push("the fine-pointer folded field is not one line");
-  if (
-    measurement.field === null ||
-    measurement.controls === null ||
-    measurement.field.bottom > measurement.controls.top + GEOMETRY_TOLERANCE
-  ) {
-    failures.push("the fine-pointer folded field and controls did not stay stacked");
+  // The resting row holds ONE line below the old stacked threshold (Jesse's
+  // 2026-11-27 ruling): the field and the control row share the line and the
+  // effort readout drops before the model label yields, instead of the card
+  // growing a chrome-only second line. Editor focus does NOT resize the card
+  // (Composer.tsx's own ruling), but it returns the dropped effort picker so
+  // the writer can change effort before typing; content alone stacks the card.
+  if (measurement.field === null || measurement.controls === null || foldedOneRowCenters(measurement) !== null) {
+    failures.push("the fine-pointer folded field and controls did not stay on one row");
+  }
+  if (measurement.focus === "editor") {
+    if (!measurement.effortVisible) {
+      failures.push("the editor-focused sub-threshold row lost its effort picker");
+    }
+  } else if (measurement.effortVisible) {
+    failures.push("the sub-threshold folded row kept its effort readout");
   }
   failures.push(...assertLandscapeEdgeFooter(measurement));
   return failures;
@@ -760,11 +806,14 @@ async function measureComposerAsk(cdpEndpoint, url, width) {
         send,
         `(() => {
           const pane = document.getElementById('oh-pane');
-          const chrome = pane?.querySelector('[data-testid="session-chrome-inline"]');
+          const mobile = matchMedia('(max-width: 899px)').matches;
+          const chrome = mobile
+            ? pane?.querySelector('[data-session-actions-ref]')?.closest('button')
+            : pane?.querySelector('[data-testid="session-chrome-inline"]');
           const model = pane?.querySelector('[data-testid="model-switch-trigger"]');
           const askCount = pane?.querySelector('[data-testid="ask-dock-count"]');
           return JSON.stringify({
-            mobile: matchMedia('(max-width: 899px)').matches,
+            mobile,
             askRendered: Boolean(askCount),
             chromeHeight: chrome ? chrome.getBoundingClientRect().height : null,
             chromeVisible: chrome ? chrome.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }) : false,
@@ -784,7 +833,7 @@ function assertComposerAsk(measurement, width) {
   const mobile = width < 900;
   if (measurement.mobile !== mobile) failures.push("realized ask viewport mismatch");
   if (!measurement.askRendered) failures.push("pending ask never rendered its dock");
-  if (!measurement.chromeVisible || !measurement.modelVisible) {
+  if (!measurement.chromeVisible || measurement.modelVisible !== !mobile) {
     failures.push(`pending-ask state lost its chrome (${JSON.stringify(measurement)})`);
   }
   // The pending-question mount stands alone in the composer's vertical
@@ -869,6 +918,11 @@ function assertDuoCompactStates(result) {
   if (empty && (empty.cardGap !== "0px" || empty.cardPaddingBlock !== "0px 0px")) {
     failures.push(`empty card retains gap/padding ${empty.cardGap}/${empty.cardPaddingBlock}`);
   }
+  const emptyAttach = empty?.controls.find((control) => control.testId === "composer-attach");
+  const emptyPrimary = empty?.controls.find((control) => control.testId === "composer-stop");
+  if (emptyAttach && emptyPrimary && Math.abs(emptyAttach.bottom - emptyPrimary.bottom) > 1) {
+    failures.push(`empty Attach/Stop bottoms=${emptyAttach.bottom}/${emptyPrimary.bottom}, expected one aligned row`);
+  }
   if (focused && focused.footerPaddingBottom !== "0px") {
     failures.push(
       `focused footer clearance=${focused.footerPaddingBottom}, expected keyboard-adjusted safe-area clearance`,
@@ -879,14 +933,28 @@ function assertDuoCompactStates(result) {
       `empty/live footer=${empty.totalFooterHeight}px, exceeds the 258.94px budget (306.94px baseline minus 48px)`,
     );
   }
-  if (!focused?.editing || focused.editorMinLines !== "2lh") failures.push("focus did not engage the two-line editor");
-  // Ordinary spacing is PromptCard's own stacked inset: one --space-2 between
-  // field and controls, --space-3 above the field and --space-2 below the row.
-  if (focused && (focused.cardGap !== "8px" || focused.cardPaddingBlock !== "12px 8px")) {
-    failures.push(`focused card did not restore ordinary spacing: ${focused.cardGap}/${focused.cardPaddingBlock}`);
+  if (!focused?.editing || focused.editorMinLines !== "1lh") failures.push("focus did not retain the one-line editor");
+  if (focused && (focused.cardGap !== "0px" || focused.cardPaddingBlock !== "0px 0px")) {
+    failures.push(`focus expanded the empty card: ${focused.cardGap}/${focused.cardPaddingBlock}`);
+  }
+  if (focused && empty && Math.abs(focused.totalFooterHeight - empty.totalFooterHeight) > 1) {
+    failures.push(`focus changed footer height=${empty.totalFooterHeight}/${focused.totalFooterHeight}`);
   }
   if (draft?.editorMinLines !== "2lh" || draft.editing)
     failures.push("a blurred draft did not retain its two-line resting state");
+  for (const name of ["attach", "menu", "primary"]) {
+    const emptyBox = empty?.controlPositions?.[name];
+    const draftBox = draft?.controlPositions?.[name];
+    if (!emptyBox || !draftBox) {
+      failures.push(`missing empty/draft ${name} geometry`);
+      continue;
+    }
+    for (const property of ["left", "right", "top", "bottom"]) {
+      if (Math.abs(emptyBox[property] - draftBox[property]) > 1) {
+        failures.push(`${name} ${property} moves through expansion: ${emptyBox[property]} -> ${draftBox[property]}`);
+      }
+    }
+  }
   if (
     !attachment?.attachment ||
     attachment.attachment.height < 80 ||
@@ -900,20 +968,8 @@ function assertDuoCompactStates(result) {
   if (!approval?.approval || approval.approval.height <= 0) failures.push("the real approval card did not mount");
   if (!result.approvalResolved) failures.push("Allow did not resolve the real approval card");
   for (const state of result.states) {
-    // The activity counts live on their own line below the card. The folded
-    // resting card renders no line, so the empty state mounts none; every
-    // expanded state - engaged, drafting, attached, ask-pending, approval -
-    // mounts all four.
-    const expectedCount = state.state === "empty" ? 0 : 4;
-    if (state.counters.length !== expectedCount)
-      failures.push(`${state.state}: expected ${expectedCount} mounted activity counters`);
-    for (const counter of state.counters) {
-      const hidden = state.editing || state.cardHidden;
-      if (!hidden && (counter.width < 44 || counter.height < 44))
-        failures.push(`${state.state}: activity target fell below 44px for ${counter.tab}`);
-      if (!counter.accessibleName?.includes(" of "))
-        failures.push(`${state.state}: activity target or full accessible fraction missing for ${counter.tab}`);
-    }
+    // shellguard measures the touch targets and counts in the actual Overview.
+    if (state.counters.length !== 0) failures.push(`${state.state}: activity counters mounted in the phone pane`);
     for (const control of state.controls) {
       if (control.touchTarget && control.height > 0 && (control.width < 44 || control.height < 44))
         failures.push(`${state.state}: control ${control.name} fell below 44px`);
@@ -1015,6 +1071,16 @@ async function measureTrustedFocus(send) {
         const clippingAncestors = [];
         for (let ancestor = focused?.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
           const ancestorStyle = getComputedStyle(ancestor);
+          // A fixed-position ancestor's containing block is the viewport, so no
+          // DOM ancestor above it can clip its subtree's paint - overflow
+          // clipping only reaches descendants whose containing-block chain
+          // passes through the clipper. The Verbosity dialog renders inline
+          // under the composer card (no portal), so without this stop a card
+          // that clips its own overflow reads as clipping the dialog that
+          // floats over it. Verified in Chrome: elementFromPoint finds a
+          // fixed descendant at a point far outside its overflow:clip
+          // ancestor's box.
+          if (ancestorStyle.position === 'fixed') break;
           const clipsX = ancestorStyle.overflowX !== 'visible';
           const clipsY = ancestorStyle.overflowY !== 'visible';
           if (clipsX || clipsY) {
@@ -1106,13 +1172,14 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
         await until(() => !document.querySelector('[role="dialog"][aria-modal="true"]'), 'Verbosity dialog close');
         const checked = await until(
           () =>
-            [...document.querySelectorAll('[data-testid="activity-sidebar"] [role="radio"]')].find(
-              (item) => item.getAttribute('aria-checked') === 'true' && item.textContent?.includes('Tasks'),
+            [...document.querySelectorAll('[data-testid="activity-sidebar"] [role="tab"]')].find(
+              (item) => item.getAttribute('aria-selected') === 'true' && item.textContent?.includes('Tasks'),
             ),
           'selected Tasks activity tab',
         );
         const pane = document.getElementById('oh-pane');
         const horizontallyOverflowing = [...pane.querySelectorAll('*')].filter((element) => {
+          if (element.matches('[role="tablist"]')) return false;
           const style = getComputedStyle(element);
           return element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1 &&
             (style.overflowX === 'auto' || style.overflowX === 'scroll');
@@ -1173,8 +1240,8 @@ async function verifyAboutOverview(cdpEndpoint, url, width) {
           'activity sidebar',
         );
         await until(
-          () => [...sidebar.querySelectorAll('[role="radio"]')].find(
-            (item) => item.getAttribute('aria-checked') === 'true' && item.textContent?.includes('About'),
+          () => [...sidebar.querySelectorAll('[role="tab"]')].find(
+            (item) => item.getAttribute('aria-selected') === 'true' && item.textContent?.includes('About'),
           ),
           'selected About tab',
         );
@@ -1186,6 +1253,7 @@ async function verifyAboutOverview(cdpEndpoint, url, width) {
         const sidebarBox = sidebar.getBoundingClientRect();
         const branchBox = branch.getBoundingClientRect();
         const horizontallyOverflowing = [sidebar, ...sidebar.querySelectorAll('*')].filter((element) => {
+          if (element.matches('[role="tablist"]')) return false;
           const style = getComputedStyle(element);
           return element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1 &&
             (style.overflowX === 'auto' || style.overflowX === 'scroll');
@@ -1341,6 +1409,19 @@ async function verifyHeldSteerColumn(cdpEndpoint, url) {
     cdpEndpoint,
     url,
     "window.__overflowGuardHeldSteerColumn = window.inspectHeldSteerColumn()",
+  );
+}
+
+// The first-reply skeleton's column: ColdStartSkeleton composes the shared
+// measure recipe, so its longest bar must fill the column's content box (after
+// .coldStart's own padding), and the column must fill its parent's content box
+// at the Wide transcript measure. A hard-coded 42rem cap narrows the skeleton
+// inside a wider column, and the horizontal-overflow scan cannot see it.
+async function verifyColdStartSkeleton(cdpEndpoint, url) {
+  return inspectOnSettledPage(
+    cdpEndpoint,
+    url,
+    "window.__overflowGuardColdStartSkeleton = window.inspectColdStartSkeleton()",
   );
 }
 
@@ -1956,19 +2037,18 @@ async function main() {
       return failed > 0 ? 1 : 0;
     }
 
+    const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
+    if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
+    const protocol = await protocolResponse.json();
+    const safeAreaSupported =
+      protocol.domains
+        .find((domain) => domain.domain === "Emulation")
+        ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
+    if (!safeAreaSupported)
+      console.log("composer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped");
+
     if (!composerOnly) {
       if (!(await runDuoCompactGuard(cdpEndpoint, vitePort, guard.profileDir))) failed++;
-      const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
-      if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
-      const protocol = await protocolResponse.json();
-      const safeAreaSupported =
-        protocol.domains
-          .find((domain) => domain.domain === "Emulation")
-          ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
-      if (!safeAreaSupported)
-        console.log(
-          "composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped",
-        );
       const duoLandscapeMeasurements = await measureComposerFooter(
         cdpEndpoint,
         `http://127.0.0.1:${vitePort}/overflowharness.html?w=572&h=669`,
@@ -1985,10 +2065,7 @@ async function main() {
         },
       );
       for (const measurement of duoLandscapeMeasurements) {
-        const failures = [
-          ...assertComposerFooter(measurement),
-          ...assertDuoLandscapeComposer(measurement),
-        ];
+        const failures = [...assertComposerFooter(measurement), ...assertDuoLandscapeComposer(measurement)];
         const label = `951x669 Duo landscape composer safe-area=${measurement.safeArea} focus=${measurement.focus}`;
         if (failures.length > 0) {
           failed++;
@@ -1996,38 +2073,41 @@ async function main() {
         } else {
           const shape = measurement.focus === "editor" ? "expanded editor and full controls" : "one folded row";
           console.log(
-            `${label} ... PASS - ${shape}, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+            `${label} ... PASS - ${shape}, Send/Stop=${measurement.primaryAction.width.toFixed(1)}x${measurement.primaryAction.height.toFixed(1)}px, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
           );
         }
       }
-      const finePointerLandscapeMeasurements = await measureComposerFooter(
-        cdpEndpoint,
-        `http://127.0.0.1:${vitePort}/overflowharness.html?w=572&h=669`,
-        572,
-        safeAreaSupported,
-        {
-          width: 951,
-          height: 669,
-          mobile: false,
-          deviceScaleFactor: 3,
-          touch: false,
-          safeAreas: safeAreaSupported ? [34] : [0],
-          focusStates: ["none"],
-        },
-      );
-      for (const measurement of finePointerLandscapeMeasurements) {
-        const failures = [
-          ...assertComposerFooter(measurement),
-          ...assertFinePointerLandscapeComposer(measurement),
-        ];
-        const label = `951x669 fine-pointer landscape composer safe-area=${measurement.safeArea}`;
-        if (failures.length > 0) {
-          failed++;
-          console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
-        } else {
-          console.log(
-            `${label} ... PASS - stacked controls and visible model, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
-          );
+      // A 572px pane puts the card at 524px; a 469px pane puts it just above
+      // the 420px field-floor yield - the band where the editor-focus effort
+      // exemption must not pay for the restored picker out of the model
+      // trigger's usable floor.
+      for (const paneWidth of [572, 469]) {
+        const finePointerLandscapeMeasurements = await measureComposerFooter(
+          cdpEndpoint,
+          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${paneWidth}&h=669`,
+          paneWidth,
+          safeAreaSupported,
+          {
+            width: 951,
+            height: 669,
+            mobile: false,
+            deviceScaleFactor: 3,
+            touch: false,
+            safeAreas: safeAreaSupported ? [34] : [0],
+            focusStates: ["none", "editor"],
+          },
+        );
+        for (const measurement of finePointerLandscapeMeasurements) {
+          const failures = [...assertComposerFooter(measurement), ...assertFinePointerLandscapeComposer(measurement)];
+          const label = `951x669 fine-pointer ${paneWidth}px-pane landscape composer safe-area=${measurement.safeArea} focus=${measurement.focus}`;
+          if (failures.length > 0) {
+            failed++;
+            console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
+          } else {
+            console.log(
+              `${label} ... PASS - one folded row, ${measurement.focus === "editor" ? "effort picker back for the writer" : "model visible and the effort readout dropped"}, footer gap=${measurement.gap}px, status clearance=${measurement.safeArea}px`,
+            );
+          }
         }
       }
       for (const width of [...new Set([320, 390, 430, 460, 540, 760, 899, 900, 1400, ...sweep])]) {
@@ -2045,12 +2125,12 @@ async function main() {
             console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
           } else {
             console.log(
-              `${label} ... PASS - gap=${measurement.gap}px, total footer=${measurement.totalFooterHeight}px, editor=${measurement.editorMinLines}, metadata visible=${measurement.metadataVisible}`,
+              `${label} ... PASS - gap=${measurement.gap}px, total footer=${measurement.totalFooterHeight}px, editor=${measurement.editorMinLines}, writing=${measurement.textbox?.width?.toFixed(1) ?? "n/a"}px, metadata visible=${measurement.metadataVisible}`,
             );
           }
         }
       }
-      for (const width of [390, 700]) {
+      for (const width of [390, 700, 900]) {
         const askMeasurement = await measureComposerAsk(
           cdpEndpoint,
           `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&ask=1`,
@@ -2124,7 +2204,10 @@ async function main() {
         const cases = [
           ...sweep.map((viewportWidth) => ({ viewportWidth })),
           ...[399, 400, 420, 480, 600, 699].map((contentWidth) => ({ viewportWidth: 800, contentWidth })),
+          { viewportWidth: 900, contentWidth: 480 },
+          { viewportWidth: 900, contentWidth: 600 },
           { viewportWidth: 1400, contentWidth: 399 },
+          ...(safeAreaSupported ? [{ viewportWidth: 390, safeArea: 34 }] : []),
         ];
         for (const scenario of cases) {
           const label = `composer slots ${theme} steer=${steer} ${JSON.stringify(scenario)}`;
@@ -2200,11 +2283,9 @@ async function main() {
     if (shortMenu.viewportWidth !== 844 || shortMenu.viewportHeight !== 390) {
       shortMenuFailures.push(`realized viewport=${shortMenu.viewportWidth}x${shortMenu.viewportHeight}`);
     }
-    const expectedMenuLabels = ["Overview", "Verbosity…", "Rename", "Pin this session…", "Archive", "Shut down"];
-    if (shortMenu.itemCount !== 7) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 7`);
-    const menuLabels = shortMenu.itemLabels
-      .filter((label) => label !== "Stop")
-      .map((label) => label.replace(/^Overview · .+$/, "Overview"));
+    const expectedMenuLabels = ["Verbosity…", "Rename", "Pin this session…", "Archive", "Shut down"];
+    if (shortMenu.itemCount !== 6) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 6`);
+    const menuLabels = shortMenu.itemLabels.filter((label) => label !== "Stop");
     if (JSON.stringify(menuLabels) !== JSON.stringify(expectedMenuLabels)) {
       shortMenuFailures.push(
         `labels=${JSON.stringify(shortMenu.itemLabels)}, expected ${JSON.stringify(expectedMenuLabels)}`,
@@ -2289,6 +2370,40 @@ async function main() {
       console.log(`held steer column ... FAIL - ${JSON.stringify(heldSteerColumn)}`);
     } else {
       console.log("held steer column ... PASS - trailing held-steer stack shares the turn content column");
+      console.log(
+        `  measured stack [${heldSteerColumn.stackLeft.toFixed(1)}, ${heldSteerColumn.stackRight.toFixed(1)}] ` +
+          `against turn [${heldSteerColumn.turnLeft.toFixed(1)}, ${heldSteerColumn.turnRight.toFixed(1)}]`,
+      );
+    }
+
+    const coldStartSkeleton = await verifyColdStartSkeleton(
+      cdpEndpoint,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?coldstart=1&w=1024`,
+    );
+    // The Wide measure is 64rem at the page's 16px root. When the pane is
+    // narrower than that, the column fills the pane instead.
+    const wideMeasurePx = 64 * 16;
+    const expectedColdStartWidth =
+      coldStartSkeleton.parentContentWidth === null
+        ? null
+        : Math.min(coldStartSkeleton.parentContentWidth, wideMeasurePx);
+    if (
+      coldStartSkeleton.measure !== "wide" ||
+      expectedColdStartWidth === null ||
+      !nearlyEqual(coldStartSkeleton.barWidth, coldStartSkeleton.contentWidth, 1) ||
+      !nearlyEqual(coldStartSkeleton.skeletonWidth, expectedColdStartWidth, 1)
+    ) {
+      failed++;
+      console.log(`cold start skeleton ... FAIL - ${JSON.stringify(coldStartSkeleton)}`);
+    } else {
+      console.log(
+        "cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding",
+      );
+      console.log(
+        `  measured bar ${coldStartSkeleton.barWidth.toFixed(1)}px in column content ` +
+          `${coldStartSkeleton.contentWidth.toFixed(1)}px, column ${coldStartSkeleton.skeletonWidth.toFixed(1)}px ` +
+          `of ${expectedColdStartWidth.toFixed(1)}px at ${coldStartSkeleton.measure}`,
+      );
     }
 
     const panelCollapse = await verifyPanelCollapse(
@@ -2326,6 +2441,15 @@ async function main() {
         width,
       );
       let widthFailed = false;
+      // Every sweep page must exercise the DEFAULT Reading column. A fixture
+      // that persists Wide would silently widen every page measured after it.
+      if (result.measure !== "reading") {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - page reported measure ${JSON.stringify(result.measure)}, ` +
+            `expected the default reading column`,
+        );
+      }
       if (
         result.exceptionSafety.found !== 2 ||
         !result.exceptionSafety.threw ||
@@ -2369,47 +2493,41 @@ async function main() {
             wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
         );
       }
-      if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer facts missing: ` +
-            `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
-        );
+      if (width >= 900) {
+        if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - pressured footer facts missing: ` +
+              `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
+          );
+        }
+        if (result.footer.queueLabel !== "12 queued") {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
+          );
+        }
+        if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - footer status facts are internally clipped: ` +
+              `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px: ` +
+              JSON.stringify(result.footer.geometry),
+          );
+        }
+        if (result.footer.modelClientWidth <= 0) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - pressured footer model has zero visible width: ` +
+              JSON.stringify(result.footer.geometry),
+          );
+        }
       }
-      if (result.footer.queueLabel !== "12 queued") {
+      try {
+        assertComposerContainment(result.currentWork, width < 900);
+      } catch (error) {
         widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
-        );
-      }
-      if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - footer status facts are internally clipped: ` +
-            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px: ` +
-            JSON.stringify(result.footer.geometry),
-        );
-      }
-      if (result.footer.modelClientWidth <= 0) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer model has zero visible width: ` +
-            JSON.stringify(result.footer.geometry),
-        );
-      }
-      if (
-        !result.currentWork.found ||
-        !result.currentWork.composerCardFound ||
-        !result.currentWork.controlsFound ||
-        !result.currentWork.controlsContained ||
-        !result.currentWork.controlsDoNotOverlap ||
-        !result.currentWork.sharedPaneWithoutOverflow ||
-        !result.currentWork.orderedAboveComposer
-      ) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
-        );
+        console.log(`${width}px ... FAIL - ${error.message}: ${JSON.stringify(result.currentWork)}`);
       }
       if (
         width === 390 &&

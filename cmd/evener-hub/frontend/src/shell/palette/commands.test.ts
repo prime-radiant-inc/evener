@@ -21,11 +21,10 @@ import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../acti
 import { registerPaneForTests } from "../paneRegistry";
 import * as railController from "../rail/railController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { blockedMessage, isBlocked } from "./blocked";
+import { isBlocked } from "./blocked";
 import {
   buildCommands,
   type Command,
-  commandSurface,
   commandsInScope,
   copyToClipboard,
   filterCommands,
@@ -338,13 +337,13 @@ test("an unhydrated focused session keeps every command listed and only Notes un
 });
 
 // 2026-08-14: filterCommands is the palette's OWN browsable list, and it is
-// app-global only now (commandSurface's own doc comment) - a plugin catalog
-// entry is session-scoped (catalogCommands sets scope: "session"), so it
-// never appears there, focused session or not. commandsInScope (the fuller
-// resolver, still blending everything) is what sessionBuiltinCommands and
-// this file's OTHER catalog-shaped tests below exercise; slashCommandInvocation
-// itself is covered directly by slashCompletion.test.ts's mergeSlashCommands
-// cases and Composer.test.tsx's own qualified-invocation test.
+// app-global only now - a plugin catalog entry is session-scoped
+// (catalogCommands sets scope: "session"), so it never appears there, focused
+// session or not. commandsInScope (the fuller resolver, still blending
+// everything) is what sessionBuiltinCommands and this file's OTHER
+// catalog-shaped tests below exercise; slashCommandInvocation itself is covered
+// directly by slashCompletion.test.ts's mergeSlashCommands cases and
+// Composer.test.tsx's own qualified-invocation test.
 test("filterCommands never lists a plugin catalog entry, focused session or not", () => {
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
@@ -363,15 +362,9 @@ test("catalog commands are absent from commandsInScope without a focused session
   expect(commandsInScope(buildPaletteContext()).some((command) => command.id === "review")).toBe(false);
 });
 
-// --- commandSurface / sessionBuiltinCommands / sessionScopedHandoffMatch
+// --- sessionBuiltinCommands / sessionScopedHandoffMatch
 // (2026-08-14, "the palette is where you go; the composer is where you act
 // on this session" - decisions.md) ---
-
-test("commandSurface maps every registry command honestly: session scope -> session surface, global -> app-global", () => {
-  for (const command of buildCommands()) {
-    expect(commandSurface(command)).toBe(command.scope === "session" ? "session" : "app-global");
-  }
-});
 
 test("sessionBuiltinCommands is every session-scoped BUILT-IN, unavailableReason-resolved, never a plugin-catalog entry", () => {
   focusSession("ref_a");
@@ -480,7 +473,7 @@ test("/steer is blocked with the floor's message and makes no wire call when the
   if (c.args?.kind !== "free") throw new Error("expected free args");
   const result = c.args.run(runContext(), "go left");
   expect(isBlocked(result)).toBe(true);
-  expect(blockedMessage(result)).toBe("steer failed: no active turn");
+  if (isBlocked(result)) expect(result.message).toBe("steer failed: no active turn");
   expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(false);
 });
 
@@ -530,7 +523,7 @@ test.each([
     if (c.args?.kind !== "free") throw new Error("expected free args");
     const result = c.args.run(runContext(), "go left");
     expect(isBlocked(result)).toBe(true);
-    expect(blockedMessage(result)).toBe(reason);
+    if (isBlocked(result)) expect(result.message).toBe(reason);
     expect(fake.calls.some((call) => call.method === method)).toBe(false);
   },
 );
@@ -556,7 +549,8 @@ test.each([
       queue: { revision: 0, depth },
     });
     const result = cmd("drain-as-steer").run?.(runContext());
-    expect(blockedMessage(result)).toBe(message);
+    expect(isBlocked(result)).toBe(true);
+    if (isBlocked(result)) expect(result.message).toBe(message);
     expect(fake.calls.some((call) => call.method === "turn/drainAsSteer")).toBe(false);
   },
 );
@@ -592,8 +586,12 @@ test("/queue and /drain-as-steer each block with their own no-active-turn messag
   seedModel("ref_a", { status: { type: "idle" }, activeTurnId: undefined });
   const q = cmd("queue");
   if (q.args?.kind !== "free") throw new Error("expected free args");
-  expect(blockedMessage(q.args.run(runContext(), "later"))).toBe("queue failed: no active turn");
-  expect(blockedMessage(cmd("drain-as-steer").run?.(runContext()))).toBe("drain failed: no active turn");
+  const queued = q.args.run(runContext(), "later");
+  expect(isBlocked(queued)).toBe(true);
+  if (isBlocked(queued)) expect(queued.message).toBe("queue failed: no active turn");
+  const drained = cmd("drain-as-steer").run?.(runContext());
+  expect(isBlocked(drained)).toBe(true);
+  if (isBlocked(drained)) expect(drained.message).toBe("drain failed: no active turn");
 });
 
 // /interrupt carries its own rule too (available: stopAvailable, sessionControls'
@@ -683,7 +681,11 @@ test("/reasoning-effort source prefixes (default) and offers a ladder-listed 'no
     { id: "low", label: "low" },
     { id: "high", label: "high" },
   ]);
-  await c.args.run(runContext(), { id: "high", label: "high" });
+
+  seedModel("ref_a", { supportsReasoning: true, reasoningEffortLevels: [] });
+  const fallbackChoice = (await c.args.source(runContext())).find((item) => item.id === "high");
+  if (!fallbackChoice) throw new Error("the session command did not offer high from the fallback ladder");
+  await c.args.run(runContext(), fallbackChoice);
   expect(fake.calls.find((call) => call.method === "thread/reasoning-effort/set")?.params).toMatchObject({
     ref: "ref_a",
     reasoningEffort: "high",
@@ -693,9 +695,10 @@ test("/reasoning-effort source prefixes (default) and offers a ladder-listed 'no
 
 test("/reasoning-effort offers zero options for a non-reasoning model", () => {
   focusSession("ref_a");
-  seedModel("ref_a", { supportsReasoning: false, reasoningEffortLevels: [] });
   const c = cmd("reasoning-effort");
   if (c.args?.kind !== "enum") throw new Error("expected enum args");
+  expect(c.args.source(runContext())).toEqual([]);
+  seedModel("ref_a", { supportsReasoning: false, reasoningEffortLevels: ["high"] });
   expect(c.args.source(runContext())).toEqual([]);
 });
 

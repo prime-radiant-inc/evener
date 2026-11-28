@@ -140,8 +140,9 @@ func runProvidersList(args []string, stdout, stderr io.Writer) error {
 }
 
 // reportStrayCredentials names credentials.toml entries that are neither an
-// instance nor a registry provider id: after the cut-over a key keyed by an
-// old instance name is read by nothing (spec §14.1).
+// instance, an isolated broken user provider, nor a registry provider id:
+// after the cut-over a key keyed by an old instance name is read by nothing
+// (spec §14.1).
 func reportStrayCredentials(r *registry.Registry, names []string, instances []registry.Instance, stderr io.Writer) {
 	known := make(map[string]bool, len(instances))
 	for _, inst := range instances {
@@ -149,6 +150,9 @@ func reportStrayCredentials(r *registry.Registry, names []string, instances []re
 	}
 	for _, name := range names {
 		if known[name] {
+			continue
+		}
+		if r.ProviderError(name) != nil {
 			continue
 		}
 		if _, curated := r.Provider(name); curated {

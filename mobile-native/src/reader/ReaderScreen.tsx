@@ -397,7 +397,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				type: "menu",
 				label: "Document actions",
 				accessibilityLabel: "Document actions",
-				icon: { type: "sfSymbol", name: "ellipsis.circle" },
+				icon: { type: "sfSymbol", name: "ellipsis" },
 				menu: {
 					items: [
 						{ type: "action", label: "Share", onPress: share },

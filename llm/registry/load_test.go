@@ -58,6 +58,35 @@ func embeddedLoad(t testing.TB, extra ...Option) *Registry {
 	return r
 }
 
+func TestLoad_EmbeddedCopilotInstance(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r := embeddedLoad(t, WithStateRoot(state))
+
+	inst, ok := r.Instance("github-copilot")
+	if !ok || inst.CredentialSource != "oauth" || inst.DefaultModel != "gpt-5.6-sol" {
+		t.Fatalf("embedded github-copilot listing = %+v, ok=%v", inst, ok)
+	}
+	ids, err := r.ModelIDs("github-copilot")
+	if err != nil || len(ids) == 0 {
+		t.Fatalf("embedded github-copilot models = %v, %v", ids, err)
+	}
+	res, err := r.Resolve("github-copilot/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if res.Synthesized || res.Caps.ContextWindow == nil || *res.Caps.ContextWindow != 1050000 {
+		t.Fatalf("embedded row did not inherit catalog facts: synthesized=%v context=%v", res.Synthesized, res.Caps.ContextWindow)
+	}
+	if res.Caps.Cost != nil {
+		t.Fatalf("embedded Copilot row keeps a monetary cost: %+v", *res.Caps.Cost)
+	}
+	if res.DefaultModel != "gpt-5.6-sol" || res.CheapModel != "claude-haiku-5.5" || res.Surface != SurfaceOpenAI {
+		t.Fatalf("embedded Copilot defaults/surface = %q %q %q", res.DefaultModel, res.CheapModel, res.Surface)
+	}
+}
+
 func mapEnv(env map[string]string) func(string) (string, bool) {
 	return func(name string) (string, bool) { v, ok := env[name]; return v, ok }
 }
@@ -655,31 +684,73 @@ func TestLoad_PresetExpansion(t *testing.T) {
 
 func TestLoad_Errors(t *testing.T) {
 	t.Parallel()
-	cases := map[string]string{
-		"unknown base":              "[providers.x]\nbase = \"nope\"\n",
-		"unknown preset":            "[providers.x]\nbase = \"openai\"\ntransport = \"nope\"\n",
-		"no protocol":               "[providers.x]\nbase_url = \"https://x/v1\"\n",
-		"no base url":               "[providers.x]\nprotocol = \"openai-chat\"\n",
-		"dangling alias":            "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-nope\"\n",
-		"alias of alias":            "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-sonnet-4-5[1m]\"\n",
-		"cross-provider unknown":    "[providers.anthropic.models.\"mine\"]\nalias_of = \"nope/claude-opus-5\"\n",
-		"cross-provider glob alias": "[providers.anthropic.models.\"mine\"]\nalias_of = \"openai/gpt-5*\"\n",
-		"fields key wrong protocol": "[providers.groq.fields]\ninclude = true\n",
-		"row fields wrong protocol": "[providers.groq.models.\"llama-3.3-70b-versatile\"]\nfields = { include = true }\n",
+	cases := []struct {
+		name   string
+		broken string
+		cfg    string
+	}{
+		{"unknown base", "x", "[providers.x]\nbase = \"nope\"\n"},
+		{"unknown preset", "x", "[providers.x]\nbase = \"openai\"\ntransport = \"nope\"\n"},
+		{"no protocol", "x", "[providers.x]\nbase_url = \"https://x/v1\"\n"},
+		{"no base url", "x", "[providers.x]\nprotocol = \"openai-chat\"\n"},
+		{"dangling alias", "anthropic", "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-nope\"\n"},
+		{"alias of alias", "anthropic", "[providers.anthropic.models.\"mine\"]\nalias_of = \"claude-sonnet-4-5[1m]\"\n"},
+		{"cross-provider unknown", "anthropic", "[providers.anthropic.models.\"mine\"]\nalias_of = \"nope/claude-opus-5\"\n"},
+		{"cross-provider glob alias", "anthropic", "[providers.anthropic.models.\"mine\"]\nalias_of = \"openai/gpt-5*\"\n"},
+		{"fields key wrong protocol", "groq", "[providers.groq.fields]\ninclude = true\n"},
+		{"row fields wrong protocol", "groq", "[providers.groq.models.\"llama-3.3-70b-versatile\"]\nfields = { include = true }\n"},
 	}
-	for name, cfg := range cases {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "providers.toml")
-			if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			full := tc.cfg + "\n[providers.healthy]\nbase = \"openai\"\n"
+			if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			data, _ := os.ReadFile("testdata/models.dev.sample.json")
-			_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithConfigPath(path), WithStateRoot(t.TempDir()))
-			if err == nil {
-				t.Fatalf("expected error for %s", name)
+			env := mapEnv(map[string]string{
+				"ANTHROPIC_API_KEY": "sk-anthropic",
+				"GROQ_API_KEY":      "sk-groq",
+				"OPENAI_API_KEY":    "sk-openai",
+			})
+			r, err := Load(WithSnapshot(data), WithEnv(env), WithConfigPath(path), WithStateRoot(t.TempDir()))
+			if err != nil {
+				t.Fatalf("Load must isolate broken provider %q instead of failing: %v", tc.broken, err)
 			}
-			if strings.Contains(name, "fields") && !strings.Contains(err.Error(), "include") {
-				t.Fatalf("fields error must name the key: %v", err)
+			if !r.HasInstance("healthy") {
+				t.Fatal("healthy sibling instance did not load")
+			}
+			if r.HasInstance(tc.broken) {
+				t.Fatalf("broken provider %q must not load as an instance", tc.broken)
+			}
+			perr := r.ProviderError(tc.broken)
+			if perr == nil {
+				t.Fatalf("ProviderError(%q) = nil, want recorded load error", tc.broken)
+			}
+			var loadErr *ProviderLoadError
+			if !errors.As(perr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("ProviderError(%q) = %v (%T), want *ProviderLoadError for %q", tc.broken, perr, perr, tc.broken)
+			}
+			if len(r.Warnings()) == 0 {
+				t.Fatalf("Warnings() = empty, want warning for broken provider %q", tc.broken)
+			}
+			if _, rerr := r.ResolveInstance(tc.broken); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("ResolveInstance(%q) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if _, rerr := r.Resolve(tc.broken + "/any-model"); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("Resolve(%q/any-model) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if _, rerr := r.ResolveGateCredential(tc.broken, ""); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("ResolveGateCredential(%q) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if _, rerr := r.InstanceModels(tc.broken); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("InstanceModels(%q) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if _, rerr := r.ModelIDs(tc.broken); !errors.As(rerr, &loadErr) || loadErr.Provider != tc.broken {
+				t.Fatalf("ModelIDs(%q) = %v, want *ProviderLoadError", tc.broken, rerr)
+			}
+			if strings.Contains(tc.name, "fields") && !strings.Contains(perr.Error(), "include") {
+				t.Fatalf("fields error must name the key: %v", perr)
 			}
 		})
 	}
@@ -688,6 +759,59 @@ func TestLoad_Errors(t *testing.T) {
 	// base chain (openai-codex inherits openai's Responses-only fields).
 	fixtureLoad(t, nil, "[providers.work]\nbase = \"openai\"\nprotocol = \"openai-chat\"\nbase_url = \"https://gw/v1\"\n")
 	fixtureLoad(t, nil, "[providers.openai]\nbase = \"openai-codex\"\nprotocol = \"anthropic\"\nbase_url = \"https://gw/v1\"\n")
+}
+
+func TestLoad_BrokenDefaultAndOAuthPreservation(t *testing.T) {
+	t.Parallel()
+	stateRoot := t.TempDir()
+	authDir := filepath.Join(stateRoot, "auth")
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(authDir, "kimi.json"), []byte(`{"access_token":"t"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	cfg := `
+default = "kimi"
+[providers.kimi]
+base = "kimi-code-plan-global"
+[providers.work]
+base = "openai"
+api_key = "k"
+`
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile("testdata/models.dev.sample.json")
+	r, err := Load(
+		WithSnapshot(data),
+		WithEnv(mapEnv(nil)),
+		WithConfigPath(path),
+		WithStateRoot(stateRoot),
+		WithOffline(true),
+		WithoutCache(),
+	)
+	if err != nil {
+		t.Fatalf("Load must survive broken default provider: %v", err)
+	}
+	var loadErr *ProviderLoadError
+	if !errors.As(r.ProviderError("kimi"), &loadErr) || loadErr.Provider != "kimi" {
+		t.Fatalf("ProviderError(kimi) = %v, want *ProviderLoadError", r.ProviderError("kimi"))
+	}
+	def, warns, err := r.DefaultInstance()
+	if err != nil {
+		t.Fatalf("DefaultInstance() = %v, want fallback to healthy provider", err)
+	}
+	if def != "work" {
+		t.Fatalf("DefaultInstance() = %q, want %q", def, "work")
+	}
+	if len(warns) == 0 {
+		t.Fatal("DefaultInstance() returned no warning for broken default")
+	}
+	if stray := r.StrayOAuthRecords(); len(stray) != 0 {
+		t.Fatalf("StrayOAuthRecords() = %v, want broken provider's OAuth record preserved", stray)
+	}
 }
 
 func TestLoad_OverlayBaseCycleAndCuratedDanglingAlias(t *testing.T) {
@@ -1144,5 +1268,68 @@ func TestLoadDefaultsStateRootFromInjectedEnv(t *testing.T) {
 	}
 	if got, want := r.StateRoot(), filepath.Join(home, ".local", "state", "evener"); got != want {
 		t.Fatalf("StateRoot = %q, want %q", got, want)
+	}
+}
+
+// TestEndpointEnvNamesCoversOnlyReferencedEndpointVariables pins the scan a
+// checkout-local launch file is held to: a vars_env mapping read by an
+// endpoint template counts, an environment reference inside a user vars entry
+// counts, and a mapping no template reads does not.
+func TestEndpointEnvNamesCoversOnlyReferencedEndpointVariables(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, nil, `
+[providers.gateway]
+base = "openai-compatible"
+base_url = "{GW_URL}"
+vars = { GW_URL = "https://stock.example.com/v1" }
+vars_env = { GW_URL = "GATEWAY_ENDPOINT", UNUSED = "UNRELATED_SETTING" }
+api_key = "test"
+
+[providers.relayed]
+base = "openai-compatible"
+base_url = "{RELAY_URL}"
+vars = { RELAY_URL = "$RELAY_ENDPOINT" }
+api_key = "test"
+`)
+	names := r.EndpointEnvNames()
+	has := func(want string) bool { return slices.Contains(names, want) }
+	if !has("GATEWAY_ENDPOINT") {
+		t.Fatalf("EndpointEnvNames = %v, want the vars_env mapping feeding {GW_URL}", names)
+	}
+	if !has("RELAY_ENDPOINT") {
+		t.Fatalf("EndpointEnvNames = %v, want the $RELAY_ENDPOINT reference feeding {RELAY_URL}", names)
+	}
+	if has("UNRELATED_SETTING") {
+		t.Fatalf("EndpointEnvNames = %v, want no mapping no endpoint template reads", names)
+	}
+}
+
+// TestEndpointEnvNamesCoversLiveOnlyTopLevelGlob pins the scan against the ids
+// only the live roster names: generation replays a top-level glob row onto a
+// live-only id exactly as it does onto a static row, so an environment-backed
+// endpoint the glob supplies is a generation input a checkout launch file must
+// not set even when no static row matches the glob.
+func TestEndpointEnvNamesCoversLiveOnlyTopLevelGlob(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	saveCopilotRecordForTest(t, state, "github-copilot", healthyCopilotRecord("github-copilot"))
+	r := fixtureLoad(t, map[string]string{"COPILOT_ROSTER_ENDPOINT": "https://checkout.example.test/v1"}, `
+[models."roster-only-*"]
+base_url = "{ROSTER_ENDPOINT}"
+vars_env = { ROSTER_ENDPOINT = "COPILOT_ROSTER_ENDPOINT" }
+`, WithStateRoot(state))
+	r.ApplyLiveListing("github-copilot", LiveListing{Rows: []Model{{ID: "roster-only-model"}}, Authoritative: true})
+	if names := r.EndpointEnvNames(); !slices.Contains(names, "COPILOT_ROSTER_ENDPOINT") {
+		t.Fatalf("EndpointEnvNames = %v, want the live-only glob's COPILOT_ROSTER_ENDPOINT", names)
+	}
+	res, err := r.Resolve("github-copilot/roster-only-model")
+	if err != nil {
+		t.Fatalf("Resolve(live-only): %v", err)
+	}
+	if got, want := res.Transport.BaseURL, "https://checkout.example.test/v1"; got != want {
+		t.Fatalf("Resolve(live-only) base URL = %q, want the injected %q", got, want)
+	}
+	if !r.LiveListingAuthoritative("github-copilot") {
+		t.Fatal("the Copilot roster must stay authoritative")
 	}
 }

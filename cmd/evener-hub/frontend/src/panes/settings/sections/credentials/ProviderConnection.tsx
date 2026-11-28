@@ -16,7 +16,7 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import type { EditSupersededReconcile } from "@evener/appwire-client/state/credentials";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { isIMECompositionKeydown, isTextEntryTarget } from "../../../../keybindings/dispatcher";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import {
@@ -47,7 +47,7 @@ import {
 import type { FormError } from "./formError";
 import { draftFor, type InstanceDraft, varRows } from "./instanceEdit";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
-import { CODEX_AUTH_SCHEME, type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { CODEX_AUTH_SCHEME, COPILOT_AUTH_SCHEME, type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
 import { appliedSelfRead, confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
@@ -133,6 +133,11 @@ const PROVIDERS: Record<string, { label: string; keyUrl?: string; billing?: stri
     keyUrl: "https://developers.openai.com/codex",
     billing: "Codex access comes from your ChatGPT/Codex subscription. Sign in instead of pasting a key.",
   },
+  "github-copilot": {
+    label: "GitHub Copilot",
+    billing:
+      "Copilot access comes from your GitHub Copilot subscription. Sign in with GitHub instead of pasting a key.",
+  },
   google: {
     label: "Gemini",
     keyUrl: "https://aistudio.google.com/apikey",
@@ -161,7 +166,7 @@ function findSetupIn(
   name: string,
 ): InstanceEntry | undefined {
   return (
-    listing.instances.find((row) => row.name === name) ??
+    listing.instances.find((row) => row.name === name && !row.loadError) ??
     listing.availableProviders.find((row) => row.setup?.name === name)?.setup
   );
 }
@@ -273,8 +278,7 @@ function destinationChangeError(err: unknown): FormError<ConnectionErrorReason> 
  * comes from, short enough to sit in a row. activeSourceLabel is the full
  * sentence a detail sheet prints, and reading it here would put a sentence in
  * a cell. */
-function credentialValue(row: InstanceEntry | undefined): string {
-  const source = row?.activeSource ?? "none";
+function credentialSourceValue(source: string, row: InstanceEntry | undefined): string {
   if (source.startsWith("env:")) return `Environment (${source.slice(4)})`;
   switch (source) {
     case "api_key":
@@ -290,8 +294,85 @@ function credentialValue(row: InstanceEntry | undefined): string {
     case "none":
       return row?.credentialRequired ? "Not set" : "Not required";
     default:
-      return activeSourceLabel(row as InstanceEntry);
+      return row ? activeSourceLabel({ ...row, activeSource: source }) : source;
   }
+}
+
+function credentialValue(row: InstanceEntry | undefined): string {
+  return credentialSourceValue(row?.activeSource ?? "none", row);
+}
+
+interface PendingReview {
+  previous: InstanceEntry | undefined;
+  current: InstanceEntry;
+  expectedSource: string | undefined;
+}
+
+interface ReviewFieldChange {
+  key: string;
+  label: string;
+  before: string;
+  after: string;
+}
+
+function formatVarsSummary(vars: Record<string, string> | undefined): string {
+  const entries = Object.entries(vars ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  return entries.map(([key, value]) => `${key}=${value}`).join(", ");
+}
+
+function formatOptionalField(value: string | undefined): string {
+  return value && value.trim() !== "" ? value : "None";
+}
+
+/** Summarizes what actually moved between the baseline and reviewed row so a
+ * non-URL change (protocol, auth, credential source, or stripped query params)
+ * is explained instead of showing two identical URLs alone. */
+function describeReviewChange(review: PendingReview): {
+  details: ReviewFieldChange[];
+  hiddenEndpointChanged: boolean;
+} {
+  const { previous, current, expectedSource } = review;
+  if (!previous) return { details: [], hiddenEndpointChanged: false };
+
+  const details: ReviewFieldChange[] = [];
+  const pushString = (key: string, label: string, before: string | undefined, after: string | undefined) => {
+    if ((before ?? "") !== (after ?? "")) {
+      details.push({ key, label, before: formatOptionalField(before), after: formatOptionalField(after) });
+    }
+  };
+  pushString("name", "Name", previous.name, current.name);
+  pushString("providerId", "Provider", previous.providerId, current.providerId);
+  pushString("base", "Base", previous.base, current.base);
+  pushString("protocol", "Protocol", previous.protocol, current.protocol);
+  pushString("surface", "Surface", previous.surface, current.surface);
+  pushString("auth", "Auth", previous.auth, current.auth);
+  pushString("authModes", "Auth modes", (previous.authModes ?? []).join(", "), (current.authModes ?? []).join(", "));
+  pushString("vars", "Vars", formatVarsSummary(previous.vars), formatVarsSummary(current.vars));
+  pushString("apiKeyEnv", "API key env", previous.apiKeyEnv, current.apiKeyEnv);
+  pushString("credentialHeader", "Credential header", previous.credentialHeader, current.credentialHeader);
+  pushString("codexClientVersion", "Client version", previous.codexClientVersion, current.codexClientVersion);
+  if (Boolean(previous.hidden) !== Boolean(current.hidden)) {
+    details.push({
+      key: "hidden",
+      label: "Hidden",
+      before: previous.hidden ? "Yes" : "No",
+      after: current.hidden ? "Yes" : "No",
+    });
+  }
+  const expected = expectedSource ?? previous.activeSource;
+  if (current.activeSource !== expected) {
+    details.push({
+      key: "activeSource",
+      label: "Access",
+      before: credentialSourceValue(expected ?? "none", previous),
+      after: credentialValue(current),
+    });
+  }
+
+  const urlChanged = (previous.baseUrl ?? "") !== (current.baseUrl ?? "");
+  const hiddenEndpointChanged =
+    !urlChanged && details.length === 0 && (previous.endpointFingerprint ?? "") !== (current.endpointFingerprint ?? "");
+  return { details, hiddenEndpointChanged };
 }
 
 function resolvedAuthModes(row: ProviderDescriptor): string[] {
@@ -457,6 +538,7 @@ const sameSetting = (a: string, b: string) => a.trim() === b.trim();
 
 const EMPTY_VAR_DRAFT: InstanceDraft = {
   name: "",
+  base: "",
   baseUrl: "",
   protocol: "",
   surface: "",
@@ -510,7 +592,7 @@ function SelectedConnection({
   const phaseRef = useRef<Phase>("idle");
   const [error, setError] = useState<FormError<ConnectionErrorReason> | null>(null);
   const [result, setResult] = useState<AuthTestResponse | null>(null);
-  const [review, setReview] = useState<InstanceEntry | null>(null);
+  const [review, setReview] = useState<PendingReview | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
   // One retry timer owned by this flow. The attempt count paces it; both are
@@ -612,6 +694,9 @@ function SelectedConnection({
   // refuses edits, or a landed write still owes its confirming read.
   const mutationsBlocked = instanceEditsBlocked || confirmationOwed;
   const providerLabel = presentation?.label ?? effectiveProvider.name ?? effectiveProvider.id;
+  // Copilot setup requires a usable model roster, so its card has no
+  // unverified completion. Other providers keep that escape hatch.
+  const unverifiedCompletionBlocked = row?.auth === COPILOT_AUTH_SCHEME;
   const status = statusOf();
 
   const setPhase = useCallback((next: Phase) => {
@@ -728,7 +813,7 @@ function SelectedConnection({
       // The review names the row it showed. It survives the same unrelated
       // replacements and retires when that row itself moves.
       if (phaseRef.current === "review") {
-        if (selectionIdentity(selected) !== selectionIdentity(review ?? undefined)) invalidate();
+        if (selectionIdentity(selected) !== selectionIdentity(review?.current)) invalidate();
         return;
       }
       if (selfMutation.current) return;
@@ -1167,7 +1252,7 @@ function SelectedConnection({
       target.activeSource !== (expectedSource ?? contextBaseline?.activeSource)
     ) {
       pendingRecovery.current = null;
-      setReview(target);
+      setReview({ previous: contextBaseline, current: target, expectedSource });
       setPhase("review");
       return;
     }
@@ -1655,6 +1740,7 @@ function SelectedConnection({
       <DeviceCodeDialog
         key={oauth.flowId}
         name={oauth.name}
+        provider={providerLabel}
         flowId={oauth.flowId}
         userCode={oauth.userCode}
         verificationUrl={oauth.verificationUrl}
@@ -1694,7 +1780,6 @@ function SelectedConnection({
 
   const addFacts = (): ConnectionFact[] => [
     {
-      key: "name",
       label: "Name",
       htmlFor: "connection-name",
       value: (
@@ -1702,6 +1787,7 @@ function SelectedConnection({
           id="connection-name"
           value={newName}
           disabled={busy}
+          fill
           onChange={(event) => {
             setNewName(event.target.value);
             setError(null);
@@ -1710,7 +1796,6 @@ function SelectedConnection({
       ),
     },
     {
-      key: "endpoint",
       label: "Endpoint URL",
       htmlFor: "connection-endpoint",
       value: (
@@ -1720,6 +1805,7 @@ function SelectedConnection({
             placeholder="https://…/v1"
             value={newBaseUrl}
             disabled={busy}
+            fill
             onChange={(event) => {
               setNewBaseUrl(event.target.value);
               setError(null);
@@ -1729,7 +1815,6 @@ function SelectedConnection({
       ),
     },
     ...addVarRows.map(({ key, label }) => ({
-      key,
       label,
       htmlFor: `connection-var-${key}`,
       value: (
@@ -1737,6 +1822,7 @@ function SelectedConnection({
           id={`connection-var-${key}`}
           value={addVars[key] ?? ""}
           disabled={busy}
+          fill
           onChange={(event) => {
             setAddVars((current) => ({ ...current, [key]: event.target.value }));
             setError(null);
@@ -1745,7 +1831,6 @@ function SelectedConnection({
       ),
     })),
     {
-      key: "credential",
       label: json ? "Credential JSON" : "API key",
       htmlFor: "provider-credential",
       value: (
@@ -1755,6 +1840,7 @@ function SelectedConnection({
           autoComplete="off"
           required={required}
           disabled={busy}
+          fill
           aria-describedby={missingCredential ? "provider-credential-error" : undefined}
           value={value}
           onChange={(event) => changeValue(event.target.value)}
@@ -1770,7 +1856,6 @@ function SelectedConnection({
   ];
   const savedFacts = (): ConnectionFact[] => [
     {
-      key: "endpoint",
       label: "Endpoint",
       value:
         editing === "endpoint" ? (
@@ -1780,6 +1865,7 @@ function SelectedConnection({
               aria-label="Endpoint URL"
               value={endpointDraft}
               disabled={busy}
+              fill
               onChange={(event) => setEndpointDraft(event.target.value)}
             />
           </div>
@@ -1816,7 +1902,6 @@ function SelectedConnection({
     ...(storedMode
       ? [
           {
-            key: "credential",
             label: json ? "Credential JSON" : "API key",
             htmlFor: editing === "key" ? "provider-credential" : undefined,
             value:
@@ -1827,6 +1912,7 @@ function SelectedConnection({
                   autoComplete="off"
                   required={required}
                   disabled={busy}
+                  fill
                   aria-describedby={missingCredential ? "provider-credential-error" : undefined}
                   value={value}
                   onChange={(event) => changeValue(event.target.value)}
@@ -1916,7 +2002,6 @@ function SelectedConnection({
         ]
       : []),
     {
-      key: "status",
       label: "Status",
       value: (
         <span role="status" data-state={result?.status === "success" ? "success" : undefined}>
@@ -1927,6 +2012,27 @@ function SelectedConnection({
   ];
 
   const facts = adding ? addFacts() : savedFacts();
+  const reviewDiff = review ? describeReviewChange(review) : null;
+  // The footer's primary action. A check the host could not verify offers to
+  // continue, except for Copilot setup, whose roster requirement gives it no
+  // unverified completion; while waiting on a destination review (and not
+  // editing the endpoint), the review card owns the single primary action.
+  let primaryAction: ReactNode = null;
+  if (result?.status === "unsupported") {
+    if (!unverifiedCompletionBlocked) {
+      primaryAction = (
+        <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
+          Continue without verification
+        </Button>
+      );
+    }
+  } else if (!review || editing === "endpoint") {
+    primaryAction = (
+      <Button type="submit" form="provider-connection-form" disabled={busy || unavailable || (adding && writesRefused)}>
+        {primaryLabel}
+      </Button>
+    );
+  }
   return (
     <Dialog
       open
@@ -1946,18 +2052,8 @@ function SelectedConnection({
             <Button disabled={busy} onClick={() => void reloadConfirmation()}>
               Reload connection
             </Button>
-          ) : result?.status === "unsupported" ? (
-            <Button variant="secondary" disabled={busy} onClick={() => leave(() => onConnected(name))}>
-              Continue without verification
-            </Button>
           ) : (
-            <Button
-              type="submit"
-              form="provider-connection-form"
-              disabled={busy || unavailable || (adding && writesRefused)}
-            >
-              {primaryLabel}
-            </Button>
+            primaryAction
           )}
         </>
       }
@@ -2017,10 +2113,10 @@ function SelectedConnection({
           </p>
         )}
 
-        {/* While an automatic retry for saved access is pending, another
-            acquisition is not what the flow needs: the stored access is
-            already there and recovery is already scheduled. */}
-        {modes.includes("oauth") && !busy && !retryScheduled && (
+        {/* While an automatic retry for saved access or a destination review is
+            pending, another acquisition is not what the flow needs: the card is
+            waiting on recovery or explicit review first. */}
+        {modes.includes("oauth") && !busy && !retryScheduled && !review && (
           <Button disabled={busy || unavailable || confirmationOwed} onClick={() => void signIn()}>
             Sign in
           </Button>
@@ -2034,9 +2130,15 @@ function SelectedConnection({
           </p>
         )}
 
-        {review && (
+        {review && reviewDiff && (
           <div className={styles.review} data-testid="access-review">
             <p>Review changed access before contacting the provider.</p>
+            {reviewDiff.hiddenEndpointChanged && (
+              <p className={styles.note} data-review-detail="hidden-endpoint">
+                The displayed URL stayed the same, while hidden endpoint details such as query parameters or request
+                paths changed.
+              </p>
+            )}
             <PropertyList
               eyebrowLabels
               rows={[
@@ -2044,22 +2146,40 @@ function SelectedConnection({
                   label: "Was",
                   mono: true,
                   wrap: true,
-                  value: <span data-destination="previous">{baseline?.baseUrl ?? "Not configured"}</span>,
+                  value: (
+                    <span data-destination="previous" className={styles.reviewValue}>
+                      <span>{review.previous?.baseUrl ?? "Not configured"}</span>
+                      {reviewDiff.details.map((detail) => (
+                        <span key={detail.key} data-review-field={detail.key}>
+                          {detail.label}: {detail.before}
+                        </span>
+                      ))}
+                    </span>
+                  ),
                 },
                 {
                   label: "Now",
                   mono: true,
                   wrap: true,
-                  value: <span data-destination="current">{review.baseUrl}</span>,
+                  value: (
+                    <span data-destination="current" className={styles.reviewValue}>
+                      <span>{review.current.baseUrl}</span>
+                      {reviewDiff.details.map((detail) => (
+                        <span key={detail.key} data-review-field={detail.key}>
+                          {detail.label}: {detail.after}
+                        </span>
+                      ))}
+                    </span>
+                  ),
                 },
               ]}
             />
             <Button
               disabled={unavailable || confirmationOwed}
               onClick={() => {
-                acquisitionSource.current = review.activeSource;
-                adoptBaseline(review);
-                void check(++operation.current, review);
+                acquisitionSource.current = review.current.activeSource;
+                adoptBaseline(review.current);
+                void check(++operation.current, review.current);
               }}
             >
               Use reviewed access and test

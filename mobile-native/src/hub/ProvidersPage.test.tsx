@@ -889,6 +889,49 @@ it("starts a sign-in from behind the banner without a doomed client", async () =
 	setConnection.mockRestore();
 });
 
+it("offers a Copilot instance's device sign-in and no API-key action", async () => {
+	const fake = new FakeClient("ready");
+	const copilot: InstanceListResponse = {
+		instances: [
+			{
+				...rows.instances[0]!,
+				name: "github-copilot",
+				providerId: "github-copilot",
+				auth: "oauth-github-copilot",
+				authModes: ["oauth"],
+				activeSource: "none",
+				hasStoredOAuth: false,
+				credentialRequired: true,
+			},
+		],
+		availableProviders: [],
+	};
+	fake.on("evener/instance/list", () => copilot);
+	fake.on("evener/auth/device/start", () => ({
+		provider: "github-copilot",
+		flowId: "flow-copilot",
+		userCode: "COPILOT-1234",
+		verificationUrl: "https://github.com/login/device",
+		intervalSeconds: 5,
+	}));
+	harness.connection = screenConnection(fake as unknown as ConversationClientLike, "ready");
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersPage>;
+	const tree = render(<ProvidersPage {...props} />);
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("github-copilot"));
+	await act(async () => {});
+
+	expect(hasControl(tree, "API key")).toBe(false);
+	press(tree, (label) => label === "Sign in");
+	await act(async () => {});
+	expect(fake.calls.find((call) => call.method === "evener/auth/device/start")?.params).toMatchObject({
+		provider: "github-copilot",
+	});
+	expect(renderedText(tree)).toContain("COPILOT-1234");
+});
+
 it("resumes a banner-started sign-in after a manual retry's listing read lands", async () => {
 	const oauth: InstanceListResponse = {
 		instances: [{ ...rows.instances[0]!, auth: "oauth", authModes: ["oauth"] }],
@@ -1424,6 +1467,48 @@ it("says a connection test's result under the actions", async () => {
 	await act(async () => {});
 	await act(async () => {});
 	expect(testIDSuffixes(tree, "provider-test-")).toEqual(["failure"]);
+});
+
+it("offers Edit and Remove on a broken provider while hiding live credential and model actions", async () => {
+	alertRequests.length = 0;
+	const fake = providersHub([
+		instance({
+			name: "kimi",
+			base: "kimi-code-plan-global",
+			providerId: "kimi-code-plan-global",
+			baseUrl: "https://gw.example/v1",
+			endpointFingerprint: "",
+			activeSource: "none",
+			credentialRequired: false,
+			hidden: true,
+			loadError: 'providers.kimi: base "kimi-code-plan-global" is not a registry id',
+		}),
+	]);
+	fake.on("evener/instance/remove", () => ({ instances: [], availableProviders: [] }));
+	const { tree } = mountPage();
+	await act(async () => {});
+	press(tree, (label) => label.startsWith("kimi,"));
+	await act(async () => {});
+	expect(hasControl(tree, "Edit")).toBe(true);
+	expect(hasControl(tree, "Remove")).toBe(true);
+	expect(hasControl(tree, "Test connection")).toBe(false);
+	expect(hasControl(tree, "Make default")).toBe(false);
+	expect(hasControl(tree, "Check for new models")).toBe(false);
+
+	// A broken row carrying an authored base_url has no endpointFingerprint;
+	// Remove must still confirm and send evener/instance/remove rather than
+	// refusing as uncheckable-action.
+	press(tree, (label) => label === "Remove");
+	const confirm = alertRequests.at(-1)?.buttons?.find((button) => button.style === "destructive");
+	if (!confirm?.onPress) throw new Error("the remove confirmation was not opened");
+	act(() => {
+		confirm.onPress?.();
+	});
+	await act(async () => {});
+	await act(async () => {});
+	expect(problems(tree)).toEqual([]);
+	const removeCall = fake.calls.find((call) => call.method === "evener/instance/remove");
+	expect(removeCall?.params).toMatchObject({ name: "kimi" });
 });
 
 async function openWork(tree: ReactTestRenderer) {

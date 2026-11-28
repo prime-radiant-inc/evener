@@ -8,6 +8,12 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+func bridgeForTest(srv *Server, eventCh <-chan events.SessionEvent, observer func(events.SessionEvent)) {
+	for ev := range eventCh {
+		BridgeEvent(srv, ev, observer)
+	}
+}
+
 func TestBridge_ForwardsEvents(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	evs := make(chan events.SessionEvent, 10)
@@ -15,7 +21,7 @@ func TestBridge_ForwardsEvents(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -43,7 +49,7 @@ func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -76,7 +82,7 @@ func TestBridge_UsesSessionStartStateWhenProvided(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -133,7 +139,7 @@ func TestBridgeUpdatesSessionMetadataBeforeProjectionCommit(t *testing.T) {
 		},
 	}
 	close(evs)
-	Bridge(srv, evs)
+	bridgeForTest(srv, evs, nil)
 
 	if !sampled {
 		t.Fatal("projection commit never ran for the session start")
@@ -160,7 +166,7 @@ func TestBridgeUpdatesSessionMetadataBeforeProjectionCommit(t *testing.T) {
 // test is the one that runs, every time.
 func TestBridgeDropsStatusOfAnEventAdmittedBeforeIdentityReplacement(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetAppIdentity("local", "retired")
+	setAppIdentity(t, srv, "local", "retired")
 	retiredStart := events.SessionEvent{
 		Kind:      events.EventSessionStart,
 		SessionID: "retired",
@@ -174,7 +180,7 @@ func TestBridgeDropsStatusOfAnEventAdmittedBeforeIdentityReplacement(t *testing.
 		t.Fatal("the bridge would not have admitted the event this test is about")
 	}
 
-	srv.SetAppIdentity("local", "replacement")
+	setAppIdentity(t, srv, "local", "replacement")
 	srv.UpdateSessionInfo("replacement", "replacement-model", "replacement-profile")
 	srv.SetState("idle")
 
@@ -197,7 +203,7 @@ func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -226,7 +232,7 @@ func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -257,7 +263,7 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -274,57 +280,6 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 	}
 }
 
-// A status that settles outside any turn (a needs_response rest arming
-// awaiting after its quiet period) becomes the session's stored state.
-func TestBridge_StatusSettledSetsState(t *testing.T) {
-	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetState("idle")
-	feedBridge(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}})
-
-	if got := srv.GetStatus().State; got != "awaiting" {
-		t.Errorf("state: got %q, want awaiting", got)
-	}
-}
-
-// A settled resting status that reaches the bridge once the next turn is
-// already running is stale: the running turn's state stands.
-func TestBridge_StatusSettledDuringATurnIsIgnored(t *testing.T) {
-	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetProcessing(true)
-	srv.SetState("active")
-	feedBridge(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}})
-
-	if got := srv.GetStatus().State; got != "active" {
-		t.Errorf("state: got %q, want the running turn's active", got)
-	}
-}
-
-// A settled resting status that reaches the bridge after the session closed
-// never reopens it: closed wins.
-func TestBridge_StatusSettledAfterCloseIsIgnored(t *testing.T) {
-	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	feedBridge(srv,
-		events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "s1", Data: events.SessionEndData{Reason: "session_closed", State: "closed"}},
-		events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "awaiting"}},
-	)
-
-	if got := srv.GetStatus().State; got != "closed" {
-		t.Errorf("state: got %q, want closed", got)
-	}
-}
-
-// A settled status names a resting state; anything else is ignored rather
-// than stored, so the stored state never disagrees with the projected one.
-func TestBridge_StatusSettledIgnoresAStateThatIsNotARest(t *testing.T) {
-	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetState("idle")
-	feedBridge(srv, events.SessionEvent{Kind: events.EventStatusSettled, SessionID: "s1", Data: events.StatusSettledData{State: "bogus"}})
-
-	if got := srv.GetStatus().State; got != "idle" {
-		t.Errorf("state: got %q, want idle kept", got)
-	}
-}
-
 // An interrupted end leaves processing set, since the cancelled turn is still
 // unwinding, but states the session's resting state.
 func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
@@ -336,7 +291,7 @@ func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -361,7 +316,7 @@ func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 
 func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetAppIdentity("local", "new-session")
+	setAppIdentity(t, srv, "local", "new-session")
 	srv.UpdateSessionInfo("new-session", "gpt-5", "openai")
 	srv.SetState("idle")
 	evs := make(chan events.SessionEvent, 10)
@@ -369,7 +324,7 @@ func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- events.SessionEvent{
@@ -397,7 +352,7 @@ func TestBridgeWithObserver_InvokesObserverAndForwardsEvents(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		BridgeWithObserver(srv, evs, func(ev events.SessionEvent) {
+		bridgeForTest(srv, evs, func(ev events.SessionEvent) {
 			observed <- ev
 		})
 	}()
@@ -429,7 +384,7 @@ func TestBridge_RecordsAppWireNotifications(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		Bridge(srv, evs)
+		bridgeForTest(srv, evs, nil)
 	}()
 
 	evs <- threadEvent("th_1", events.RoundStartedData{RoundID: "r_1"})

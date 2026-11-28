@@ -2,6 +2,7 @@ import type { NavigationProjectSummary, SearchResult } from "@evener/appwire-cli
 import { type GroupedSearchRow, countSearchMatches } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text, View } from "react-native";
+import { radius } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { stateWord } from "@evener/appwire-client/state/navigation";
 import { BandHeader, Hairline, spokenAge } from "./BoardRow";
@@ -166,7 +167,7 @@ function Scopes({ scope, onScope }: { scope: SearchScope; onScope: (scope: Searc
 						style={({ pressed }) => ({
 							minHeight: 32,
 							paddingHorizontal: 14,
-							borderRadius: 16,
+							borderRadius: radius.capsule,
 							justifyContent: "center",
 							backgroundColor: pressed ? palette.pressed : selected ? palette.accentBg : palette.surface,
 							borderWidth: 0.5,

@@ -26,7 +26,7 @@ import type { SessionZoomParams } from "../zoom/intent";
 import Zoom from "../zoom/Zoom";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
-import * as PngEncoding from "./composer/attachments/encodePng";
+import * as ImageEncoding from "./composer/attachments/encodeImage";
 import * as ComposerModule from "./composer/Composer";
 import { requestComposerFocus } from "./composer/composerFocus";
 import { writeComposerDraft } from "./composer/draft";
@@ -39,7 +39,6 @@ import { settleActivityDiscovery } from "./testing/activityDiscovery";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { selectEditorText } from "./testing/editor";
 import { installControlledImageEncoding } from "./testing/imageEncoding";
-import { installMobileViewport } from "./testing/mobileViewport";
 import { captureTranscriptView } from "./transcript/flow/transcriptViewRegistry";
 import { installTranscriptGeometry } from "./transcript/transcriptReadingGeometryTestUtils";
 import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
@@ -292,7 +291,7 @@ test("the real Session consumer retains its structured editor and pending images
   expect(source.attachments.getState().items).toEqual([
     expect.objectContaining({ marker: 1, name: "success.png", data: "AQID", pending: false }),
   ]);
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(2);
 
   const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
   await act(async () => {
@@ -316,7 +315,7 @@ test("the real Session consumer retains its structured editor and pending images
   expect(source.attachments.getState().items).toEqual([
     expect.objectContaining({ marker: 1, name: "success.png", mediaType: "image/png", data: "AQID", pending: false }),
   ]);
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(2);
   expect(document.activeElement).not.toBe(returnedEditor);
   await userEvent.click(returnedEditor);
   expect(document.activeElement).toBe(returnedEditor);
@@ -372,7 +371,7 @@ test("the real Session consumer retains its structured editor and pending images
     target: { files: [new File([new Uint8Array([4, 3, 2, 1])], "secondary.png", { type: "image/png" })] },
   });
   expect(secondarySource.attachments.getState().items[0]).toMatchObject({ name: "secondary.png", pending: true });
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(3);
   const secondarySnapshot = secondarySource.getSnapshot();
   act(() => openAttentionSession("third"));
   const third = workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId);
@@ -409,7 +408,7 @@ test("the real Session consumer retains its structured editor and pending images
     }),
   ]);
   expect(focusedPaneMounts.filter((id) => id === secondary.id)).toHaveLength(2);
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(3);
   const thirdForward = new Promise<void>((resolve) =>
     window.addEventListener("popstate", () => resolve(), { once: true }),
   );
@@ -594,7 +593,7 @@ test("real same-URL readers preserve the exact owning reader through attention B
     { name: "cascade.png", data: "AQID", pending: false },
   ]);
   expect(mounts.filter((id) => id === session.id)).toHaveLength(3);
-  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(ImageEncoding.encodeImage)).toHaveBeenCalledTimes(1);
   expect(document.activeElement).not.toBe(sessionEditor);
   const returnBack = new Promise<void>((resolve) =>
     window.addEventListener("popstate", () => resolve(), { once: true }),
@@ -1125,7 +1124,7 @@ test("desktop session panes own separate location and activity footers", async (
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
 });
 
-test("same-session pane menus open Overview from their own instance", async ({ onTestFinished }) => {
+test("same-session pane headers keep Find per pane and offer no Overview action", async ({ onTestFinished }) => {
   vi.mocked(ComposerModule.Composer).mockRestore();
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   onTestFinished(stubSessionSlots);
@@ -1154,69 +1153,14 @@ test("same-session pane menus open Overview from their own instance", async ({ o
       marker.getAttribute("data-pane-id"),
     ),
   ).toEqual(["overview-first", "overview-second"]);
-  const user = userEvent.setup();
-  const secondMenu = menus[1];
-  if (!secondMenu) throw new Error("second session menu is missing");
-  await user.click(secondMenu);
-  await user.click(screen.getByRole("menuitem", { name: "Overview" }));
-  expect(workspaceStore.getState().focusedPaneId).toBe("overview-second");
-  expect(activitySidebarStore.getState()).toMatchObject({ open: true, ref });
-});
-
-test("mobile keeps the session's activity chips in the composer's control row, with no footer strip", async ({
-  onTestFinished,
-}) => {
-  vi.mocked(ComposerModule.Composer).mockRestore();
-  vi.mocked(StatusBarModule.StatusBar).mockRestore();
-  onTestFinished(stubSessionSlots);
-  onTestFinished(installMobileViewport());
-  const fake = connectReadyFakeClient();
-  fake.on("thread/read", () => readResponse("local:mobile", { cwd: "/work/mobile" }));
-  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref, scope),
-    jobs: { known: true, active: 1, total: 3, completed: 2, failed: 0 },
-  }));
-  render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "local:mobile" }} paneId="mobile-pane" focused />
-    </ClientProvider>,
-  );
-
-  const editor = await screen.findByRole("textbox", { name: "Message" });
-  // No status strip below the composer on a phone: the pane renders no
-  // edge footer, so the composer's own control row is the bottom surface.
-  expect(screen.queryByTestId("pane-edge-footer")).toBeNull();
-  expect(screen.queryByTestId("statusbar")).toBeNull();
-
-  const user = userEvent.setup();
-  // Engaging the editor brings the full row: attach and the status chrome.
-  await user.click(editor);
-  const form = screen.getByTestId("composer-form");
-  await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeTruthy());
-  // The activity counts keep their own line below the card, outside the form.
-  expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.getByTestId("composer-activity-line").querySelector("[data-activity-tab]")).toBeTruthy();
-
-  // A resting editor sheds Attach and the activity line too - the folded card
-  // is the phone's smallest surface - and Send stays, so it is still a usable
-  // one-line composer. A real blur() moves focus off the editor, which the
-  // engagement reconcile reads.
-  act(() => {
-    editor.blur();
-  });
-  await waitFor(() => expect(form.querySelector('[data-testid="composer-attach"]')).toBeNull());
-  expect(form.querySelector("[data-activity-tab]")).toBeNull();
-  expect(screen.queryByTestId("composer-activity-line")).toBeNull();
-  expect(form.querySelector('[data-testid="composer-submit"]')).toBeTruthy();
-
-  // Re-engaged, a chip is the phone's one-tap way into the Overview list.
-  await user.click(editor);
-  await user.click(await screen.findByRole("button", { name: /Jobs, 1 of 3 running/ }));
-  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs" });
+  const headers = await screen.findAllByRole("button", { name: "Find in session" });
+  expect(headers).toHaveLength(2);
+  expect(headers.map((header) => header.getAttribute("data-pane-id"))).toEqual(["overview-first", "overview-second"]);
+  expect(screen.queryAllByRole("button", { name: "Overview" })).toEqual([]);
 });
 
 test.each(["closed", "ended", "notLoaded"] as const)(
-  "the real session keeps an empty focused composer expanded when it becomes %s",
+  "the real session keeps an empty focused composer folded when it becomes %s",
   async (status) => {
     vi.mocked(ComposerModule.Composer).mockRestore();
     vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
@@ -1246,7 +1190,7 @@ test.each(["closed", "ended", "notLoaded"] as const)(
     });
     expect(screen.getByRole("textbox", { name: /^message$/i })).toBe(editor);
     expect(document.activeElement).toBe(editor);
-    expect(editor.style.minHeight).toBe("3lh");
+    expect(editor.style.minHeight).toBe("1lh");
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Rename" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));

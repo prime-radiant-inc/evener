@@ -6,6 +6,20 @@ export default function assert(measurements) {
     const sessionDelta = Math.abs(m.sessionTitle - m.sessionContent);
     const spawnDelta = Math.abs(m.spawnTitle - m.spawnForm);
     const settingsDelta = Math.abs(m.settingsTitle - m.settingsNav);
+    const layout = m.settingsLayout;
+    if (
+      Math.abs(layout.listGap) > TOLERANCE ||
+      layout.mobileChevron === "none" ||
+      !layout.filterPinned ||
+      !layout.detailHidesNav
+    ) {
+      failures.push(
+        `mobile settings list leaves ${layout.listGap}px unused, chevron ${layout.mobileChevron}, filter pinned ${layout.filterPinned}, detail hides list ${layout.detailHidesNav}`,
+      );
+    }
+    if (!layout.desktopHasDetailSpace || layout.desktopChevron !== "none") {
+      failures.push("desktop settings lost its side-by-side navigation");
+    }
     if (sessionDelta > TOLERANCE) {
       failures.push(
         `session header is ${sessionDelta.toFixed(1)}px off the transcript column at ${m.width}px (title ${m.sessionTitle.toFixed(1)}, content ${m.sessionContent.toFixed(1)})`,

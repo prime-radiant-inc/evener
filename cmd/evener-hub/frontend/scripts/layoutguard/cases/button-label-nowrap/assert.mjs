@@ -6,6 +6,9 @@
 // label's min-content its full width, so the flex row squeezes the narrative
 // sibling instead of the button.
 export default function assert(measurement) {
+  if (measurement.radius < measurement.box.height / 2) {
+    return { pass: false, reason: `button ends have a ${measurement.radius}px radius at ${measurement.box.height}px tall` };
+  }
   const overflow = measurement.verticalOverflow;
   if (overflow > 1) {
     // >1px, not >0, to stay clear of sub-pixel layout rounding noise.

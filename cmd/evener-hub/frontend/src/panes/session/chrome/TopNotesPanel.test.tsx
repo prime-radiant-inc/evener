@@ -2,11 +2,13 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
 import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
 import { readModuleCss, topRuleBlock } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES } from "../../../threadTestUtils";
+import { installMobileViewport } from "../testing/mobileViewport";
 import { TopNotesPanel } from "./TopNotesPanel";
 
 function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
@@ -48,10 +50,20 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
 
 // Why the collapsed summary shows a placeholder (null when it previews content).
 function summaryPlaceholderReason(): string | null | undefined {
-  return screen.getByTestId("top-notes-summary").querySelector("[data-reason]")?.getAttribute("data-reason");
+  return panelSummary().querySelector("[data-reason]")?.getAttribute("data-reason");
 }
 
+/** The panel's one disclosure trigger, in either state. */
+function panelSummary(): HTMLElement {
+  const summary = screen.getByTestId("top-notes-panel").querySelector("summary");
+  if (summary === null) throw new Error("the notes panel rendered no summary");
+  return summary;
+}
+
+let restoreViewport: (() => void) | null = null;
+
 beforeEach(() => {
+  resetMobileViewportForTests();
   topNotesStore.getState().resetForTests();
   // openAndFocus judges a request's origin era from the threads store, so
   // tests hydrate real models and must start from none.
@@ -64,6 +76,11 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  if (restoreViewport !== null) {
+    restoreViewport();
+    restoreViewport = null;
+  }
+  resetMobileViewportForTests();
   // A dismissal test's outside target is a plain DOM node, not a React
   // container: testing-library's cleanup() leaves it behind, so a failed
   // assertion would otherwise leak an "elsewhere" button into the next test.
@@ -89,11 +106,10 @@ test("collapsed default shows first priority: human note with person icon", () =
   const model = makeModel({
     humanNote: "First line of human note\nSecond line",
     agentNote: "Agent note",
-    sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example" }],
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  expect(screen.getByTestId("top-notes-summary")).toBeTruthy();
+  expect(panelSummary()).toBeTruthy();
   expect(screen.getByTestId("top-notes-icon-person")).toBeTruthy();
   expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
   expect(screen.getByText(/First line of human note/)).toBeTruthy();
@@ -103,7 +119,6 @@ test("collapsed default shows second priority: agent note with skill icon when h
   const model = makeModel({
     humanNote: "",
     agentNote: "First line of agent note\nSecond line",
-    sessionUrls: [{ id: "u1", url: "https://example.com", label: "Example" }],
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
@@ -112,7 +127,21 @@ test("collapsed default shows second priority: agent note with skill icon when h
   expect(screen.getByText(/First line of agent note/)).toBeTruthy();
 });
 
-test("collapsed default shows third priority: links with globe icon when notes are empty", () => {
+test("collapsed default shows empty placeholder when no notes exist", () => {
+  const model = makeModel({
+    humanNote: "",
+    agentNote: "",
+  });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  expect(summaryPlaceholderReason()).toBe("empty");
+  expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
+  expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
+});
+
+// Session links do not reach the collapsed summary: a links-only session
+// reads exactly like an empty one.
+test("collapsed summary ignores session links", () => {
   const model = makeModel({
     humanNote: "",
     agentNote: "",
@@ -123,29 +152,15 @@ test("collapsed default shows third priority: links with globe icon when notes a
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  expect(screen.getByTestId("top-notes-icon-globe")).toBeTruthy();
-  expect(screen.getByText(/2 links/)).toBeTruthy();
-});
-
-test("collapsed default shows empty placeholder when no notes or links exist", () => {
-  const model = makeModel({
-    humanNote: "",
-    agentNote: "",
-    sessionUrls: [],
-  });
-  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
-
   expect(summaryPlaceholderReason()).toBe("empty");
-  expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
-  expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
   expect(screen.queryByTestId("top-notes-icon-globe")).toBeNull();
+  expect(panelSummary().textContent?.match(/\d+/g) ?? []).toEqual([]);
 });
 
 test("collapsed summary treats a whitespace-only note as empty", () => {
   const model = makeModel({
     humanNote: "   ",
     agentNote: " \n\t ",
-    sessionUrls: [],
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
@@ -164,12 +179,12 @@ test("clicking the collapsed summary expands the panel, clicking header collapse
   expect(screen.queryByTestId("top-notes-expanded-content")).toBeNull();
 
   // Click to expand
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
   expect(topNotesStore.getState().isExpanded(model.ref)).toBe(true);
 
   // Click header to collapse
-  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+  await user.click(panelSummary());
   expect(screen.queryByTestId("top-notes-expanded-content")).toBeNull();
   expect(topNotesStore.getState().isExpanded(model.ref)).toBe(false);
 });
@@ -197,18 +212,10 @@ test("openAndFocus from topNotesStore expands the panel and focuses textarea", a
   });
 });
 
-test("expanded view displays human note editor, agent note, and links with remove functionality", async () => {
-  const user = userEvent.setup();
-  const removeURLSpy = vi.fn().mockResolvedValue(undefined);
-  vi.spyOn(threadsStore.getState(), "removeURL").mockImplementation(removeURLSpy);
-
+test("expanded view displays human note editor, agent note", async () => {
   const model = makeModel({
     humanNote: "My note",
     agentNote: "Agent analysis",
-    sessionUrls: [
-      { id: "u1", url: "https://example.com", label: "Example Docs" },
-      { id: "u2", url: "file:///repo/file.txt", label: "Local file" },
-    ],
   });
 
   topNotesStore.getState().setExpanded(model.ref, true);
@@ -218,24 +225,17 @@ test("expanded view displays human note editor, agent note, and links with remov
   const textarea = screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement;
   expect(textarea.value).toBe("My note");
   expect(screen.getByText("Agent analysis")).toBeTruthy();
-  expect(screen.getByText("Example Docs")).toBeTruthy();
-  expect(screen.getByText("Local file")).toBeTruthy();
-
-  // Test removing URL
-  const removeBtn = screen.getByRole("button", { name: "Remove Example Docs" });
-  await user.click(removeBtn);
-  expect(removeURLSpy).toHaveBeenCalledWith(model.ref, "u1");
 });
 
 test("the read-only placeholder does not reuse the writable session's invitation", () => {
-  const empty = { humanNote: "", agentNote: "", sessionUrls: [] };
+  const empty = { humanNote: "", agentNote: "" };
   const writable = makeModel(empty);
   render(<TopNotesPanel sessionRef={writable.ref} model={writable} />);
-  const invitation = screen.getByTestId("top-notes-summary").textContent;
+  const invitation = panelSummary().textContent;
   cleanup();
   const readOnly = makeModel({ ...empty, status: { type: "ended" } });
   render(<TopNotesPanel sessionRef={readOnly.ref} model={readOnly} />);
-  expect(screen.getByTestId("top-notes-summary").textContent).not.toBe(invitation);
+  expect(panelSummary().textContent).not.toBe(invitation);
 });
 
 test("read-only sessions show a view-only empty state instead of a write invitation", async () => {
@@ -244,11 +244,10 @@ test("read-only sessions show a view-only empty state instead of a write invitat
     status: { type: "ended" },
     humanNote: "",
     agentNote: "",
-    sessionUrls: [],
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  const summary = screen.getByTestId("top-notes-summary");
+  const summary = panelSummary();
   expect(summaryPlaceholderReason()).toBe("read-only");
   // The visible preview IS the accessible name - a generic label would hide
   // the content from screen readers. No hint text rides along in any state,
@@ -264,6 +263,24 @@ test("read-only sessions show a view-only empty state instead of a write invitat
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
 });
 
+test("the summary's accessible name tracks the collapsed preview and becomes an action label when expanded", async () => {
+  const user = userEvent.setup();
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+  const summary = panelSummary();
+
+  // Collapsed, the visible preview is the name: no label overrides it.
+  expect(summary.hasAttribute("aria-label")).toBe(false);
+
+  await user.click(summary);
+
+  // Expanded, the visible heading names the surface, not the action, so the
+  // disclosure supplies the action label for that state instead.
+  const expandedName = summary.getAttribute("aria-label");
+  expect(expandedName).not.toBeNull();
+  expect(expandedName).not.toBe(summary.textContent);
+});
+
 test("collapsed summary shows unsaved draft edits immediately, in phrasing content", async () => {
   const user = userEvent.setup();
   const model = makeModel({ humanNote: "Saved note" });
@@ -272,13 +289,13 @@ test("collapsed summary shows unsaved draft edits immediately, in phrasing conte
   // Type without committing: model.humanNote stays "Saved note" until the
   // 10s blur-save lands, but the summary must mirror the editor's draft the
   // moment the panel collapses.
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   const textarea = screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement;
   await user.type(textarea, " plus edits");
 
-  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+  await user.click(panelSummary());
   const summaryText = screen.getByText("Saved note plus edits");
-  // A button only admits phrasing content, so the clamped summary text is a
+  // A summary admits only phrasing content, so the clamped summary text is a
   // span, not a div.
   expect(summaryText.tagName).toBe("SPAN");
 });
@@ -316,7 +333,7 @@ test("focus requests stay scoped when a pane is reused for another session", asy
   // Pane reuse: the same component instance rerenders for session B
   // without unmounting. B starts collapsed.
   view.rerender(<TopNotesPanel sessionRef={modelB.ref} model={modelB} />);
-  expect(screen.getByTestId("top-notes-summary")).toBeTruthy();
+  expect(panelSummary()).toBeTruthy();
 
   // /notes on B must focus B's editor: the request belongs to B, not to a
   // numeric epoch compared against A's already-served baseline.
@@ -336,8 +353,8 @@ test("collapsed summary follows model updates after the draft record goes clean"
 
   // Expand once (the body mounts and creates the draft record), then
   // collapse: the record stays behind with the text it had at collapse.
-  await user.click(screen.getByTestId("top-notes-summary"));
-  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+  await user.click(panelSummary());
+  await user.click(panelSummary());
 
   // Another client saves a new note while the panel is collapsed. The
   // summary must show it, not the stale clean record.
@@ -350,9 +367,9 @@ test("a session that turns read-only shows the saved note, not the stranded draf
   const model = makeModel({ humanNote: "Saved note" });
   const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   await user.type(screen.getByRole("textbox", { name: "Human note" }), " never saved");
-  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+  await user.click(panelSummary());
 
   // The session ends with the edit unsaved: the read-only body shows the
   // saved note, so the summary must agree with what expanding will show.
@@ -527,13 +544,13 @@ test("no state carries an affordance hint", async () => {
   // Collapsed: the bar carries no "Click to expand" invite - the disclosure
   // affordance is the chevron and the row itself.
   expect(screen.queryByText("Click to expand")).toBeNull();
-  expect(screen.getByTestId("top-notes-summary").getAttribute("aria-describedby")).toBeNull();
+  expect(panelSummary().getAttribute("aria-describedby")).toBeNull();
 
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
 
   // Expanded: the header row carries no hint either.
   expect(screen.queryByText("Click to collapse")).toBeNull();
-  expect(screen.getByTestId("top-notes-collapse-trigger").getAttribute("aria-describedby")).toBeNull();
+  expect(panelSummary().getAttribute("aria-describedby")).toBeNull();
 });
 
 test("the panel is an inset card with a boundary that cannot clip", () => {
@@ -562,14 +579,173 @@ test("the panel is an inset card with a boundary that cannot clip", () => {
   // already draws that edge, and a second one doubles it.
   expect(topRuleBlock(css, ".summary")).not.toMatch(/border-bottom/);
 
-  // Keyboard focus must survive the clipping containers: the card's
-  // overflow:hidden and the body's scrollport cut an outside outline, so
-  // both trigger states carry the sanctioned inset ring (the same recipe
-  // sessionchrome.module.css documents for controls flush inside a clip
-  // boundary).
-  const focus = topRuleBlock(css, ".summary:focus-visible,\n.expandedHeader:focus-visible");
-  expect(focus).toContain("outline: var(--focus-ring)");
-  expect(focus).toContain("outline-offset: -2px");
+  // The shared Disclosure's summary owns the inset focus ring for both states
+  // (widgets/disclosure's own test asserts it); this card must not restate it.
+  expect(css).not.toMatch(/outline:/);
+
+  // In the mobile shell, the collapsed summary rests as one quiet centered line on the reading
+  // surface with no card chrome and the body's own top spacing; only the
+  // expanded card attaches to the header.
+  expect(topRuleBlock(css, ".summaryLine")).toContain("color: var(--ink-low)");
+  const mobile = topRuleBlock(css, ":global([data-mobile])");
+  expect(mobile).toMatch(/\.topNotesPanel:not\(\[data-expanded="true"\]\)\s*\{[^}]*border:\s*none/);
+  expect(mobile).toMatch(/\.topNotesPanel:not\(\[data-expanded="true"\]\)\s*\{[^}]*box-shadow:\s*none/);
+  expect(mobile).toMatch(/\.topNotesPanel:not\(\[data-expanded="true"\]\)\s*\{[^}]*background:\s*transparent/);
+  expect(mobile).toMatch(/:global\(\[data-pane-scaffold\^="session:"\]\)\s*\.topNotesPanel\s*\{[^}]*margin-top:\s*0/);
+  expect(mobile).toMatch(
+    /:global\(\[data-pane-scaffold\^="session:"\]\)\s*\.topNotesPanel\[data-expanded="true"\]\s*\{[^}]*margin-top:\s*calc\(-1 \* var\(--space-4\)\)/,
+  );
+  expect(mobile).toMatch(/\.summary\s+\.chevron\s*\{[^}]*display:\s*none/);
+  expect(mobile).toMatch(/\.summary\s+\.summaryLeft\s*\{[^}]*justify-content:\s*center/);
+  expect(mobile).toMatch(/\.summary\s*\{[^}]*border-radius:\s*var\(--radius-control\)/);
+
+  // Touch tap floor: the quiet line grows to the 44px target on phones and
+  // coarse pointers.
+  expect(css).toMatch(
+    /@media\s*\(max-width:\s*899px\),\s*\(any-pointer:\s*coarse\)\s*\{[^}]*\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+  );
+});
+
+test("mobile collapsed whiteboard rests as one quiet count line and carries first-priority content on aria-label", () => {
+  restoreViewport = installMobileViewport();
+  resetMobileViewportForTests();
+
+  const cases = [
+    {
+      name: "human + agent",
+      overrides: {
+        humanNote: "human-sentinel-alpha\nsecond-line",
+        agentNote: "agent-sentinel-beta",
+      },
+      expectedCounts: ["2"],
+      hiddenSentinels: ["human-sentinel-alpha", "agent-sentinel-beta"],
+      expectedAriaSentinel: "human-sentinel-alpha",
+      placeholderReason: null,
+    },
+    {
+      name: "agent when human note is empty",
+      overrides: {
+        humanNote: "",
+        agentNote: "agent-sentinel-gamma",
+      },
+      expectedCounts: ["1"],
+      hiddenSentinels: ["agent-sentinel-gamma"],
+      expectedAriaSentinel: "agent-sentinel-gamma",
+      placeholderReason: null,
+    },
+    {
+      name: "links alone when both notes are empty",
+      overrides: {
+        humanNote: "",
+        agentNote: "",
+        sessionUrls: [
+          { id: "u1", url: "https://example.com", label: "Example" },
+          { id: "u2", url: "https://foo.bar", label: "Foo" },
+        ],
+      },
+      expectedCounts: [],
+      hiddenSentinels: [],
+      expectedAriaSentinel: null,
+      placeholderReason: "empty",
+    },
+    {
+      name: "empty writable session",
+      overrides: { humanNote: "", agentNote: "" },
+      expectedCounts: [],
+      hiddenSentinels: [],
+      expectedAriaSentinel: null,
+      placeholderReason: "empty",
+    },
+    {
+      name: "empty read-only session",
+      overrides: { status: { type: "ended" as const }, humanNote: "", agentNote: "" },
+      expectedCounts: [],
+      hiddenSentinels: [],
+      expectedAriaSentinel: null,
+      placeholderReason: "read-only",
+    },
+  ];
+
+  let writableEmptyText = "";
+  for (const item of cases) {
+    const model = makeModel(item.overrides);
+    render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+    const root = screen.getByTestId("top-notes-panel");
+    const summary = panelSummary();
+
+    expect(root.getAttribute("data-expanded"), item.name).toBeNull();
+    expect(screen.queryByTestId("top-notes-icon-person"), item.name).toBeNull();
+    expect(screen.queryByTestId("top-notes-icon-skill"), item.name).toBeNull();
+
+    const visibleText = summary.textContent ?? "";
+    for (const sentinel of item.hiddenSentinels) {
+      expect(visibleText, `${item.name} must not preview note content`).not.toContain(sentinel);
+    }
+    expect(visibleText.match(/\d+/g) ?? [], item.name).toEqual(item.expectedCounts);
+    expect(summaryPlaceholderReason() ?? null, item.name).toBe(item.placeholderReason);
+
+    const ariaLabel = summary.getAttribute("aria-label");
+    if (item.expectedAriaSentinel === null) {
+      expect(ariaLabel, item.name).toBeNull();
+    } else {
+      expect(ariaLabel, item.name).not.toBeNull();
+      expect(ariaLabel, item.name).toContain(item.expectedAriaSentinel);
+      expect(ariaLabel, item.name).not.toBe(visibleText);
+    }
+
+    if (item.placeholderReason === "empty") writableEmptyText = visibleText;
+    if (item.placeholderReason === "read-only") expect(visibleText).not.toBe(writableEmptyText);
+    cleanup();
+  }
+});
+
+test("mobile whiteboard expands to full editor and tracks draft, remote updates, and read-only fallback on aria-label", async () => {
+  restoreViewport = installMobileViewport();
+  resetMobileViewportForTests();
+  const user = userEvent.setup();
+  const model = makeModel({
+    humanNote: "saved-sentinel",
+    agentNote: "agent-body-sentinel",
+  });
+  const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  const collapsedAria = panelSummary().getAttribute("aria-label");
+  expect(collapsedAria).toContain("saved-sentinel");
+
+  // Expanding sets data-expanded="true", mounts full edit/read body, and
+  // switches the summary accessible name to the collapse action.
+  await user.click(panelSummary());
+  expect(screen.getByTestId("top-notes-panel").getAttribute("data-expanded")).toBe("true");
+  expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
+  expect(screen.getByText("agent-body-sentinel")).toBeTruthy();
+  const expandedAria = panelSummary().getAttribute("aria-label");
+  expect(expandedAria).not.toBeNull();
+  expect(expandedAria).not.toBe(collapsedAria);
+  expect(expandedAria).not.toBe(panelSummary().textContent);
+
+  // Collapse clean, then receive a remote update: aria-label tracks the new note.
+  await user.click(panelSummary());
+  expect(screen.getByTestId("top-notes-panel").getAttribute("data-expanded")).toBeNull();
+  const updatedModel = { ...model, humanNote: "remote-update-sentinel" };
+  view.rerender(<TopNotesPanel sessionRef={model.ref} model={updatedModel} />);
+  expect(panelSummary().getAttribute("aria-label")).toContain("remote-update-sentinel");
+
+  // Unsaved draft edits stay out of the quiet line and land on aria-label.
+  await user.click(panelSummary());
+  const textarea = screen.getByRole("textbox", { name: "Human note" });
+  await user.type(textarea, " draft-delta");
+  await user.click(panelSummary());
+  expect(screen.getByTestId("top-notes-panel").getAttribute("data-expanded")).toBeNull();
+  expect(panelSummary().textContent).not.toContain("draft-delta");
+  expect(panelSummary().getAttribute("aria-label")).toContain("remote-update-sentinel draft-delta");
+  const lineSpan = panelSummary().querySelector("span span");
+  expect(lineSpan?.tagName).toBe("SPAN");
+
+  // Turning read-only while a draft is unsaved falls back to the saved note.
+  view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...updatedModel, status: { type: "ended" } }} />);
+  const readOnlyAria = panelSummary().getAttribute("aria-label") ?? "";
+  expect(readOnlyAria).toContain("remote-update-sentinel");
+  expect(readOnlyAria).not.toContain("draft-delta");
 });
 
 // --- dismissal: a press outside the panel collapses it ---------------------
@@ -594,7 +770,7 @@ test("pressing outside the expanded panel collapses it", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
 
   const outside = outsideTarget();
@@ -612,7 +788,7 @@ test("an outside press collapses only once its click completes", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
 
   const outside = outsideTarget();
   await user.pointer({ target: outside, keys: "[MouseLeft>]" });
@@ -628,7 +804,7 @@ test("pressing inside the expanded panel leaves it open", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
 
   await user.click(screen.getByRole("textbox", { name: "Human note" }));
 
@@ -663,7 +839,7 @@ test("a drag that starts inside the panel and releases outside does not collapse
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
 
   const outside = outsideTarget();
   await user.pointer([
@@ -680,7 +856,7 @@ test("Escape inside the expanded panel collapses it and returns focus to the tri
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   await user.click(screen.getByRole("textbox", { name: "Human note" }));
 
   await user.keyboard("{Escape}");
@@ -689,14 +865,14 @@ test("Escape inside the expanded panel collapses it and returns focus to the tri
   // A keyboard dismissal must not drop focus onto the document body. The
   // trigger takes it on the frame after the body unmounts.
   await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
-  expect(document.activeElement).toBe(screen.getByTestId("top-notes-summary"));
+  expect(document.activeElement).toBe(panelSummary());
 });
 
 test("a collapsed panel leaves Escape for an enclosing overlay", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  const summary = screen.getByTestId("top-notes-summary");
+  const summary = panelSummary();
   summary.focus();
   const escaped = vi.fn();
   document.addEventListener("keydown", escaped);
@@ -720,7 +896,7 @@ test("Escape does not save a dirty draft it collapses", async () => {
   const model = makeModel({ humanNote: "Saved note" });
   const { result } = renderHook(() => useHumanNoteDraft(model.ref));
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   const textarea = screen.getByRole("textbox", { name: "Human note" });
   await user.type(textarea, " plus edits");
   expect(result.current?.dirty).toBe(true);
@@ -743,7 +919,7 @@ test("an outside press keeps the draft and schedules the save it implies", async
   const { result } = renderHook(() => useHumanNoteDraft(model.ref));
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   const user = userEvent.setup();
-  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(panelSummary());
   const textarea = screen.getByRole("textbox", { name: "Human note" });
   await user.type(textarea, " plus edits");
 

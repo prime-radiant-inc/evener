@@ -75,6 +75,9 @@ const featureStyles = [
 
 const editor = source("src/panes/session/transcript/TranscriptDetailEditor.tsx");
 const liveControl = source("src/panes/session/transcript/TranscriptDetailControl.tsx");
+// The live control reaches the overlay primitives through ResponsiveModal, the
+// shell seam that picks the Sheet or the Dialog for the layout.
+const responsiveModal = source("src/shell/ResponsiveModal.tsx");
 const settingsCard = source("src/panes/settings/sections/TranscriptDisplayCard.tsx");
 const transcriptSources = [editor, liveControl, settingsCard] as const;
 
@@ -163,8 +166,9 @@ test("keeps transcript display surfaces on shared design-system primitives", () 
   expect(settingsCard).toMatch(/<Button(?:\s|>)/);
   expect(settingsCard).toMatch(/<Card(?:\s|>)/);
   expect(liveControl).toMatch(/<Button(?:\s|>)/);
-  expect(liveControl).toMatch(/<Dialog(?:\s|>)/);
-  expect(liveControl).toMatch(/<Sheet(?:\s|>)/);
+  expect(liveControl).toMatch(/<ResponsiveModal(?:\s|>)/);
+  expect(responsiveModal).toMatch(/<Dialog(?:\s|>)/);
+  expect(responsiveModal).toMatch(/<Sheet(?:\s|>)/);
   expect(editor).not.toMatch(/<(?:button|input|select|textarea)\b/);
   expect(settingsCard).not.toMatch(/<(?:button|input|select|textarea)\b/);
   expect(liveControl).not.toMatch(/<(?:button|input|select|textarea)\b/);
@@ -175,9 +179,7 @@ test("keeps feature rules from taking shared Card and overlay chrome", () => {
   const cardPath = "src/panes/settings/sections/transcriptDisplayCard.module.css";
   const contentRule = expectExactlyOneRule(cardPath, ".content");
   expectDeclarations(contentRule, [
-    ["display", "flex"],
-    ["flex-direction", "column"],
-    ["gap", "var(--space-4)"],
+    ["composes", 'stack4 from "../../../styles/surface.module.css"'],
     ["min-width", "0"],
   ]);
 
@@ -189,20 +191,13 @@ test("keeps feature rules from taking shared Card and overlay chrome", () => {
     ["container-name", "transcript-detail-panel"],
   ]);
 
-  expectOnlyAllowedChrome(
-    detailPath,
-    new Map([
-      [".fieldset", [["border", "0"]]],
-      [".detailStatus,\n.detailWarning", [["background", "var(--surface-inset)"]]],
-    ]),
-  );
+  expectOnlyAllowedChrome(detailPath, new Map([[".fieldset", [["border", "0"]]]]));
   expectOnlyAllowedOverflow(detailPath, new Map());
   expectOnlyAllowedPadding(
     detailPath,
     new Map([
       [".fieldset", [["padding", "0"]]],
       [".fieldset legend", [["padding", "0"]]],
-      [".detailStatus,\n.detailWarning", [["padding", "var(--space-2) var(--space-3)"]]],
     ]),
   );
   expectOnlyAllowedChrome(

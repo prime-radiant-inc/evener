@@ -92,8 +92,6 @@ type WatchConfigSnapshot struct {
 	Every              int                       `json:"every,omitempty"`
 	EventFilter        *WatchEventFilterSnapshot `json:"event_filter,omitempty"`
 	SendTo             string                    `json:"send_to,omitempty"`
-	SendMessage        string                    `json:"send_message,omitempty"`
-	IncludeExcerpt     bool                      `json:"include_excerpt,omitempty"`
 	// Receiver identity is part of the watch's configured identity — two watches
 	// that differ only in who receives them are different watches — so it belongs
 	// in the hashed snapshot rather than beside it. These stay LAST because the
@@ -142,7 +140,6 @@ type WatchSendState struct {
 	Key                      WatchSendKey       `json:"key"`
 	DeliveryID               string             `json:"delivery_id"`
 	UpdateSeq                uint64             `json:"update_seq,omitempty"`
-	Message                  string             `json:"message,omitempty"`
 	Frame                    string             `json:"frame,omitempty"`
 	TriggerIdentity          string             `json:"trigger_identity,omitempty"`
 	TriggerReason            string             `json:"trigger_reason,omitempty"`
@@ -203,17 +200,30 @@ type JobRecord struct {
 	// Best-effort: a command
 	// that itself `cd`s elsewhere after launch (e.g. `cd elsewhere && foo`) is
 	// invisible to it — only the initial value is tracked.
-	WorkingDir       string    `json:"working_dir,omitempty"`
-	Task             string    `json:"task,omitempty"`
-	ParentSessionID  string    `json:"parent_session_id,omitempty"`
-	OwnerSessionID   string    `json:"owner_session_id"`
-	VisibleToSession string    `json:"visible_to_session_id"`
-	ParentJobID      string    `json:"parent_job_id,omitempty"`
-	ParentDelegateID string    `json:"parent_delegate_id,omitempty"`
-	OriginTurnID     string    `json:"origin_turn_id,omitempty"`
-	OriginToolCallID string    `json:"origin_tool_call_id,omitempty"`
-	OriginItemID     string    `json:"origin_item_id,omitempty"`
-	StartedAt        time.Time `json:"started_at"`
+	WorkingDir string `json:"working_dir,omitempty"`
+	// ProcessGroupID and ProcessStartTime name the process group a background
+	// shell job's command runs in, and the identity of that group's leader, so
+	// a later daemon can reap the group when this one dies without teardown
+	// (SIGKILL, crash, OOM: issue #4843). Both are recorded only while the
+	// launch is still ours to testify about, so a zero group is "nothing to
+	// reap" and a detached command never gets one: it runs in its own session,
+	// outside Evener's process set.
+	//
+	// ProcessStartTime is a PID-reuse guard. A reaper re-reads the leader's
+	// start time and signals the group only when it matches, so a recycled
+	// pid/pgid belonging to an unrelated process is never signaled.
+	ProcessGroupID   int        `json:"process_group_id,omitempty"`
+	ProcessStartTime *time.Time `json:"process_start_time,omitempty"`
+	Task             string     `json:"task,omitempty"`
+	ParentSessionID  string     `json:"parent_session_id,omitempty"`
+	OwnerSessionID   string     `json:"owner_session_id"`
+	VisibleToSession string     `json:"visible_to_session_id"`
+	ParentJobID      string     `json:"parent_job_id,omitempty"`
+	ParentDelegateID string     `json:"parent_delegate_id,omitempty"`
+	OriginTurnID     string     `json:"origin_turn_id,omitempty"`
+	OriginToolCallID string     `json:"origin_tool_call_id,omitempty"`
+	OriginItemID     string     `json:"origin_item_id,omitempty"`
+	StartedAt        time.Time  `json:"started_at"`
 	// Phase is the running job's finer-grained supervision state (starting,
 	// process_running, awaiting_model, model_streaming, tool_running),
 	// restamped as the runtime observes activity. No event carries it, so a

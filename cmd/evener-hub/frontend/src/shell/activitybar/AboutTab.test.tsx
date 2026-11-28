@@ -1,7 +1,7 @@
 import type { AppwireClientLike, GitHeadParams, GitHeadResponse, ThreadReadResponse } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { WORK_TICK_MS } from "../../panes/session/liveness";
@@ -66,15 +66,34 @@ afterEach(() => {
 
 test("About renders the explicit remote session's hydrated accounting", async () => {
   const client = activityClient();
-  client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
+  client.on("thread/read", ({ ref }) => {
+    const response = activityDetailsThread(ref);
+    if (response.thread.evener) {
+      response.thread.evener.goal = { objective: "Ship the release notes", status: "blocked", iterations: 1 };
+      response.thread.evener.sessionUrls = [
+        {
+          id: "u-web",
+          url: "https://example.com/pr/1",
+          label: "Pull request",
+          addedBy: "human",
+          addedAt: Math.floor(Date.now() / 1000) - 120,
+        },
+        { id: "u-file", url: "file:///work/session/README.md", label: "Spec", addedBy: "human", addedAt: 0 },
+        { id: "u-custom", url: "custom://item/42", label: "Custom ref", addedBy: "human" },
+      ];
+    }
+    return response;
+  });
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
   mountSidebar(client);
   await screen.findByText("about-owner");
-  expect(screen.getByText("anthropic/claude-sonnet")).toBeTruthy();
-  expect(screen.getByText("idle")).toBeTruthy();
-  expect(screen.getByTestId("session-details-context").textContent).toContain("42% used");
+  expect(screen.getByTestId("session-details-goal").textContent).toContain("Ship the release notes");
+  expect(screen.getByTestId("session-details-goal-status").textContent).toBe("blocked");
+  expect(screen.getByTestId("session-details-model").textContent).toContain("anthropic/claude-sonnet");
+  expect(screen.getByTestId("session-details-state").textContent).toContain("idle");
+  expect(screen.getByTestId("session-details-context").textContent).toContain("42%");
   expect(screen.getByTestId("session-details-context").textContent).toContain("58K left");
   expect(screen.getByTestId("session-details-tokens").textContent).toContain("↑100K");
   expect(screen.getByTestId("session-details-tokens").textContent).toContain("↓20K");
@@ -85,14 +104,49 @@ test("About renders the explicit remote session's hydrated accounting", async ()
   expect(screen.getByTestId("session-details-branch").textContent).toContain("feature/overview");
   expect(screen.getByTestId("session-details-created")).toBeTruthy();
   expect(screen.getByTestId("session-details-updated")).toBeTruthy();
-  expect(screen.getAllByRole("radio").map((el) => el.querySelector("span")?.textContent)).toEqual([
+  expect(screen.getAllByRole("tab").map((el) => el.firstElementChild?.firstElementChild?.textContent)).toEqual([
+    "About",
+    "Links",
     "Agents",
     "Jobs",
     "Watches",
     "Tasks",
-    "About",
   ]);
-  expect(screen.getByRole("radio", { name: "About" }).textContent).toBe("About");
+  expect(screen.getByRole("tab", { name: "About" }).textContent).toBe("About");
+  expect(screen.getByRole("tab", { name: /^Links/ }).textContent).toContain("3");
+  // About no longer buries links beneath metadata; they live on the dedicated Links tab.
+  expect(screen.queryByTestId("about-link-u-web")).toBeNull();
+  fireEvent.click(screen.getByRole("tab", { name: /^Links/ }));
+  const webLink = await screen.findByTestId("about-link-u-web");
+  expect(webLink.tagName).toBe("A");
+  expect(webLink.getAttribute("href")).toBe("https://example.com/pr/1");
+  expect(webLink.getAttribute("target")).toBe("_blank");
+  expect(webLink.getAttribute("rel")?.split(/\s+/)).toEqual(expect.arrayContaining(["noopener", "noreferrer"]));
+  // Label-only at rest (no raw multi-line URL rendered inside the anchor),
+  // with full destination revealed on hover/focus in the verification bar, and
+  // relative timestamps shown in Recent mode when addedAt is present.
+  expect(within(webLink).queryByText("https://example.com/pr/1")).toBeNull();
+  const webTime = webLink.querySelector('[data-activity-time][data-meaning="added"]');
+  expect(webTime).toBeTruthy();
+  expect(webTime?.textContent?.trim()).toBeTruthy();
+  fireEvent.focus(webLink);
+  expect(screen.getByTestId("session-links-destination").textContent).toContain("https://example.com/pr/1");
+  const fileRow = screen.getByTestId("about-link-u-file");
+  expect(fileRow.querySelector("[data-activity-time]")).toBeNull();
+  expect(within(fileRow).getByRole("button")).toBeTruthy();
+  const customRow = screen.getByTestId("about-link-u-custom");
+  expect(customRow.querySelector("[data-activity-time]")).toBeNull();
+  expect(within(customRow).queryByRole("link")).toBeNull();
+  expect(within(customRow).queryByRole("button")).toBeNull();
+  // Mode toggle switches cleanly between Recent and Grouped categories (hiding timestamps in Grouped),
+  // and filter narrows the list.
+  fireEvent.click(screen.getByRole("radio", { name: "Grouped" }));
+  expect(screen.getByTestId("about-link-u-web").querySelector("[data-activity-time]")).toBeNull();
+  expect(screen.getByText("Pull Requests")).toBeTruthy();
+  expect(screen.getByText("Local files")).toBeTruthy();
+  fireEvent.change(screen.getByRole("searchbox", { name: "Filter links" }), { target: { value: "Spec" } });
+  expect(screen.queryByTestId("about-link-u-web")).toBeNull();
+  expect(screen.getByTestId("about-link-u-file")).toBeTruthy();
   // The shell's eager catalog warm (stores/commandCatalog) reads
   // evener/command/list on connect; About's own contract is no collection
   // reads, which is what the remaining /list methods would be.
@@ -128,11 +182,13 @@ test("About omits unavailable accounting and empty sections", async () => {
   activitySidebarStore.getState().openWith("about");
   mountSidebar(client);
   await screen.findByText("owner");
-  expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Usage" })).toBeNull();
+  expect(screen.queryByTestId("about-link-u-web")).toBeNull();
   // This session runs on another host, which its ref alone establishes, so
   // Location keeps that one row; the directory the read left out stays absent.
   expect(screen.queryByTestId("session-details-cwd")).toBeNull();
   expect(screen.getByTestId("session-details-host").textContent).toContain("remote");
+  expect(screen.queryByTestId("session-details-goal")).toBeNull();
   expect(screen.queryByTestId("session-details-context")).toBeNull();
   expect(screen.queryByTestId("session-details-cost")).toBeNull();
   expect(screen.queryByTestId("session-details-tokens")).toBeNull();
@@ -250,7 +306,7 @@ test("About releases prior collection demand through invalidation and reconnect"
   activitySidebarStore.getState().openWith("agents");
   mountSidebar(client);
   await screen.findByRole("button", { name: /inspect/ });
-  fireEvent.click(screen.getByRole("radio", { name: "About" }));
+  fireEvent.click(screen.getByRole("tab", { name: "About" }));
   await screen.findByText("about-owner");
   const delegateReads = client.calls.filter((call) => call.method === "evener/thread/delegates/list").length;
   const summaryReads = summaries;
@@ -294,7 +350,7 @@ test("leaving About releases its rich model while the sidebar keeps its summary"
       (call) => call.method === "thread/read" && (call.params as { includeTurns: boolean }).includeTurns,
     ),
   ).toBe(true);
-  fireEvent.click(screen.getByRole("radio", { name: /Jobs/ }));
+  fireEvent.click(screen.getByRole("tab", { name: /Jobs/ }));
   await screen.findByText("No jobs at this level.");
   await waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
   expect(sessionActivitySnapshot(client, ref, "session")?.summary?.context.ref).toBe(ref);

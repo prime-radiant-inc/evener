@@ -1,4 +1,4 @@
-import { render, within } from "@testing-library/react";
+import { render, waitFor, within } from "@testing-library/react";
 import { expect, test } from "vitest";
 import { readModuleCss } from "../../styles/cssBlock";
 import SegmentedControlGallerySection from "./segmentedcontrol";
@@ -7,7 +7,7 @@ function galleryCssSource() {
   return readModuleCss(import.meta.url, "segmentedcontrol.module.css");
 }
 
-test("shows every documented SegmentedControl state in both theme panes", () => {
+test("shows every documented SegmentedControl state in both theme panes", async () => {
   render(<SegmentedControlGallerySection />);
   const gallery = document.querySelector('[data-testid="segmentedcontrol-gallery"]');
   expect(gallery).toBeTruthy();
@@ -61,8 +61,14 @@ test("shows every documented SegmentedControl state in both theme panes", () => 
     expect(keyboard.option.getAttribute("tabindex")).toBe("0");
 
     const stacked = selected("Stacked detail", "Jobs, 2 of 201 running");
-    expect(stacked.group.className).toContain("stacked");
+    expect(stacked.option.className).toContain("stacked");
     expect(stacked.option.querySelectorAll("span")).toHaveLength(2);
+
+    const wrapDemo = pane.querySelector('[data-testid="segmentedcontrol-wrap-demo"]');
+    expect(wrapDemo).toBeTruthy();
+    const wrapGroup = wrapDemo?.querySelector('[role="radiogroup"]');
+    expect(wrapGroup?.querySelectorAll('[role="radio"]')).toHaveLength(5);
+    expect(wrapGroup?.querySelector('[role="radio"]')?.className).toContain("wrap");
 
     const frame320 = pane.querySelector('[data-testid="segmentedcontrol-frame-320"]');
     const frame390 = pane.querySelector('[data-testid="segmentedcontrol-frame-390"]');
@@ -74,10 +80,13 @@ test("shows every documented SegmentedControl state in both theme panes", () => 
       expect(within(frameControl).getByRole("radio", { name: "Tools" }).getAttribute("aria-checked")).toBe("true");
     }
   }
-  const active = document.activeElement;
-  expect(active?.getAttribute("role")).toBe("radio");
-  expect(active?.getAttribute("aria-label")).toBe("Intent");
-  expect(active?.getAttribute("aria-checked")).toBe("true");
+  const active = await waitFor(() => {
+    const focused = document.activeElement;
+    expect(focused?.getAttribute("role")).toBe("radio");
+    expect(focused?.getAttribute("aria-label")).toBe("Intent");
+    expect(focused?.getAttribute("aria-checked")).toBe("true");
+    return focused;
+  });
   const activeGroup = active?.closest('[role="radiogroup"]');
   expect(activeGroup?.getAttribute("aria-labelledby")).toBeTruthy();
   expect(activeGroup && document.getElementById(activeGroup.getAttribute("aria-labelledby") ?? "")?.textContent).toBe(

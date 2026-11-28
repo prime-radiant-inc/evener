@@ -1,0 +1,42 @@
+/* MobileSection's own layout. It used to borrow four classes from the
+   device-pairing section's stylesheet; the two sections happen to stack the
+   same way, so the column stack comes from the shared recipes instead. */
+
+.root {
+  composes: stack3 from "../../../styles/surface.module.css";
+  max-width: 40rem;
+}
+
+.root > h3,
+.root > p {
+  margin: 0;
+}
+
+.root > p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.soundOption {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+.soundOption > p {
+  margin: 0;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.help {
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}

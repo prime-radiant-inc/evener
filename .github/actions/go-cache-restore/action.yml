@@ -38,6 +38,16 @@ runs:
         prefix="go-${KIND}-${suffix}"
         fallback_prefix="go-${FALLBACK_KIND}-${suffix}"
         modules_prefix="gomod-${suffix}"
+        # go-cache-save deletes every entry of one of these prefixes except the
+        # key it saves. They leave the Go version out although the save and
+        # restore keys carry it: a toolchain bump makes the previous version's
+        # entries dead weight, nothing restores them, and the first save of the
+        # new version must retire them or two whole fleets ride the cache
+        # budget through that push's save window (issue #7025). ImageOS and
+        # GOARCH stay in, because those entries are a different build rather
+        # than an older generation.
+        delete_prefix="go-${KIND}-${ImageOS}-$(go env GOARCH)-"
+        modules_delete_prefix="gomod-${ImageOS}-$(go env GOARCH)-"
         {
           echo "build-dir=$(go env GOCACHE)"
           echo "mod-dir=$(go env GOMODCACHE)"
@@ -59,6 +69,8 @@ runs:
           echo "GO_MOD_CACHE_DIR=$(go env GOMODCACHE)"
           echo "GO_CACHE_KEY=${prefix}${GITHUB_SHA}"
           echo "GO_MODULES_CACHE_KEY=${modules_prefix}${GITHUB_SHA}"
+          echo "GO_CACHE_DELETE_PREFIX=${delete_prefix}"
+          echo "GO_MODULES_DELETE_PREFIX=${modules_delete_prefix}"
           echo "GO_CACHE_RESTORED_AT=$(date +%s)"
         } >> "$GITHUB_ENV"
 

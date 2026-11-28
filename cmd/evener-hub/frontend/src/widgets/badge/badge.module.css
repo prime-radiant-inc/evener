@@ -1,14 +1,12 @@
 .badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--space-5);
-  height: var(--space-5);
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-pill);
+  composes: pill from "../../styles/surface.module.css";
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  border: 1px solid transparent;
   font-weight: var(--font-weight-medium);
+  font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
@@ -16,10 +14,11 @@
  * badge is allowlisted (src/styles/token-contract.test.ts) for its tone
  * prop - a count badge's whole purpose is to carry a status hue.
  */
-/* Neutral sinks into --field: --surface-2 equals --surface-1, so a neutral
- * count on a card would have no pill at all. */
+/* Neutral uses a subtle bordered inset pill so it reads cleanly on both
+ * --surface-0 page headers and --surface-1 cards without dominating text. */
 .badgeNeutral {
-  background: var(--field);
+  background: var(--surface-inset);
+  border-color: var(--edge);
   color: var(--ink-mid);
 }
 

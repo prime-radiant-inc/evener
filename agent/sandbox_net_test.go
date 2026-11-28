@@ -1,22 +1,21 @@
 package agent
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/llm"
 )
 
 func netEnv(t *testing.T, netOn bool) *execenv.LocalExecutionEnvironment {
 	t.Helper()
 	home := t.TempDir()
-	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	cwd := sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout)
 	net := netOn
 	rp, err := sandbox.Resolve(
 		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, Network: &net},
@@ -107,27 +106,12 @@ func TestBuildModelRequest_NetOffDisablesProviderWebSearch(t *testing.T) {
 	if !plain.buildModelRequest(profile, "sys", msgs, nil, "", 0).WebSearch {
 		t.Errorf("an unsandboxed session must pass the profile web-search capability through unchanged")
 	}
-}
 
-// A mid-session cross-provider switch to a google-protocol profile dynamically
-// re-registers the web_search function tool. That executor must still honor
-// net=off egress denial — otherwise a SetModel makes evener's Gemini web search
-// reachable in a session whose network egress the user turned off.
-func TestReapplyProviderTools_GoogleWebSearchEgressDeniedUnderNetOff(t *testing.T) {
-	t.Parallel()
-	s := &Session{env: netEnv(t, false), reg: tool.NewRegistry()}
-	s.reapplyProviderSpecificTools(NewOpenAIProfile("gpt-5.4"), newGeminiProfile("gemini-3-pro"))
-
-	rt := s.reg.Get("web_search")
-	if rt == nil {
-		t.Fatal("web_search must be registered after switching to a google-protocol profile")
+	google := withWebSearch(newGeminiProfile("gemini-3-pro"), true)
+	if on.buildModelRequest(google, "sys", msgs, nil, "", 0).WebSearch {
+		t.Errorf("ProtocolGoogle must never set req.WebSearch=true even when net=on and profile supports web search")
 	}
-	_, err := rt.Exec(context.Background(), s.env, map[string]any{"query": "x"})
-	var de *sandbox.DeniedError
-	if !errors.As(err, &de) {
-		t.Fatalf("google web_search under net=off must be egress-denied, got %v", err)
-	}
-	if de.Tool != "web_search" {
-		t.Errorf("denial Tool = %q, want web_search", de.Tool)
+	if plain.buildModelRequest(google, "sys", msgs, nil, "", 0).WebSearch {
+		t.Errorf("ProtocolGoogle must never set req.WebSearch=true even when unsandboxed and profile supports web search")
 	}
 }

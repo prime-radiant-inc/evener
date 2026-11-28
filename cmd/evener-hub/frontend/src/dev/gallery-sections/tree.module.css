@@ -27,9 +27,7 @@
 }
 
 .label {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: truncate from "../../styles/text.module.css";
 }
 
 .status {

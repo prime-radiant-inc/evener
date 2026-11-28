@@ -4,6 +4,7 @@ import type { ActivityDelegate, EntityView, EvenerDelegateInfo, ItemModel, Threa
 import { findEntityView, parseArgs, parseJSONObject, stableDelegateDisplayStatus, str } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import type { CadenceState, ChipTone } from "../../../../widgets";
 
 export type DelegatePresentation = ActivityDelegate | EvenerDelegateInfo;
 
@@ -28,6 +29,27 @@ export function currentDelegate(
 }
 
 export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unknown";
+export type DelegateStatusKey = SubagentRowKind | "idle" | "exhausted";
+type DelegateStableView = Parameters<typeof stableDelegateDisplayStatus>[0];
+
+type DelegateStatusVocabulary = { label: string; chipTone: ChipTone; cadence: CadenceState; glyph: string };
+
+// One delegate status vocabulary; "idle" and "exhausted" override the kind.
+export const DELEGATE_STATUS: Record<DelegateStatusKey, DelegateStatusVocabulary> = {
+  running: { label: "Running", chipTone: "alive", cadence: "working", glyph: "●" },
+  done: { label: "Idle · reported", chipTone: "neutral", cadence: "ended", glyph: "✓" },
+  idle: { label: "Idle", chipTone: "neutral", cadence: "ended", glyph: "✓" },
+  stopped: { label: "Stopped", chipTone: "neutral", cadence: "ended", glyph: "■" },
+  failed: { label: "Failed", chipTone: "danger", cadence: "failed", glyph: "×" },
+  exhausted: { label: "Exhausted", chipTone: "attention", cadence: "failed", glyph: "×" },
+  unknown: { label: "Status unavailable", chipTone: "neutral", cadence: "idle", glyph: "?" },
+};
+
+// The stable projection's display status outranks the frozen receipt's kind.
+export function delegateStatusKey(kind: SubagentRowKind, stable?: DelegateStableView): DelegateStatusKey {
+  const display = stable ? stableDelegateDisplayStatus(stable) : undefined;
+  return display === "exhausted" || display === "idle" ? display : kind;
+}
 
 export interface SubagentRow {
   rowKey: string;
@@ -64,7 +86,7 @@ export function rowKeyForDelegateItem(item: ItemModel): string {
   const args = parseArgs(item.argumentsJSON);
   const parsed = parseJSONObject(item.output);
   const delegateId = str(parsed ?? args, "delegate_id");
-  return resolveRowKey(delegateId, undefined, item.callId ?? item.id);
+  return resolveRowKey(delegateId, item.callId ?? item.id);
 }
 
 // Only the owner projection or an explicitly in-flight launch proves current
@@ -141,9 +163,8 @@ export function classifyJobStatus(status: string | undefined): SubagentRowKind {
 }
 
 // Prefixes prevent equal raw ids from different identity classes colliding.
-export function resolveRowKey(delegateId: string | undefined, jobId: string | undefined, fallback: string): string {
+export function resolveRowKey(delegateId: string | undefined, fallback: string): string {
   if (delegateId) return `dlg:${delegateId}`;
-  if (jobId) return `job:${jobId}`;
   return `call:${fallback}`;
 }
 

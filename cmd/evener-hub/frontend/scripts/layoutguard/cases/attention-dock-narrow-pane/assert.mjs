@@ -11,6 +11,9 @@ const TOLERANCE = 1;
 export default function assert(measurement) {
   const { pane, dock, next, label } = measurement;
   const failures = [];
+  if (measurement.dockedEnd !== 0 || measurement.floatingEnd !== 76 || measurement.attentionLift !== 76) {
+    failures.push(`expected the floating composer and home inset to reserve 76px for the last turn and attention control; measured ${measurement.dockedEnd}px docked, ${measurement.floatingEnd}px floating, ${measurement.attentionLift}px lift`);
+  }
 
   const spill = Math.max(pane.left - Math.min(dock.left, next.left), dock.right - pane.right, next.right - pane.right);
   if (spill > TOLERANCE) {

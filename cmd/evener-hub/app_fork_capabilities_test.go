@@ -36,7 +36,7 @@ func TestHubForkCapabilityReadAndStatusMatchHubOwnership(t *testing.T) {
 	const sessionID = "hub-fork-capability"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "fork-test-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, daemon, "local", sessionID)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -251,7 +251,7 @@ func TestHubForkCapabilityProjectionFencesRecoveryAndSubagents(t *testing.T) {
 	}
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{"root"})
-	if err := locks.PersistForceStop([]string{"root"}, "root"); err != nil {
+	if _, err := locks.PersistForceStop([]string{"root"}, "root", daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(false)
@@ -438,7 +438,7 @@ func TestHubExplicitResumeResponseAdvertisesClearedForkFence(t *testing.T) {
 	sessionID = id
 	locks := hubcore.NewResumeLocks()
 	finish := locks.BeginForceStop([]string{sessionID})
-	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+	if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := locks.ConfirmForceStop(sessionID); err != nil {
@@ -560,7 +560,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 			name: "explicit resume required",
 			fence: func(t *testing.T, cfg *hubcore.WebConfig, _, sessionID string) {
 				finish := cfg.ResumeLocks.BeginForceStop([]string{sessionID})
-				if err := cfg.ResumeLocks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+				if _, err := cfg.ResumeLocks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)
@@ -726,7 +726,7 @@ func TestHubRelayedForkCapabilityFollowsLiveRecovery(t *testing.T) {
 	const sessionID = "hub-fork-relay-recovery"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "fork-relay-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, daemon, "local", sessionID)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -1101,6 +1101,12 @@ func TestHubForkValidatesParamsBeforeFencingOrDiscovery(t *testing.T) {
 		{name: "unparseable source turn", params: appwire.ThreadForkParams{SourceItemKey: "turn_zero", EditedInput: "forked input"}},
 		{name: "no edited input", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0"}},
 		{name: "edited input with deferred input", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input", DeferInput: true}},
+		{name: "modelProvider without model", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input", ModelProvider: "anthropic"}},
+		{name: "aside modelProvider without model", params: appwire.ThreadForkParams{Aside: true, ModelProvider: "anthropic"}},
+		{name: "unqualified model without modelProvider", params: appwire.ThreadForkParams{SourceItemKey: "apptranscript-item-v2:t_1:0:0", EditedInput: "forked input", Model: "claude-opus-4-6"}},
+		{name: "aside unqualified model without modelProvider", params: appwire.ThreadForkParams{Aside: true, Model: "claude-opus-4-6"}},
+		{name: "trailing slash model", params: appwire.ThreadForkParams{Aside: true, Model: "anthropic/"}},
+		{name: "provider with slash-only model", params: appwire.ThreadForkParams{Aside: true, ModelProvider: "openai", Model: "/"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const sessionID = "02fencedForkTarget0000"
@@ -1113,7 +1119,7 @@ func TestHubForkValidatesParamsBeforeFencingOrDiscovery(t *testing.T) {
 			}
 			locks := hubcore.NewResumeLocks()
 			finish := locks.BeginForceStop([]string{sessionID})
-			if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -1154,7 +1160,7 @@ func TestHubForkCapabilityHonoursDaemonReportedRecoveryStatus(t *testing.T) {
 	const sessionID = "hub-fork-recovery-status"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "status-test-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, daemon, "local", sessionID)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()
@@ -1234,7 +1240,7 @@ func TestHubForkFencesBothTheRequestedAliasAndTheResolvedSession(t *testing.T) {
 			name: "resolved session needs an explicit resume",
 			fence: func(t *testing.T, cfg *hubcore.WebConfig, fencedID string) {
 				finish := cfg.ResumeLocks.BeginForceStop([]string{fencedID})
-				if err := cfg.ResumeLocks.PersistForceStop([]string{fencedID}, fencedID); err != nil {
+				if _, err := cfg.ResumeLocks.PersistForceStop([]string{fencedID}, fencedID, daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)
@@ -1370,7 +1376,7 @@ func TestHubForkReportsDeletionBeforeRecoveryWhicheverIdentitySortsFirst(t *test
 			}
 			locks := hubcore.NewResumeLocks()
 			finish := locks.BeginForceStop([]string{tc.liveID})
-			if err := locks.PersistForceStop([]string{tc.liveID}, tc.liveID); err != nil {
+			if _, err := locks.PersistForceStop([]string{tc.liveID}, tc.liveID, daemonprocess.Target{}); err != nil {
 				t.Fatal(err)
 			}
 			finish.Finish(true)
@@ -1757,7 +1763,7 @@ func TestHubForkFollowsTheRecoveryRedirectForAStoppedAlias(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	group := []string{aliasID, currentID}
 	finish := locks.BeginForceStop(group)
-	if err := locks.PersistForceStop(group, currentID); err != nil {
+	if _, err := locks.PersistForceStop(group, currentID, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -2001,7 +2007,7 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 			name: "resolved session needs an explicit resume",
 			fence: func(t *testing.T, locks *hubcore.ResumeLocks, sessionID string) {
 				finish := locks.BeginForceStop([]string{sessionID})
-				if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+				if _, err := locks.PersistForceStop([]string{sessionID}, sessionID, daemonprocess.Target{}); err != nil {
 					t.Fatal(err)
 				}
 				finish.Finish(true)
@@ -2025,7 +2031,7 @@ func TestHubForkCapabilityFencesTheSessionAStableRefResolvesTo(t *testing.T) {
 			buildRPCSessionWithWorkingDir(t, stateDir, currentID, t.TempDir())
 			ref := "local:" + aliasID
 			daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "resolved-fence-token"})
-			daemon.SetAppIdentity("local", aliasID)
+			setAppIdentity(t, daemon, "local", aliasID)
 			daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 			t.Cleanup(daemonHTTP.Close)
 			runDir := t.TempDir()
@@ -2480,7 +2486,7 @@ func recordResumeRedirect(t *testing.T, locks *hubcore.ResumeLocks, from, to str
 	t.Helper()
 	group := []string{from, to}
 	finish := locks.BeginForceStop(group)
-	if err := locks.PersistForceStop(group, to); err != nil {
+	if _, err := locks.PersistForceStop(group, to, daemonprocess.Target{}); err != nil {
 		t.Fatal(err)
 	}
 	finish.Finish(true)
@@ -2545,7 +2551,7 @@ func TestHubRelayProjectsForkOnlyForStatusNotifications(t *testing.T) {
 	const sessionID = "hub-fork-relay-hot-path"
 	const ref = "local:" + sessionID
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{HubToken: "hot-path-token"})
-	daemon.SetAppIdentity("local", sessionID)
+	setAppIdentity(t, daemon, "local", sessionID)
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
 	t.Cleanup(daemonHTTP.Close)
 	runDir := t.TempDir()

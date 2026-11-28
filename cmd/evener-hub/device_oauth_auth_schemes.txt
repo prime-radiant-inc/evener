@@ -1,0 +1,27 @@
+# device_oauth_auth_schemes.txt — every transport auth scheme whose sign-in is
+# a device-code flow the hub itself runs, and the checked-in values BOTH
+# languages' tests read. The file holds exactly two non-comment, non-blank
+# lines, one scheme each, spelled exactly as llm/registry/types.go's constants
+# and as the wire's InstanceEntry.auth carries them:
+#
+#   oauth-openai-codex     registry.AuthOAuthOpenAICodex, OpenAI Codex
+#   oauth-github-copilot   registry.AuthOAuthGitHubCopilot, GitHub Copilot
+#
+# It exists because the two ends of this contract live in different languages
+# and were each pinned only against themselves:
+#
+#   Go        llm/registry/types.go's constants are what the hub's own gates
+#             compare (cmd/evener-hub/app_auth.go's instanceIsCodex and
+#             instanceIsCopilot), asserted here by
+#             app_auth_scheme_pin_test.go.
+#
+#   frontend  cmd/evener-hub/frontend/src/panes/settings/sections/credentials/
+#             oauthFlow.ts's DEVICE_OAUTH_AUTH_SCHEMES decides which remote-host
+#             instances are offered "Sign in on host" (supportsHostDeviceSignIn),
+#             asserted there by oauthFlow.test.ts.
+#
+# Without the pin, renaming a Go constant - or editing a frontend literal - left
+# the other end green while the browser offered a sign-in the host would
+# refuse, or withheld one it would accept.
+oauth-openai-codex
+oauth-github-copilot

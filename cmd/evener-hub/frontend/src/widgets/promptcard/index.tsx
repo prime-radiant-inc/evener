@@ -135,6 +135,7 @@ export function PromptCard({
       <div
         ref={cardRef}
         className={CLASS.card}
+        data-prompt-card=""
         data-testid={testId}
         data-folded={folded ? "true" : undefined}
         data-folded-compact={foldedCompact ? "true" : undefined}

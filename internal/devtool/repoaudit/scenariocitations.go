@@ -105,7 +105,7 @@ func scenarioSourceCitationsResolve(a *audit) {
 // the corpus off `:12` — but only until the symbol is renamed or moved to
 // another file, and nothing else in the suite would notice that.
 //
-// A symbol is anything a card legitimately anchors to. For Go, resolved with
+// A symbol is anything a card legitimately anchors to. Resolved with
 // go/parser (scenarioDeclarationsIn): a func or method, a type, a
 // package-level or grouped const or var, a struct field, an interface method.
 // Receiver-, type-, and package-qualified names such as `Type.Method` and
@@ -113,18 +113,13 @@ func scenarioSourceCitationsResolve(a *audit) {
 // only when that name is unique in the file, so a collision cannot make a
 // citation appear to resolve by accident.
 //
-// For TS/TSX/JS/JSX, resolved with a line-anchored regex scan
-// (scenarioTSDeclarationsIn) rather than a parser — no TS toolchain is
-// in-tree, and a `.tsx#symbol` anchor resolving its file but not its symbol
-// was issue #157. A top-level function, const/let/var, class, interface, type
-// alias, or enum declaration is recognized, exported or not; destructured
-// exports, re-exports, and `declare`-block members are not. That gap fails in
-// the safe direction — a real symbol the scan misses turns the audit red, not
-// a fake one it accepts.
+// Only Go anchors have their symbol checked. A `#symbol` anchor into a
+// TS/TSX/JS/JSX file gets its path checked by scenarioSourceCitationsResolve
+// and nothing more: the hand-rolled declaration scan this audit used to carry
+// for those files recognized a subset of the grammar and was retired.
 func scenarioSourceSymbolsAreDeclared(a *audit) {
 	byBase := scenarioSourceFilesByBase(a)
 	declaredGo := map[string]map[string]bool{}
-	declaredTS := map[string]map[string]bool{}
 	var findings []string
 	checked := 0
 	for _, path := range scenarioCardFiles(a) {
@@ -138,18 +133,16 @@ func scenarioSourceSymbolsAreDeclared(a *audit) {
 				if symbol == "" {
 					continue
 				}
+				// Every file scenarioResolveCitedPath returns ends in the
+				// cited path's own extension, so the extension test on the
+				// citation decides the whole match set.
+				if filepath.Ext(cited) != ".go" {
+					continue
+				}
 				checked++
 				found := false
 				for _, file := range scenarioResolveCitedPath(byBase, cited) {
-					var (
-						names map[string]bool
-						err   error
-					)
-					if filepath.Ext(file) == ".go" {
-						names, err = scenarioDeclarationsIn(declaredGo, file)
-					} else {
-						names, err = scenarioTSDeclarationsIn(declaredTS, file)
-					}
+					names, err := scenarioDeclarationsIn(declaredGo, file)
 					if err != nil {
 						a.Fatalf("parsing %s cited by %s: %v", file, path, err)
 					}
@@ -167,10 +160,10 @@ func scenarioSourceSymbolsAreDeclared(a *audit) {
 	}
 	// A corpus audit is green either because the corpus is clean or because its
 	// needle stopped matching anything; only a floor on matches tells the two
-	// apart. The corpus carries symbol anchors today, so zero checks means the
-	// `#symbol` needle broke, not that the anchors left.
+	// apart. The corpus carries Go symbol anchors today, so zero checks means
+	// the `#symbol` needle broke, not that the anchors left.
 	if checked == 0 {
-		a.Fatalf("the `#symbol` needle matched nothing across the corpus — " +
+		a.Fatalf("the Go `#symbol` needle matched nothing across the corpus — " +
 			"the detector is dead and this audit is checking nothing")
 	}
 	if len(findings) > 0 {
@@ -359,94 +352,6 @@ func scenarioReceiverName(fields *ast.FieldList) string {
 		}
 	}
 	return receiverName(fields.List[0].Type)
-}
-
-// scenarioTSDeclarationPatterns are scenarioTSDeclarationsIn's declaration
-// forms, each capturing the declared name in its first group. This is a
-// line-anchored regex scan, not a TS parser — ts-morph/typescript are not
-// in-tree, and pulling a Node toolchain into a Go audit test is
-// disproportionate to what the audit needs (issue #157).
-//
-// The floor is deliberately honest rather than complete: destructured exports
-// (`export const { a, b } = ...`), re-exports (`export { x } from ...`), and
-// `declare`-block members are not matched. That failure mode is the safe
-// direction — a symbol that IS declared but not matched turns the audit red
-// at authoring time, so the author repoints the anchor or widens the scan,
-// versus a symbol that is NOT declared staying green forever, which is the
-// bug issue #157 closes.
-//
-// A `/* ... */` block comment is the one shape that failed in the UNSAFE
-// direction instead: a declaration-shaped line sitting inside a comment (a
-// commented-out old implementation, a JSDoc example) would register its name
-// as declared when it is not — the same stale-anchor-stays-green failure this
-// audit exists to catch, reached through a comment instead of a rename (PR
-// #271 review). scenarioStripTSBlockComments blanks every such span before
-// the scan runs, so this is closed rather than documented as accepted. It has
-// no model of string or template-literal bodies, so a `/*` inside a quoted
-// string still opens a (blanked) comment span; no citation in the corpus
-// trips that today.
-var scenarioTSDeclarationPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|enum)\s+([A-Za-z0-9_$]+)`),
-	regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)`),
-	regexp.MustCompile(`^\s*(?:export\s+)?type\s+([A-Za-z0-9_$]+)\s*=`),
-}
-
-// scenarioStripTSBlockComments blanks every `/* ... */` span in a
-// TypeScript/JavaScript source — a JSDoc `/** ... */` span opens the same way,
-// so it is covered too — replacing comment bytes with a space and preserving
-// newlines, so a declaration sharing a line with an inline block comment
-// (`export /* eslint-disable-next-line */ function Foo() {}`) still matches
-// and line counts are unaffected. A `//` line comment needs no equivalent
-// handling: scenarioTSDeclarationPatterns anchor at `^\s*`, and a
-// `//`-prefixed line can never match a bare keyword sitting right after it.
-func scenarioStripTSBlockComments(source string) string {
-	var out strings.Builder
-	out.Grow(len(source))
-	inComment := false
-	for i := 0; i < len(source); i++ {
-		switch {
-		case inComment && source[i] == '*' && i+1 < len(source) && source[i+1] == '/':
-			inComment = false
-			i++
-		case inComment:
-			if source[i] == '\n' {
-				out.WriteByte('\n')
-			} else {
-				out.WriteByte(' ')
-			}
-		case source[i] == '/' && i+1 < len(source) && source[i+1] == '*':
-			inComment = true
-			i++
-		default:
-			out.WriteByte(source[i])
-		}
-	}
-	return out.String()
-}
-
-// scenarioTSDeclarationsIn returns every top-level name a TypeScript or
-// JavaScript file declares, memoized across citations into the same file.
-// Mirrors scenarioDeclarationsIn's map[string]map[string]bool cache shape so
-// scenarioSourceSymbolsAreDeclared can dispatch on file extension without
-// changing how either side is called (issue #157).
-func scenarioTSDeclarationsIn(cache map[string]map[string]bool, path string) (map[string]bool, error) {
-	if names, ok := cache[path]; ok {
-		return names, nil
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	names := map[string]bool{}
-	for line := range strings.SplitSeq(scenarioStripTSBlockComments(string(raw)), "\n") {
-		for _, pattern := range scenarioTSDeclarationPatterns {
-			if m := pattern.FindStringSubmatch(line); m != nil {
-				names[m[1]] = true
-			}
-		}
-	}
-	cache[path] = names
-	return names, nil
 }
 
 // scenarioTrackedFilesByBase indexes the tracked files carrying one of the

@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // While a turn runs, the protocol layer must NOT refuse a model switch: the
@@ -111,6 +113,87 @@ func TestHandleAppThreadModelSet_ThreadReadReflectsNewModelWithNoInterveningTurn
 	if thread.Thread.ModelProvider != "claude-opus-4-6" || thread.Thread.Evener.Profile != "anthropic" {
 		t.Fatalf("thread/read = %q on profile %q, want claude-opus-4-6 on anthropic with no intervening turn",
 			thread.Thread.ModelProvider, thread.Thread.Evener.Profile)
+	}
+}
+
+// A queued pick's acceptance must reach the status cache the same way a
+// committed switch does: the model/set hook installs the pick synchronously
+// for its own reply window, but a pick queued outside an RPC in flight (the
+// deferred-failure retraction, a compact-at switch) has only the bridge's
+// event effect. Without it, thread/read keeps naming the previous model with
+// no corrective event behind it, which reads to a subscriber as the pick
+// silently flipping back.
+func TestSessionEventStatus_NextModelChangedRefreshesSessionInfo(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	seedStatus(s, StatusInfo{SessionID: "s1", Model: "gpt-initial", Profile: "openai"})
+
+	s.applySessionEventStatus(events.SessionEvent{
+		Kind:      events.EventNextModelChanged,
+		SessionID: "s1",
+		Data:      events.NextModelChangedData{Provider: "openai", Model: "gpt-queued"},
+	})
+
+	thread, err := s.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
+	if err != nil {
+		t.Fatalf("handleAppThreadRead: %v", err)
+	}
+	if thread.Thread.ModelProvider != "gpt-queued" || thread.Thread.Evener.Profile != "openai" {
+		t.Fatalf("thread/read = %q on profile %q, want the accepted pick gpt-queued on openai",
+			thread.Thread.ModelProvider, thread.Thread.Evener.Profile)
+	}
+}
+
+// A queued pick rewrites the pair thread/read returns for display, but the
+// usage it reports was spent on the committed model, so the cost must price
+// at the committed model's rates until the switch actually commits - not
+// reprice the session's whole meter at a model that has not served a token.
+func TestThreadReadPricesUsageAtTheCommittedModelWhileAPickIsAdvertised(t *testing.T) {
+	s := NewServer(ServerConfig{})
+	s.SetCostLookupFunc(func(ref string) *registry.Cost {
+		switch ref {
+		case "openai/gpt-5.2":
+			return &registry.Cost{Input: 1, Output: 1}
+		case "openai/gpt-5.4":
+			return &registry.Cost{Input: 10, Output: 10}
+		}
+		return nil
+	})
+	seedStatus(s, StatusInfo{SessionID: "s1", Model: "gpt-5.2", Profile: "openai"})
+	setEnvelope(s, func(e *stubThreadEnvelopeSource) {
+		e.usage = &appwire.EvenerUsage{InputTokens: 100_000, OutputTokens: 100_000, TotalTokens: 200_000}
+	})
+
+	s.applySessionEventStatus(events.SessionEvent{
+		Kind:      events.EventNextModelChanged,
+		SessionID: "s1",
+		Data:      events.NextModelChangedData{Provider: "openai", Model: "gpt-5.4"},
+	})
+
+	thread, err := s.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
+	if err != nil {
+		t.Fatalf("handleAppThreadRead: %v", err)
+	}
+	if thread.Thread.ModelProvider != "gpt-5.4" {
+		t.Fatalf("thread/read model = %q, want the advertised pick gpt-5.4", thread.Thread.ModelProvider)
+	}
+	// 100_000/1e6*1 + 100_000/1e6*1 = $0.20 at the committed gpt-5.2's rates;
+	// the same tokens at the queued gpt-5.4's rates would read ~$2.00.
+	if thread.Thread.Evener.Cost != "~$0.20" {
+		t.Fatalf("usage cost = %q, want ~$0.20: already-used tokens must stay priced at the committed model's rates", thread.Thread.Evener.Cost)
+	}
+
+	// Once the switch commits, both the display pair and the pricing pair move.
+	s.applySessionEventStatus(events.SessionEvent{
+		Kind:      events.EventModelChanged,
+		SessionID: "s1",
+		Data:      events.ModelChangedData{NewProvider: "openai", NewModel: "gpt-5.4"},
+	})
+	thread, err = s.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{})
+	if err != nil {
+		t.Fatalf("handleAppThreadRead after commit: %v", err)
+	}
+	if thread.Thread.Evener.Cost != "~$2.00" {
+		t.Fatalf("usage cost after the commit = %q, want ~$2.00 at the applied model's rates", thread.Thread.Evener.Cost)
 	}
 }
 

@@ -213,7 +213,7 @@ func cloneTaskCompletionSteeringData(data *events.TaskCompletionSteeringData) *e
 // Steer queues a text-only message to inject after the current tool round
 // completes.
 func (s *Session) Steer(msg string) error {
-	_, err := s.trySteer(msg)
+	_, err := s.trySteerWithImagesAndProvenance(msg, nil, nil, "")
 	return err
 }
 
@@ -317,10 +317,6 @@ func (s *Session) stableDelegateReceiver(receiverSessionID string) *Session {
 	return nil
 }
 
-func (s *Session) trySteer(msg string) (bool, error) {
-	return s.trySteerWithImages(msg, nil)
-}
-
 // steerWithProvenance queues a text-only steering message carrying the causal
 // watch provenance that produced it (nil for human/system-authored steering).
 // kind names what was injected (events.SteeringKind*), "" when the caller did
@@ -328,10 +324,6 @@ func (s *Session) trySteer(msg string) (bool, error) {
 func (s *Session) steerWithProvenance(msg string, p *provenance.Causal, kind string) error {
 	_, err := s.trySteerWithProvenance(msg, p, kind)
 	return err
-}
-
-func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) (bool, error) {
-	return s.trySteerWithImagesAndProvenance(msg, images, nil, "")
 }
 
 func (s *Session) trySteerWithProvenance(msg string, p *provenance.Causal, kind string) (bool, error) {

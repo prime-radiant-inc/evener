@@ -69,9 +69,9 @@ end
 def test_configure_helper(tmpdir)
   project_path = File.join(tmpdir, "Evener.xcodeproj")
   project = Xcodeproj::Project.new(project_path)
-  app = project.new_target(:application, "Evener", :ios, "16.0")
+  app = project.new_target(:application, "Evener", :ios, "17.0")
   # The share extension target prebuild generates from targets/share.
-  extension = project.new_target(:app_extension, "EvenerShareExtension", :ios, "16.4")
+  extension = project.new_target(:app_extension, "EvenerShareExtension", :ios, "17.0")
   library = project.new_target(:framework, "Unrelated", :ios, "16.0")
   project.save
   project = Xcodeproj::Project.open(project_path)

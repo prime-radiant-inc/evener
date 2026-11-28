@@ -8,50 +8,9 @@ import (
 	"os"
 
 	"golang.org/x/sys/unix"
+
+	"primeradiant.com/evener/identifier"
 )
-
-// ErrNotRegularFile reports that a path exists but is not a regular file, so
-// reading it would either block (a FIFO with no writer, a socket) or mean
-// something other than data (a device). Callers that can answer without the
-// bytes check for it with errors.Is instead of matching the message.
-var ErrNotRegularFile = errors.New("not a regular file")
-
-// ErrGitPointerTooLarge reports that a ".git" pointer file exceeded the size a
-// pointer can occupy. It is neither read whole nor parsed.
-var ErrGitPointerTooLarge = errors.New("git pointer file is larger than any pointer")
-
-// OpenRegularNoFollow opens path for reading through a single descriptor that
-// is validated before any read: the open refuses a symlink at the final
-// component (ELOOP, the target is never touched) and never blocks — a
-// read-only open of a FIFO would otherwise block until a writer appears, so
-// the open carries O_NONBLOCK, harmless for regular files. The descriptor is
-// then fstat'd and must be a regular file; anything else (a FIFO, a device) is
-// refused. The validation and the read share one descriptor, so nothing can
-// be swapped between the check and the bytes.
-func OpenRegularNoFollow(path string) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
-	if err != nil {
-		if err == unix.ELOOP {
-			return nil, fmt.Errorf("open %q: leaf path is a symlink, refusing to follow it", path)
-		}
-		return nil, &os.PathError{Op: "open", Path: path, Err: err}
-	}
-	file := os.NewFile(uintptr(fd), path)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("open %q: no file for descriptor", path)
-	}
-	info, serr := file.Stat()
-	if serr != nil {
-		_ = file.Close()
-		return nil, serr
-	}
-	if !info.Mode().IsRegular() {
-		_ = file.Close()
-		return nil, fmt.Errorf("open %q: %w", path, ErrNotRegularFile)
-	}
-	return file, nil
-}
 
 // admitOptions selects what an opened descriptor may be admitted as.
 type admitOptions struct {
@@ -63,12 +22,12 @@ type admitOptions struct {
 
 // admitOpenedFD is the single admission constructor for a file opened
 // O_RDONLY|O_CLOEXEC|O_NONBLOCK. It classifies the OPENED DESCRIPTOR, never
-// the caller's spelling about it: fstat gives the type, fdOnPseudoMount gives
-// whether the descriptor lives on a pseudo filesystem, so no alias, bind
-// mount, or classify-then-open swap can hide a stream that stats regular
-// (/proc/kmsg) behind an ordinary spelling (#4574 round 11). streamed is the
-// caller's spelled hint, kept only as the seam a stub-backed test root needs
-// where the descriptor's real mount cannot be faked. A FIFO
+// the caller's spelling about it: fstat gives the type, and identifier's mount
+// check gives whether the descriptor lives on a pseudo filesystem, so no
+// alias, bind mount, or classify-then-open swap can hide a stream that stats
+// regular (/proc/kmsg) behind an ordinary spelling (#4574 round 11). streamed
+// is the caller's spelled hint, kept only as the seam a stub-backed test root
+// needs where the descriptor's real mount cannot be faked. A FIFO
 // or socket is refused — a read-only open of one would otherwise block until a
 // peer appears, and nothing bounds that wait, because the read cap applies
 // only after a successful open (#4574 round 1) — and so is any other
@@ -96,7 +55,7 @@ func admitOpenedFD(fd int, name string, opts admitOptions, streamed bool) (*os.F
 			return nil, errNotRegularFile
 		}
 	case mode.IsRegular():
-		if streamed || fdOnPseudoMount(fd) {
+		if streamed || identifier.FDOnPseudoMount(fd) {
 			return file, nil
 		}
 	case opts.admitDevice && mode&os.ModeDevice != 0:

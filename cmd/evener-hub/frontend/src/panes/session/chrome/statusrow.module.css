@@ -21,23 +21,10 @@
   overflow: hidden;
 }
 
-/* Where the triggers keep their compact desktop size, the model and effort
- * read as one quiet --field pill: a single control-shaped object describing
- * where the prompt goes, set back from the verbs beside it. Touch layouts
- * leave the ground off - their triggers grow to the tap floor, and a pill
- * that tall would outweigh the Send button it sits next to. */
-@media (min-width: 900px) and (not (any-pointer: coarse)) {
-  .identity {
-    padding-inline: var(--space-1);
-    border-radius: var(--radius-pill);
-    background: var(--field);
-  }
-}
-
 /* The composer's inline mount packs its facts against the far end, beside
  * the verbs. The footer row keeps its leading edge. The auto margin spends
- * the free space before the identity, so the whole run - model, effort,
- * context and queue - moves right as a group; when there is no free space
+ * the free space before the identity, so the whole run - context ring, model,
+ * effort, and queue - moves right as a group; when there is no free space
  * the identity still shrinks and ellipsizes from its own end rather than
  * clipping its start. */
 .rowEnd .identity {
@@ -46,11 +33,12 @@
 }
 
 /* The model and vision-model switches hug their labels but may both shrink when
- * the status row runs narrow. The effort control is the other direct span in
- * this run and stays fixed-width; excluding it keeps its existing sizing. Both
- * popover wrappers need min-width: 0, otherwise the newly added vision trigger
- * keeps its min-content width and squeezes the active-model trigger to zero. */
-.identity > span:not(.effortTrigger) {
+ * the status row runs narrow. The effort control and .context ring are the
+ * other direct spans in this run: effort keeps its own sizing from
+ * reasoningeffortcontrol.module.css, and .context stays flex: none at 14px.
+ * Both popover wrappers need min-width: 0, otherwise a second trigger keeps its
+ * min-content width and squeezes the active-model trigger to zero. */
+.identity > span:not([data-effort-control]):not(.context) {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -60,12 +48,34 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  flex: none;
 }
 
-.item,
-.context,
-.effortTrigger {
+.context {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
+  padding-right: var(--space-1);
+}
+
+/* Where the triggers keep their compact desktop size, the context ring, model,
+ * and effort read as one quiet --field pill: a single control-shaped object
+ * describing where the prompt goes, set back from the verbs beside it. Touch
+ * layouts leave the ground off - their triggers grow to the tap floor, and a
+ * pill that tall would outweigh the Send button it sits next to. Placed after
+ * .context so the desktop pill padding overrides .context's base padding. */
+@media (min-width: 900px) and (not (any-pointer: coarse)) {
+  .identity {
+    padding-inline: var(--space-1);
+    border-radius: var(--radius-pill);
+    background: var(--field);
+  }
+
+  .context {
+    padding-left: var(--space-1);
+    padding-right: var(--space-half);
+  }
 }
 
 /* Figures and timings: the sans face with tabular digits, so a changing
@@ -76,22 +86,12 @@
   font-variant-numeric: tabular-nums;
 }
 
-.contextMeter {
-  display: block;
-  width: 64px;
-}
-
-.contextPercent,
 .queueCompact {
   display: none;
 }
 
 .queue {
   margin-left: 0;
-  color: var(--ink-low);
-}
-
-.separator {
   color: var(--ink-low);
 }
 
@@ -123,119 +123,66 @@
 }
 
 @container (max-width: 399px) {
-  /* The model label is the first child of the Popover trigger wrapper. At the
-   * phone-width allocation measured by the browser, the fixed effort/context/
-   * queue facts consume the row exactly; compacting the row gap and model
-   * trigger padding reserves the measured 1rem label floor without dropping
-   * any fact or creating a scrollable status row. */
+  /* At the phone-width allocation measured by the browser, the fixed effort/
+   * context/queue facts consume the row exactly; compacting the row gap
+   * reserves the measured 1rem label floor without dropping any fact or
+   * creating a scrollable status row. The model trigger's own half of that
+   * compression - dropping its inline padding and keeping the value floor -
+   * lives in modelswitch.module.css behind the shrink prop, so the row never
+   * reaches into the trigger's Popover DOM. */
   .row {
     gap: var(--space-1);
   }
+}
 
-  .identity > span:first-child > :global(button) {
-    padding-inline: 0;
-  }
-
-  .identity > span:first-child > :global(button) > :global(span:first-child) {
-    min-width: 1rem;
-  }
-
-  .contextMeter {
-    display: none;
-  }
-
-  .contextPercent {
-    display: inline;
-  }
-
-  /* The two model triggers share this narrow identity run. Let the effort
-   * readout yield width too, while retaining its native select and chevron;
-   * otherwise the fixed effort width squeezes both model buttons below their
-   * icon/gap footprint and their content becomes horizontally scrollable. */
-  .effortTrigger {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
-
-  .effortValue {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .effortTrigger .effortChevron {
-    display: none;
+/* Above the phone floor the effort control keeps its fixed width: shrinking
+ * the wrapper lets .identity clip the select even though its unclipped rect
+ * still measures a full tap target. */
+@container (min-width: 400px) {
+  .identity > [data-effort-control] {
+    flex: none;
   }
 }
 
-/* Quiet effort trigger, matching ModelSwitch's own (modelswitch.module.css):
- * the current value IS the control. `position: relative` is the containing
- * block for the real <select> laid over it below. */
-.effortTrigger {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
+/* A one-line folded composer drops container containment on SessionChrome's
+ * .body at every folded width (sessionchrome.module.css), so short model names
+ * hug their real width and return free space to the input field, and the
+ * status queries above read the card itself. Pin the compact rung directly
+ * here so StatusRow stays compact instead of reading PromptCard's wider
+ * container. */
+:global([data-folded="true"]) .row {
+  flex-basis: auto;
+  min-width: 0;
   gap: var(--space-1);
-  padding: var(--space-1);
-  border-radius: var(--radius-pill);
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
-.effortTrigger:hover {
-  background: var(--hover-1);
+:global([data-folded="true"]) .workTime,
+:global([data-folded="true"]) .queueFull {
+  display: none;
 }
 
-/* The focus ring belongs to the trigger's visible face even though focus lands
- * on the transparent <select> inside it - :focus-within is what carries it
- * across. */
-.effortTrigger:focus-within {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
+:global([data-folded="true"]) .queueCompact {
+  display: inline;
 }
 
-.effortValue {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
-.effortChevron {
-  display: inline-flex;
-  align-items: center;
-  color: var(--ink-mid);
-}
-
-/* The effort trigger is the row's only control that the status line's own
- * compact rules can shrink below the app's tap floor. At phone and coarse
- * widths keep a full 44px target in both axes; the value stays centred in it. */
-@media (max-width: 899px), (any-pointer: coarse) {
-  .effortTrigger {
-    justify-content: center;
-    min-width: var(--tap-min);
-    min-height: var(--tap-min);
+/* The folded ladder's first sacrifice: below the one-line threshold the
+ * effort readout drops before the model label yields any width (Jesse's
+ * 2026-11-27 ruling: "start by dropping effort and then dropping model to
+ * stay 1 line"). The native select goes with its visible readout at rest.
+ * The range form is the exact complement of the folded row's historic 620px
+ * gate, with no dead window where neither side matches. */
+@container (width < 620px) {
+  :global([data-folded="true"]) .identity > [data-effort-control] {
+    display: none;
   }
-}
 
-/* A REAL native <select>, laid over its own readout at zero opacity: the row
- * gets a borderless value-as-control, and the control keeps every native
- * behavior a hand-built listbox would have thrown away - tab order, arrow keys,
- * type-ahead, and the platform's own dropdown. `opacity: 0` rather than
- * `visibility: hidden` or a clip rect: it must stay hittable and focusable,
- * which both of those would end. The readout beneath is aria-hidden, so this
- * element is also the row's single spoken source for the value. */
-.effortSelect {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  border: none;
-  background: transparent;
-  opacity: 0;
-  cursor: pointer;
-  font: inherit;
-  /* A real native select: it must not inherit the trigger's caption size,
-   * or iOS zooms into it on focus (--font-size-control is 16px on phones). */
-  font-size: var(--font-size-control);
+  /* Editor focus never resizes the composer (Composer.tsx's own ruling:
+   * focus alone keeps the resting row), so the writer cannot count on the
+   * expanded row to reach the effort picker. While the composer's editing
+   * anchor marks the editor engaged, return the readout in place - the
+   * picker stays operable until focus leaves the empty editor, and content
+   * alone stacks the card. */
+  :global([data-composer-editing]) :global([data-folded="true"]) .identity > [data-effort-control] {
+    display: inline-flex;
+  }
 }

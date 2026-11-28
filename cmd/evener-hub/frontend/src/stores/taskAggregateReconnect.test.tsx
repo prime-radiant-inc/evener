@@ -2,7 +2,7 @@ import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, screen } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
-import { TasksPanel } from "../panes/session/chrome/TasksPanel";
+import { TasksPanelBody } from "../panes/session/chrome/TasksPanel";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../threadTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import { resetThreadsStoreForTests, threadsStore, useThreadsStore } from "./threads";
@@ -27,7 +27,7 @@ function readResponse(ref: string, tasks: { total: number; done: number }): Thre
 
 function TaskBadgeFromStore({ ref }: { ref: string }) {
   const model = useThreadsStore((state) => state.threads.get(ref));
-  return model ? <TasksPanel sessionRef={ref} model={model} /> : null;
+  return model ? <TasksPanelBody sessionRef={ref} model={model} /> : null;
 }
 
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
@@ -42,6 +42,7 @@ beforeEach(() => {
 test("store reconnect preserves task aggregate and Tasks badge across notification and fresh thread/read", async () => {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
+  fake.on("evener/tasks/list", () => ({ data: [] }));
   let readCount = 0;
   fake.on("thread/read", (params) => {
     readCount += 1;
@@ -51,7 +52,7 @@ test("store reconnect preserves task aggregate and Tasks badge across notificati
 
   await threadsStore.getState().ensureThread("ref_tasks");
   render(<TaskBadgeFromStore ref="ref_tasks" />);
-  expect(screen.getByRole("button", { name: "1 of 2 tasks left" })).toBeTruthy();
+  expect((await screen.findByTestId("tasks-body-head")).textContent).toContain("1 of 2 tasks left");
 
   act(() => {
     fake.emitNotification({
@@ -60,7 +61,7 @@ test("store reconnect preserves task aggregate and Tasks badge across notificati
     });
   });
   expect(threadsStore.getState().threads.get("ref_tasks")?.tasks).toEqual({ total: 2, done: 2 });
-  expect(screen.getByRole("button", { name: "All 2 tasks done" })).toBeTruthy();
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("All 2 tasks done");
 
   await act(async () => {
     fake.emitStateChange("reconnecting");
@@ -74,5 +75,5 @@ test("store reconnect preserves task aggregate and Tasks badge across notificati
 
   expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
   expect(threadsStore.getState().threads.get("ref_tasks")?.tasks).toEqual({ total: 2, done: 2 });
-  expect(screen.getByRole("button", { name: "All 2 tasks done" })).toBeTruthy();
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("All 2 tasks done");
 });

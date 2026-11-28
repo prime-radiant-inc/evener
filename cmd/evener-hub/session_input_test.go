@@ -260,7 +260,7 @@ func TestManagerInputRealHubRuntimePersistsCallerNotTarget(t *testing.T) {
 	if !bytes.Equal(beforeChildWrite, afterChildWrite) {
 		t.Fatal("rejected descendant input altered the parent's durable mutations")
 	}
-	items := apptranscript.ProjectTurn("turn_1", 0, schema.Turn{Kind: schema.TurnUserInput, Actor: record.Actor}, apptranscript.NewToolCallRegistry(), nil, nil)
+	items, _ := apptranscript.ProjectTurnParts("turn_1", 0, schema.Turn{Kind: schema.TurnUserInput, Actor: record.Actor}, apptranscript.NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 || items[0].Actor == nil || items[0].Actor.ManagerRef != managerRef {
 		t.Fatalf("rendered transcript actor=%+v, want caller %q, not target %q", items, managerRef, workerRef)
 	}

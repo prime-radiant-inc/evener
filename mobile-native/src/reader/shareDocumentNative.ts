@@ -1,6 +1,7 @@
 // The real download and share sheet for shareDocument's seam. Kept apart so
 // the seam itself has no native imports and tests can load it.
-import { docDownloadURL } from "@evener/appwire-client/docContent";
+import { hostIdOf, LOCAL_HOST } from "@evener/appwire-client";
+import { docDownloadURL, docImageURL, isImagePath } from "@evener/appwire-client/docContent";
 import { Directory, File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import { docAuthHeaders } from "../nativeDocPort";
@@ -18,14 +19,11 @@ async function downloadForShare(target: DocumentShareTarget): Promise<string> {
 	const directory = new Directory(Paths.cache, SHARE_DIR);
 	directory.create({ intermediates: true, idempotent: true });
 	const destination = new File(directory, shareFileBaseName(target.sessionRef, target.namePath ?? target.path));
-	const file = await File.downloadFileAsync(
-		docDownloadURL(target.origin, target.sessionRef, target.path),
-		destination,
-		{
-			headers: docAuthHeaders(target.token),
-			idempotent: true,
-		},
-	);
+	const urlFor = hostIdOf(target.sessionRef) !== LOCAL_HOST && isImagePath(target.path) ? docImageURL : docDownloadURL;
+	const file = await File.downloadFileAsync(urlFor(target.origin, target.sessionRef, target.path), destination, {
+		headers: docAuthHeaders(target.token),
+		idempotent: true,
+	});
 	return file.uri;
 }
 

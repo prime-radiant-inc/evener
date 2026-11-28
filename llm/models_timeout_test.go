@@ -20,6 +20,19 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
+// The one shared listing budget must stay 8s for every provider: two stalled
+// endpoints then cost 16s of the hub's 30s launch-check child budget, so the
+// healthy providers after them still answer.
+func TestLiveModelListNonCopilotBudgetIsEightSeconds(t *testing.T) {
+	t.Parallel()
+	if llm.LiveModelListTimeout != 8*time.Second {
+		t.Fatalf("non-Copilot listing budget = %s, want the previous 8s budget", llm.LiveModelListTimeout)
+	}
+	if twoStalls := 2 * llm.LiveModelListTimeout; twoStalls >= 30*time.Second {
+		t.Fatalf("two stalled non-Copilot listings cost %s of the 30s launch-check child budget", twoStalls)
+	}
+}
+
 type modelListTransport func(*http.Request) (*http.Response, error)
 
 // A client-owned provider deadline must not become the protocol's caller deadline.

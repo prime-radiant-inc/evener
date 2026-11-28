@@ -11,7 +11,16 @@
 // item.raw only when its producer state is stable and materially improves the
 // display.
 
-import { clip, editDiffText, parseArgs, str, tailFold, tailSlice } from "@evener/appwire-client";
+import {
+  clip,
+  type EditOperation,
+  editBatchDiffText,
+  editOperationsOf,
+  filePathOf,
+  parseArgs,
+  tailFold,
+  tailSlice,
+} from "@evener/appwire-client";
 import { CodeBlock, DiffBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 
@@ -51,15 +60,18 @@ export function TailFoldedOutputBody({ item, live }: OutputBodyProps) {
   return <CodeBlock text={text} copyLabel="Copy output" />;
 }
 
-// EditFileBody synthesizes an edit's diff from its old_string/new_string
-// input args: the wire carries no diff of its own for edit_file or
+export function EditDiffBody({ path, ops }: { path: string; ops: readonly EditOperation[] }) {
+  return <DiffBlock unified={editBatchDiffText(path, ops)} />;
+}
+
+// EditFileBody synthesizes an edit's diff from its edits[] or legacy
+// old_string/new_string input args: the wire carries no diff of its own for edit_file or
 // memory_edit, both of which share this shape.
 export function EditFileBody({ item }: ToolRenderProps) {
   const args = parseArgs(item.argumentsJSON);
-  const path = str(args, "file_path") ?? str(args, "path") ?? "";
-  const oldString = str(args, "old_string") ?? "";
-  const newString = str(args, "new_string") ?? "";
-  return <DiffBlock unified={editDiffText(path, oldString, newString)} />;
+  const ops = editOperationsOf(args);
+  if (ops === null) return null;
+  return <EditDiffBody path={filePathOf(args) ?? ""} ops={ops} />;
 }
 
 // WriteFileBody renders a plain confirmation string ("wrote N bytes to X" —

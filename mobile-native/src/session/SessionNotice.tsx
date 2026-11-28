@@ -3,6 +3,7 @@
 // recovery-fenced session keeps its composer, because Send is how it resumes.
 // Plain text on the page with its one button beneath; no box.
 import { Pressable, Text, View } from "react-native";
+import { radius } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
 const COPY = {
@@ -63,7 +64,7 @@ export function SessionNotice({
 					minHeight: 44,
 					justifyContent: "center",
 					paddingHorizontal: 16,
-					borderRadius: 22,
+					borderRadius: radius.capsule,
 					backgroundColor: palette.accentFill,
 					opacity: off ? 0.5 : pressed ? 0.7 : 1,
 				})}

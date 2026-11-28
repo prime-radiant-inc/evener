@@ -1,6 +1,5 @@
-/* No padding/border of its own - Session.tsx now renders this inside
- * PaneScaffold's footer slot, which already frames the whole footer group
- * (composer + status row) with the pane's edge padding and top hairline. */
+/* No padding/border of its own - Session.tsx renders this inside
+ * PaneScaffold's footer slot, which supplies the pane's edge padding. */
 .composer {
   flex: 1 1 auto;
   min-height: 0;
@@ -8,12 +7,9 @@
   flex-direction: column;
   justify-content: flex-end;
   gap: var(--space-2);
-  /* The query container for the Send button's word collapse below (and any
-   * future pane-width response in this subtree): a docked pane squeezed to
-   * phone width inside a desktop viewport must compact exactly like the phone
-   * does - the status row's own compression already answers the same
-   * 559px boundary inside SessionChrome. inline-size containment is safe here:
-   * this box's width comes from PaneScaffold's footer slot, never its content. */
+  /* The query container for the shared Send/Stop word collapse
+   * (styles/sendbutton.module.css): a docked pane must compact like the phone,
+   * and this box's width comes from PaneScaffold, never its content. */
   container-type: inline-size;
 }
 
@@ -31,15 +27,40 @@
 }
 
 .leading {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  flex: 1 1 auto;
-  min-width: 0;
+  composes: cardLeading from "../../../styles/surface.module.css";
+  padding-inline-start: calc(var(--tap-min, var(--space-5)) + var(--space-1));
   /* The attach control and the chrome's compact rung cannot share one line
      with the verbs at the narrowest engaged panes; the chrome takes the next
      line and keeps the model picker at a readable width. */
   flex-wrap: wrap;
+}
+
+/* Attach is a fixed utility at the card's lower leading corner. Taking it out
+ * of the flex flow keeps it beside the editor without moving on expansion. */
+.attachSlot {
+  position: absolute;
+  inset-inline-start: var(--space-2);
+  inset-block-end: var(--space-2);
+}
+
+:where(:global([data-iphone-composer])) .attachSlot {
+  inset-block-end: var(--space-1);
+}
+
+@media (min-width: 440px) and (max-width: 500px) and (max-aspect-ratio: 3 / 4) {
+  .composer .attachSlot {
+    inset-block-end: 0;
+  }
+}
+
+.editorSlot {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.editorSlot[data-folded="true"] {
+  padding-inline-start: calc(var(--tap-min, var(--space-5)) + var(--space-1));
 }
 
 /* The session's own status (model · effort, context, menu) sits at the row's
@@ -55,29 +76,8 @@
   min-width: 0;
 }
 
-/* The phone's activity counts sit on a glance line below the composer card,
- * where the desktop status bar puts them: not a control in the writing row.
- * The line is the pane's bottom edge, and the chips are already the tap
- * floor, so it adds no height of its own. */
-.activityRow {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  min-height: var(--tap-min);
-  flex: none;
-}
-
 .attachments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-/* Same author-vs-UA cascade hole as promptcard's .card[hidden] (see that
- * file's comment): display:flex here outranks the UA [hidden] display:none,
- * so the askPending hide (Composer.tsx) must be re-asserted explicitly. */
-.attachments[hidden] {
-  display: none;
+  composes: attachmentStrip from "../../../styles/surface.module.css";
 }
 
 /* One box for a staged attachment in every state - see AttachmentTile.tsx's
@@ -86,11 +86,10 @@
  * children in a centred column both overflowed this box and clipped into a
  * visible seam across it (kata edhz, measured at y=78 inside an 80px tile). */
 .imageTile {
+  composes: frame from "../../../widgets/internal/lightbox.module.css";
   position: relative;
   width: 80px;
   height: 80px;
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
   overflow: hidden;
   background: var(--surface-inset);
   transition: border-color var(--motion-duration-hover) var(--motion-easing-standard);
@@ -115,16 +114,6 @@
   width: 100%;
   height: 100%;
   background: var(--surface-1);
-}
-
-.lightboxImage {
-  display: block;
-  max-width: 100%;
-  /* Dialog's size="large" already caps the panel at almost the full
-   * viewport; this leaves room for its header chrome, matching what
-   * imagegallery.module.css's own lightbox image does. */
-  max-height: 85vh;
-  margin: 0 auto;
 }
 
 .dimensionsOverlay {
@@ -185,9 +174,9 @@
     margin-right: calc(var(--tap-min) / 2);
   }
 
-  /* The open control is ZoomableMedia's button, the tile's only direct
-   * button child (the remove IconButton sits inside .removeSlot). */
-  .imageTile > :global(button),
+  /* The pending slot is the tile's own child, so the tile rounds and clips
+   * it here. The settled trigger rounds and clips itself through
+   * ZoomableMedia's radius prop; no selector reaches into the widget. */
   .imagePending {
     border-radius: inherit;
     overflow: hidden;
@@ -207,28 +196,37 @@
   }
 }
 
-/* Button intentionally owns no caller className API, so select the one
- * composer button that directly contains the Send-specific label class. The
- * shared phone Button rule already supplies this target's block-size floor;
- * this matching inline-size floor stays local to Send instead of widening
- * every xs Button consumer. */
-@media (max-width: 899px) {
-  .composer :global(button):has(> .submitLabel) {
+/* Button owns no caller className API, so select the one button that holds
+ * the Send word; only Send takes this floor, whose coarse arm covers the Duo
+ * past the phone breakpoint. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .composer :global(button):has(> .submitLabel),
+  .composer :global(button):has(> .stopLabelStack) {
     min-width: var(--tap-min);
   }
 }
 
-/* The Send button's word. It rides beside the paper-plane glyph while the
- * pane has room; at the compact boundary (the same 559px as the status
- * row's first container query) the word drops and the glyph carries the button - the button
- * keeps aria-label="Send", so the accessible name survives. Pane width, not
- * viewport width: a narrow docked pane on a desktop display needs the same
- * collapse the phone gets. The spawn pane's Start button plays the same
- * collapse (spawn.module.css's own .submitLabel). */
-@container (max-width: 559px) {
-  .submitLabel {
-    display: none;
-  }
+.submitLabel {
+  composes: sendWord from "../../../styles/sendbutton.module.css";
+}
+
+.stopLabelStack {
+  composes: sendWord from "../../../styles/sendbutton.module.css";
+}
+
+/* Send's hidden sizing label and Stop's word share one grid area, so the
+ * danger/primary wording cannot resize their shared slot. :where() keeps this
+ * at zero specificity so the shared 559px hide still wins here. */
+:where(.stopLabelStack) {
+  display: grid;
+}
+
+.stopLabelStack > span {
+  grid-area: 1 / 1;
+}
+
+.stopMeasure {
+  visibility: hidden;
 }
 
 /* The 466pt cover-width session dock keeps its existing controls but gives
@@ -240,27 +238,65 @@
   }
 }
 
-/* The folded row is content-sized, so this slot must report the chrome's
- * intrinsic width. The chrome's own contained body contributes none, and
- * contain-intrinsic-inline-size only applies under inline-size containment,
- * so the folded slot declares it here. The width is the 320px status rung plus
- * the session-menu trigger and the gap between them.
- *
- * A compact resting row is excluded: it holds the menu alone, so the folded
- * reservation's width is all gap there. WebKit sizes the control row from the
- * reservation rather than the compact basis, which collapsed the writing
- * field to a quarter of the card behind a dead 312px gap (iPhone Duo cover). */
+/* On the one-line folded card at every width, Attach already clears the left
+ * side of the editor via .editorSlot[data-folded="true"], so .leading drops
+ * its duplicate Attach inset and hugs the status chrome's actual content
+ * width (capped at the compact status rung plus menu) instead of reserving a
+ * fixed 356px box. SessionChrome and StatusRow pair with this to drop
+ * inline-size containment on .body while folded, returning all unused
+ * horizontal space to the field. */
 .leading[data-folded="true"]:not([data-compact="true"]) {
-  container-type: inline-size;
-  contain-intrinsic-inline-size: 356px;
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  padding-inline-start: 0;
+  max-width: 356px;
 }
 
-/* The phone's compact resting row keeps only the menu in this slot; it must
- * hug that menu so the field keeps the line and Send stays at the far edge.
- * The explicit basis also overrides the folded reservation's contribution in
- * engines that size the row from it. */
+.leading[data-folded="true"]:not([data-compact="true"]) > .chromeSlot {
+  flex: 0 1 auto;
+}
+
+/* The phone's compact resting row keeps only the menu in this slot. Attach is
+ * absolute over the field, so reserving its 48px here duplicated the folded
+ * editor's own Attach inset and squeezed the 320px writing surface to 82px
+ * (issue #7500). Hug the menu alone and let the field absorb the difference;
+ * the menu then starts where the expanded row's chrome reserve ends, so it
+ * stays put through expansion. */
 .leading[data-compact="true"] {
   flex: 0 0 var(--tap-min);
   min-width: var(--tap-min);
-  contain-intrinsic-inline-size: none;
+  padding-inline-start: 0;
+}
+
+/* At the narrowest card the row has 286px for three 44px targets and the
+ * writing surface. PromptCard's matching 340px rule yields the card padding,
+ * the field inset, and the control gap; here Attach moves to the card's edge
+ * and the folded editor uses the whole field. The 320px placeholder is
+ * 151.1px wide and the row's maximum writing surface is 154px, so every
+ * pixel the duplicate reservations spent has to come back. */
+@container (max-width: 340px) {
+  .attachSlot {
+    inset-inline-start: 0;
+  }
+  .editorSlot {
+    padding-inline: var(--space-2);
+  }
+  .editorSlot[data-folded="true"] {
+    /* Coarse pointers keep the 44px Attach hit box; a fine-pointer narrow
+     * pane has the 24px Attach and keeps the editor's 4px gap beside it. */
+    padding-inline: var(--tap-min, calc(var(--space-5) + var(--space-1))) 0;
+  }
+}
+
+/* The menu-only chrome otherwise takes its root's width:100%, wrapping below
+ * Attach and doubling the folded phone card's height. Its slot is one tap. */
+.menuSlot {
+  flex: 0 0 var(--tap-min);
+  min-width: var(--tap-min);
+}
+
+/* The leading row grows when a draft expands the card. Keep the menu beside
+ * the verbs, with the spare space on the Attach side. */
+.leading > .menuSlot {
+  margin-inline-start: auto;
 }

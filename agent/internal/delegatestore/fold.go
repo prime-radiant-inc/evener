@@ -116,10 +116,14 @@ func applyWithProjectionRevisions(state State, event Event) error {
 		}
 		before[id] = aggregate.publicProjection()
 		// Preserve the empty-slice representation Apply's transaction copy gives
-		// every aggregate it clones: pending_deliveries is omitempty, so nil and
-		// empty serialize identically, but they differ under reflect.DeepEqual.
+		// every aggregate it clones: pending_deliveries and pending_attention are
+		// omitempty, so nil and empty serialize identically, but they differ under
+		// reflect.DeepEqual.
 		if aggregate.PendingDeliveries == nil {
 			aggregate.PendingDeliveries = make([]PendingDelivery, 0)
+		}
+		if aggregate.PendingAttention == nil {
+			aggregate.PendingAttention = make([]PendingAttention, 0)
 		}
 	}
 	if err := applyEvent(state, event); err != nil {
@@ -286,6 +290,30 @@ var eventKindSpecs = []eventKindSpec{
 		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionHoldReleased, &src.AttentionHoldReleased) },
 		apply:   applyAttentionHoldReleased,
 	},
+	{
+		kind:    EventDelegateAttentionQueued,
+		present: func(event *Event) bool { return event.AttentionQueued != nil },
+		clone: func(dst, src *Event) {
+			clonePointee(&dst.AttentionQueued, &src.AttentionQueued)
+			if dst.AttentionQueued != nil && dst.AttentionQueued.ReleaseHoldsThrough != nil {
+				through := *dst.AttentionQueued.ReleaseHoldsThrough
+				dst.AttentionQueued.ReleaseHoldsThrough = &through
+			}
+		},
+		apply: applyAttentionQueued,
+	},
+	{
+		kind:    EventDelegateAttentionResolved,
+		present: func(event *Event) bool { return event.AttentionResolved != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionResolved, &src.AttentionResolved) },
+		apply:   applyAttentionResolved,
+	},
+	{
+		kind:    EventDelegateAttentionHeld,
+		present: func(event *Event) bool { return event.AttentionHeld != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionHeld, &src.AttentionHeld) },
+		apply:   applyAttentionHeld,
+	},
 }
 
 func eventKindSpecFor(kind EventKind) (eventKindSpec, bool) {
@@ -364,6 +392,16 @@ func applyRunStarted(state State, event Event) error {
 	// just ended never carry into the resumed run (the spec's per-generation
 	// discipline).
 	aggregate.LatestIntent = ""
+	if payload.Trigger != TriggerAttention {
+		// An explicit send is a newer event than any stop that quieted a row:
+		// its generation presents the delegate's pending attention, so every
+		// hold this delegate carried ends with the send.
+		releaseAttentionHolds(aggregate)
+	}
+	// The start itself settles the projection the queue derives: a generation
+	// that carries no rows presents what the transcript already resolved, so a
+	// stale boolean from a pre-queue journal cannot outlive its start.
+	recomputeNeedsAttention(state, event.DelegateID)
 	return nil
 }
 
@@ -418,7 +456,6 @@ func applyRunFinished(state State, event Event) error {
 		packet = aggregate.PreparedTerminal
 	}
 	if stopping {
-		aggregate.NeedsAttention = false
 		if payload.ObserverCallbackDelivered {
 			return fmt.Errorf("delegate %q stopped finish cannot report observer callback", event.DelegateID)
 		}
@@ -454,7 +491,6 @@ func applyRunFinished(state State, event Event) error {
 			aggregate.Phase = PhaseIdle
 		} else {
 			aggregate.Phase = PhaseClosed
-			aggregate.NeedsAttention = false
 		}
 	}
 	aggregate.CurrentRunOpen = false
@@ -463,6 +499,7 @@ func applyRunFinished(state State, event Event) error {
 	// frame field and the read field agree on a settled row.
 	aggregate.LatestIntent = ""
 	aggregate.LatestPacket = cloneTerminalPacket(packet)
+	recomputeNeedsAttention(state, event.DelegateID)
 	return nil
 }
 
@@ -482,9 +519,9 @@ func applyResumabilityClosed(state State, event Event) error {
 	if aggregate.Phase == PhaseIdle {
 		aggregate.Phase = PhaseClosed
 	}
-	for id, descendant := range state {
+	for id := range state {
 		if isDelegateOrDescendant(state, id, event.DelegateID) {
-			descendant.NeedsAttention = false
+			recomputeNeedsAttention(state, id)
 		}
 	}
 	return nil
@@ -512,11 +549,11 @@ func applySubtreeStopRequested(state State, event Event) error {
 		}
 		aggregate.PendingStopSeq = event.Seq
 		aggregate.PendingStopAt = event.TS
-		aggregate.NeedsAttention = false
 		if appwire.DelegateLifecycle().CanTransition(string(aggregate.Phase), string(PhaseStopping)) ||
 			!appwire.DelegateLifecycle().HasState(string(aggregate.Phase)) {
 			aggregate.Phase = PhaseStopping
 		}
+		recomputeNeedsAttention(state, id)
 	}
 	return nil
 }
@@ -562,12 +599,12 @@ func applySubtreeStopCompleted(state State, event Event) error {
 		aggregate.PendingStopSeq = 0
 		aggregate.PendingStopAt = time.Time{}
 		aggregate.PreparedTerminal = nil
-		aggregate.NeedsAttention = false
 		if aggregate.Resumable {
 			aggregate.Phase = PhaseIdle
 		} else {
 			aggregate.Phase = PhaseClosed
 		}
+		recomputeNeedsAttention(state, id)
 	}
 	return nil
 }
@@ -625,6 +662,185 @@ func applyAttentionHoldReleased(state State, event Event) error {
 		aggregate.AttentionHoldReleasedGeneration = payload.Generation
 	}
 	return nil
+}
+
+// applyAttentionQueued adds or updates one pending attention row. The row's
+// identity keys it: queuing an existing id marks it committed, but never
+// duplicates it. A committed row is a fresh wake, which is newer evidence than
+// every stop that quieted a row, so it clears the delegate's holds.
+func applyAttentionQueued(state State, event Event) error {
+	payload := event.AttentionQueued
+	if payload.AttentionID == "" {
+		return fmt.Errorf("delegate %q attention queue id is empty", event.DelegateID)
+	}
+	aggregate, err := requireAggregate(state, event.DelegateID)
+	if err != nil {
+		return err
+	}
+	if row := pendingAttentionRow(aggregate, payload.AttentionID); row != nil {
+		row.Committed = row.Committed || payload.Committed
+	} else {
+		aggregate.PendingAttention = append(aggregate.PendingAttention, PendingAttention{
+			AttentionID: payload.AttentionID,
+			Committed:   payload.Committed,
+		})
+	}
+	// A queued id is pending again, so the two sets stay disjoint even under an
+	// arbitrary replay (a resolve before its queue event, or a requeue after a
+	// resolution).
+	delete(aggregate.ResolvedAttention, payload.AttentionID)
+	if payload.Committed {
+		if payload.ReleaseHoldsThrough == nil {
+			releaseAttentionHolds(aggregate)
+		} else {
+			releaseAttentionHoldsThrough(aggregate, *payload.ReleaseHoldsThrough)
+		}
+	}
+	recomputeNeedsAttention(state, event.DelegateID)
+	return nil
+}
+
+// applyAttentionHeld stamps or releases the user-stop quiet on a delegate's
+// pending rows. A row outside the queue is a no-op: the stop raced a
+// resolution, and a hold on nothing must not resurrect it.
+func applyAttentionHeld(state State, event Event) error {
+	payload := event.AttentionHeld
+	aggregate, err := requireAggregate(state, event.DelegateID)
+	if err != nil {
+		return err
+	}
+	if payload.AttentionID == "" {
+		return fmt.Errorf("delegate %q attention hold id is empty", event.DelegateID)
+	}
+	if payload.Generation == 0 {
+		return fmt.Errorf("delegate %q attention hold names no generation", event.DelegateID)
+	}
+	if row := pendingAttentionRow(aggregate, payload.AttentionID); row != nil && row.HeldThrough < payload.Generation {
+		row.HeldThrough = payload.Generation
+	}
+	recomputeNeedsAttention(state, event.DelegateID)
+	return nil
+}
+
+// releaseAttentionHolds clears every hold on the delegate's queue.
+func releaseAttentionHolds(aggregate *Aggregate) {
+	for i := range aggregate.PendingAttention {
+		row := &aggregate.PendingAttention[i]
+		row.HeldThrough = 0
+	}
+}
+
+// releaseAttentionHoldsThrough clears the holds an older wake supersedes: a
+// row held at or below the claim-time settled generation. A newer stop's hold
+// stands, so a deferred delivery acknowledged after that stop cannot present
+// the row the stop withheld.
+func releaseAttentionHoldsThrough(aggregate *Aggregate, through uint64) {
+	for i := range aggregate.PendingAttention {
+		row := &aggregate.PendingAttention[i]
+		if row.HeldThrough != 0 && row.HeldThrough <= through {
+			row.HeldThrough = 0
+		}
+	}
+}
+
+// applyAttentionResolved removes one attention row by identity, whatever its
+// position in the queue. A resolution replayed after the row is gone is a
+// no-op: the durable transcript resolution and the queue removal can land in
+// separate batches, and replay must fold both the same way.
+func applyAttentionResolved(state State, event Event) error {
+	payload := event.AttentionResolved
+	if payload.AttentionID == "" {
+		return fmt.Errorf("delegate %q attention resolution id is empty", event.DelegateID)
+	}
+	if _, err := requireAggregate(state, event.DelegateID); err != nil {
+		return err
+	}
+	aggregate := state[event.DelegateID]
+	removePendingAttention(aggregate, payload.AttentionID)
+	if aggregate.ResolvedAttention == nil {
+		aggregate.ResolvedAttention = make(map[string]struct{})
+	}
+	aggregate.ResolvedAttention[payload.AttentionID] = struct{}{}
+	recomputeNeedsAttention(state, event.DelegateID)
+	return nil
+}
+
+// pendingAttentionRow returns the queued row with attentionID, or nil.
+func pendingAttentionRow(aggregate *Aggregate, attentionID string) *PendingAttention {
+	for i := range aggregate.PendingAttention {
+		if aggregate.PendingAttention[i].AttentionID == attentionID {
+			return &aggregate.PendingAttention[i]
+		}
+	}
+	return nil
+}
+
+// removePendingAttention drops attentionID's row in place, keeping the queue's
+// arrival order for every other row.
+func removePendingAttention(aggregate *Aggregate, attentionID string) {
+	kept := make([]PendingAttention, 0, len(aggregate.PendingAttention))
+	for _, row := range aggregate.PendingAttention {
+		if row.AttentionID == attentionID {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	aggregate.PendingAttention = kept
+}
+
+// recomputeNeedsAttention is the one projection of a delegate's pending
+// attention queue. Every arm that changes PendingAttention — the queue's own
+// events, the hold events and every lifecycle arm that ends eligibility —
+// calls it, so the exported NeedsAttention flag can never disagree with the
+// queue and the lifecycle state it is read with. Only an unheld row is
+// runnable work: a stop-held row stays queued for a later release but raises
+// no wake, so a delegate whose every row is quiet reads idle. Delegatestore
+// cannot see the parent chain of the whole tree from one aggregate, so the
+// walk lives here beside the flag it decides.
+func recomputeNeedsAttention(state State, delegateID string) {
+	aggregate := state[delegateID]
+	if aggregate == nil {
+		return
+	}
+	aggregate.NeedsAttention = hasUnheldPendingAttention(aggregate) && AttentionProjectionEligible(state, delegateID)
+}
+
+// hasUnheldPendingAttention reports whether aggregate holds a row an automatic
+// drive may select. A stop-held row is queued but quiet.
+func hasUnheldPendingAttention(aggregate *Aggregate) bool {
+	if aggregate == nil {
+		return false
+	}
+	for _, row := range aggregate.PendingAttention {
+		if row.HeldThrough == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// AttentionProjectionEligible reports whether a delegate can still present
+// pending attention: it is resumable, not stopping or closed, and no ancestor
+// is permanently closed. A transient ancestor stop covers a descendant through
+// its own PendingStopSeq instead.
+func AttentionProjectionEligible(state State, delegateID string) bool {
+	aggregate := state[delegateID]
+	if aggregate == nil || !aggregate.Resumable || aggregate.PendingStopSeq != 0 || aggregate.Phase == PhaseClosed || aggregate.Phase == PhaseStopping {
+		return false
+	}
+	seen := make(map[string]struct{})
+	for ancestorID := aggregate.Descriptor.ParentDelegateID; ancestorID != ""; {
+		if _, duplicate := seen[ancestorID]; duplicate {
+			return false
+		}
+		seen[ancestorID] = struct{}{}
+		ancestor := state[ancestorID]
+		if ancestor == nil || !ancestor.Resumable {
+			return false
+		}
+		ancestorID = ancestor.Descriptor.ParentDelegateID
+	}
+	return true
 }
 
 func applyUpdatePosted(state State, event Event) error {
@@ -1014,6 +1230,14 @@ func cloneAggregate(aggregate *Aggregate) *Aggregate {
 	for i := range aggregate.PendingDeliveries {
 		clone.PendingDeliveries[i] = aggregate.PendingDeliveries[i]
 		clone.PendingDeliveries[i].Packet = *cloneTerminalPacket(&aggregate.PendingDeliveries[i].Packet)
+	}
+	clone.PendingAttention = make([]PendingAttention, len(aggregate.PendingAttention))
+	copy(clone.PendingAttention, aggregate.PendingAttention)
+	if aggregate.ResolvedAttention != nil {
+		clone.ResolvedAttention = make(map[string]struct{}, len(aggregate.ResolvedAttention))
+		for id := range aggregate.ResolvedAttention {
+			clone.ResolvedAttention[id] = struct{}{}
+		}
 	}
 	return &clone
 }

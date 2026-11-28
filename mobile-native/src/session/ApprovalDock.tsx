@@ -7,7 +7,7 @@ import { SymbolView } from "expo-symbols";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { ApprovalControls } from "../approvalControls";
-import { fonts } from "../design/tokens";
+import { fonts, radius } from "../design/tokens";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { approvalCard } from "./askDockCopy";
 import { DockBody } from "./DockBody";
@@ -175,7 +175,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 							paddingHorizontal: 16,
 							alignItems: "center",
 							justifyContent: "center",
-							borderRadius: 12,
+							borderRadius: radius.capsule,
 							borderCurve: "continuous",
 							backgroundColor: palette.accentFill,
 							opacity: off ? 0.4 : pressed ? 0.6 : 1,

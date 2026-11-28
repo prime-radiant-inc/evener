@@ -1,3 +1,4 @@
+import "../panes/session/testing/editorGeometry";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,12 +17,12 @@ import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
-import { resetPrefsStoreForTests } from "../stores/prefs";
+import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { activityDetailsThread, answerActivityRead } from "../stores/sessionActivityTestUtils";
 import { resetSettingsHostForTests } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
-import { escapeRegExp, readModuleCss } from "../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../styles/cssBlock";
 import { AppShell } from "./AppShell";
 import {
   installLocation,
@@ -35,11 +36,16 @@ import {
 } from "./appShellTestUtils";
 import { paletteStore } from "./palette/paletteController";
 import { navigate } from "./routing";
-import { MOBILE_QUERY } from "./useIsMobile";
 import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 const paneFor = (ref: string) =>
   workspaceStore.getState().panes.find((p) => (p.params as { ref?: string }).ref === ref);
+
+test("marks the workspace root for native iPhone capability detection", () => {
+  const index = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../index.html"), "utf8");
+  const document = new DOMParser().parseFromString(index, "text/html");
+  expect(document.getElementById("root")?.hasAttribute("data-iphone-host-capabilities")).toBe(true);
+});
 
 // Await the welcome/session panes' lazy-loaded modules ONCE up front so
 // React.lazy resolves from a warm module cache - mirrors App.test.tsx's own
@@ -112,35 +118,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-// --- mobile full-bleed shell (2026-07-30-mobile-session-layout-design.md, decision 1) ---
-// jsdom performs no layout, so media-query rules are verified by reading the
-// CSS module's own source, the same way panescaffold.test.tsx verifies its
-// truncation rule.
-
 test("mobile: the shell content frame drops its padding so the workspace is full-bleed", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "AppShell.module.css"), "utf8");
-  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
-  expect(mobile).not.toBeNull();
-  const contentRule = mobile![1]!.match(/\.content \{([^}]*)\}/);
-  expect(contentRule).not.toBeNull();
-  expect(contentRule![1]).toContain("padding: 0");
-  // The flush sidebar is the rule at EVERY width now, so the mobile block
-  // carries no gap reset of its own; a gap: here would mean someone added
-  // one back on .content above, which the full-bleed contract test forbids.
-  expect(contentRule![1]).not.toContain("gap:");
+  const content = topRuleBlock(readModuleCss(import.meta.url, "AppShell.module.css"), ".content");
+  expect(content).toContain("padding: 0");
+  expect(content).not.toContain("gap:");
 });
 
 test("mobile: the shell spends --keyboard-inset as bottom padding so the composer clears the on-screen keyboard", () => {
-  // See useKeyboardInset.ts's header for the mechanism. Comments are stripped
-  // before matching (testing.md: a comment quoting the declaration must not
-  // satisfy the assertion).
   const css = readModuleCss(import.meta.url, "AppShell.module.css");
-  const mobile = css.match(new RegExp(`@media ${escapeRegExp(MOBILE_QUERY)} \\{([\\s\\S]*?)\\n\\}`));
-  expect(mobile).not.toBeNull();
-  const shellRule = mobile![1]!.match(/\.shell \{([\s\S]*?)\n[ ]{2}\}/);
-  expect(shellRule).not.toBeNull();
-  expect(shellRule![0]).toContain("padding-bottom: var(--keyboard-inset, 0px)");
+  const mobile = topRuleBlock(css, ".shell[data-mobile]");
+  expect(mobile).toContain("height: auto");
+  expect(mobile).toContain("padding-bottom: var(--keyboard-inset, 0px)");
 });
 
 test("mobile: the shared shell follows the visible viewport while retaining a vh fallback", () => {
@@ -190,7 +178,7 @@ test("AppShell mounts useKeyboardInset, so a visualViewport resize sets --keyboa
   vi.unstubAllGlobals();
 });
 
-test("ordinary mobile toolbar Back publishes only the Welcome transition", async () => {
+test("ordinary mobile Sessions opens the panel without publishing a route transition", async () => {
   vi.stubGlobal("innerWidth", 390);
   installMobileViewport();
   installLocationForRoute("local:origin");
@@ -219,20 +207,112 @@ test("ordinary mobile toolbar Back publishes only the Welcome transition", async
     events.push({ method: "replace", path: window.location.pathname });
   });
   try {
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    await waitFor(() => {
-      const workspace = workspaceStore.getState();
-      expect(workspace.panes.find((pane) => pane.id === workspace.focusedPaneId)?.type).toBe("welcome");
-      expect(window.location.pathname).toBe("/");
-      expect(document.querySelector("[data-stacked-pane-type]")?.getAttribute("data-stacked-pane-type")).toBe(
-        "welcome",
-      );
-    });
+    await user.click(screen.getByRole("button", { name: /^Sessions/ }));
+    await screen.findByRole("dialog", { name: "Sessions" });
+    expect(window.location.pathname).toBe("/s/local%3Aorigin");
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-    expect(events).toEqual([{ method: "push", path: "/" }]);
+    expect(events).toEqual([]);
   } finally {
     push.mockRestore();
     replace.mockRestore();
+  }
+});
+
+test("the iPhone Sessions drawer hands off hub selection and accepts a native route in place", async () => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const messages: unknown[] = [];
+  vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
+  const ref = "local:from-alert";
+  const sessionPath = `/s/${encodeURIComponent(ref)}`;
+  installLocationForRoute(ref);
+  window.history.replaceState({}, "", sessionPath);
+  const client = navClient();
+  client.on("thread/read", () => ({ thread: threadStartResponse(ref).thread }));
+  try {
+    render(<AppShell client={client} />);
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    expect(document.body.dataset.iphoneGlass).toBe("opaque");
+    const setGlass = (glass: boolean) =>
+      window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "material", glass }) }));
+    setGlass(true);
+    expect(document.body.dataset.iphoneGlass).toBe("regular");
+    setGlass(false);
+    expect(document.body.dataset.iphoneGlass).toBe("opaque");
+    await userEvent.type(composer, "z");
+    expect(messages).toContainEqual({ type: "editing", active: true });
+    await userEvent.click(screen.getByRole("button", { name: /^Sessions/ }));
+    expect(messages).toContainEqual({ type: "editing", active: false });
+    act(() => prefsStore.getState().setTheme("dark"));
+    expect(messages).toContainEqual({ type: "appearance", dark: true });
+    act(() => prefsStore.getState().setTheme("light"));
+    expect(messages.at(-1)).toEqual({ type: "appearance", dark: false });
+    await userEvent.click(await screen.findByRole("button", { name: "Hubs on this iPhone" }));
+    expect(messages).toContainEqual({ type: "ready", capabilities: ["incomingShare", "needsYouNavigation"] });
+    expect(messages).toContainEqual({ type: "hubMenu" });
+
+    const launcher = "/new?dir=%2Fwork&prompt=Review+the+changes";
+    const data = JSON.stringify({ type: "navigate", path: launcher });
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", { data, origin: "https://another.site" }));
+    });
+    expect(window.location.pathname).toBe(sessionPath);
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", { data }));
+    });
+    expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Prompt" }).textContent).toBe("Review the changes");
+    expect(window.location.search).toBe(launcher.slice("/new".length));
+    expect(messages).toContainEqual({ type: "route", path: launcher });
+    for (const host of ["desk", "studio"]) {
+      const path = `/settings/credentials?host=${host}`;
+      act(() => navigate(path));
+      await waitFor(() => expect(messages).toContainEqual({ type: "route", path }));
+    }
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", { data: JSON.stringify({ type: "navigate", path: sessionPath }) }),
+      );
+    });
+    await screen.findByRole("textbox", { name: "Message" });
+    expect(messages.filter((message) => (message as { type: string }).type === "route").at(-1)).toEqual({
+      type: "route",
+      path: sessionPath,
+    });
+  } finally {
+    agent.mockRestore();
+  }
+});
+
+test.each(["mount", "tap"])("an iPhone Needs you %s opens the palette and consumes the alert intent", async (entry) => {
+  vi.stubGlobal("innerWidth", 390);
+  installMobileViewport();
+  const agent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const messages: unknown[] = [];
+  vi.stubGlobal("ReactNativeWebView", { postMessage: (json: string) => messages.push(JSON.parse(json)) });
+  const path = "/?attention=needs-you";
+  const sessionPath = "/s/local%3Aorigin";
+  const client = navClient();
+  installLocationForRoute("local:origin");
+  client.on("thread/read", () => ({ thread: threadStartResponse("local:origin").thread }));
+  window.history.replaceState({}, "", entry === "mount" ? path : sessionPath);
+  try {
+    render(<AppShell client={client} />);
+    if (entry === "tap") {
+      await screen.findByRole("textbox", { name: "Message" });
+      messages.length = 0;
+      act(() =>
+        window.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "navigate", path }) })),
+      );
+    }
+    await screen.findByRole("combobox", { name: "Command palette" });
+    expect(window.location.search).toBe("");
+    const visiblePath = entry === "mount" ? "/" : sessionPath;
+    expect(window.location.pathname).toBe(visiblePath);
+    expect(messages).toContainEqual({ type: "route", path: visiblePath });
+  } finally {
+    agent.mockRestore();
   }
 });
 
@@ -458,8 +538,9 @@ test.each(["local:owner", "local:child"])(
       // the nested location reconciles without disturbing the placement.
       expect(window.location.pathname).toBe(`/s/${encodeURIComponent(title)}`);
     }
-    await user.click(screen.getByRole("button", { name: "Back" }));
-    expect(await screen.findByText("No session open")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /^Sessions/ }));
+    expect(screen.getByRole("dialog", { name: "Sessions" })).toBeTruthy();
+    expect(workspaceStore.getState().panes).toEqual(retained);
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
   },
 );
@@ -866,8 +947,22 @@ test("mobile: tapping the already-focused session closes the Sessions drawer", a
 // route's location read is still in flight. That read is a hub round trip;
 // tying both the placement and the dismissal to it makes a slow hub look like
 // a dead tap and leaves the drawer covering the result.
-test("mobile: a session tap places and dismisses before its location read answers", async () => {
+test("mobile: a session tap places and dismisses before its location read answers", async ({ onTestFinished }) => {
   installMobileViewport();
+  const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1 EvenerSessionHeader/1");
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(58);
+  onTestFinished(() => {
+    ua.mockRestore();
+    height.mockRestore();
+  });
+  let lastHeaderRef: string | undefined;
+  vi.stubGlobal("evenerEdgeToolbar", true);
+  vi.stubGlobal("ReactNativeWebView", {
+    postMessage: (json: string) => {
+      const message = JSON.parse(json);
+      if (message.type === "sessionHeader") lastHeaderRef = message.header?.sessionRef;
+    },
+  });
   const location = deferred<void>();
   const client = navClient();
   client.on("evener/navigation/read", (params: NavigationReadParams) => {
@@ -883,13 +978,17 @@ test("mobile: a session tap places and dismisses before its location read answer
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sessions" })).toBeNull());
   expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
 
+  const topBar = screen.getByTestId("topbar");
+  expect(within(topBar).queryAllByRole("button")).toHaveLength(0);
   await act(async () => {
     location.resolve(undefined);
     await location.promise;
   });
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:s1" });
+    expect(lastHeaderRef).toBe("local:s1");
   });
+  expect(within(topBar).queryAllByRole("button")).toHaveLength(0);
 });
 
 // --- kata 098n: a /thread share link is not rewritten into /s ------------

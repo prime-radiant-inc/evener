@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "vitest";
 import { displayTurnStatus } from "./itemFailure";
-import type { ThreadModel } from "./model";
+import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel } from "./model";
 import { applyNotification } from "./reducer";
 import { currentTranscriptState, decodeCurrentTranscriptState } from "./transcriptCache";
 import {
@@ -678,6 +678,35 @@ describe("the live overlay", () => {
     expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), itemKey("t1", 1), itemKey("t1", 2)]]]);
   });
 
+  test("quiet_yield with matching callId covers only its preview while keeping other round previews", () => {
+    const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
+    const makePreview = (callId: string): OverlayItem => ({
+      key: `preview:${callId}`,
+      kind: "preview",
+      turnId: "t1",
+      roundId: "r1",
+      streamId: "r1/0",
+      callId,
+      item: { type: "agentMessage", id: `preview:${callId}`, turnId: "t1", callId, text: `Preview ${callId}` },
+    });
+    let next = applyNotification(model, upserted(makePreview("call_q")), NOW);
+    next = applyNotification(next, upserted(makePreview("call_other")), NOW);
+    next = applyNotification(
+      next,
+      updated([
+        item("t1", 1, {
+          type: "systemMessage",
+          eventKind: "quiet_yield",
+          callId: "call_q",
+          text: "Ended turn quietly",
+        }),
+      ]),
+      NOW,
+    );
+    expect(Object.keys(next.overlay ?? {})).toEqual(["preview:call_other"]);
+    expect(shown(next)).toEqual([["t1", [itemKey("t1", 0), itemKey("t1", 1), "preview:call_other"]]]);
+  });
+
   test("a tool overlay is laid over its in-progress history item and dropped once it completes", () => {
     const historyKey = itemKey("t1", 1);
     const tool = item("t1", 1, { type: "commandExecution", callId: "call_1", status: "inProgress", text: undefined });
@@ -919,6 +948,140 @@ describe("the live overlay", () => {
     expect(shown(next)).toEqual([
       ["t1", [itemKey("t1", 0), itemKey("t1", 1), "notice:0", "notice:1"]],
       ["t2", [itemKey("t2", 2), "notice:2", itemKey("t2", 3)]],
+    ]);
+  });
+
+  test("a notice anchored before the loaded window waits for its page, then shows once at its turn", () => {
+    // The anchor follows entry 5 on t_old, but the model holds only a tail
+    // starting at entry 51. The first visible turn is no evidence of the
+    // notice's owner.
+    const notice = noticeOverlay(0, 5, "t_old");
+    const model = hydrate([turn("t_new", 51, [item("t_new", 50)])], { overlay: [notice] });
+    expect(shown(model)).toEqual([["t_new", [itemKey("t_new", 50)]]]);
+    expect(model.overlay?.[notice.key]).toBe(notice);
+
+    const placed = mergeOlderItemPage(model, page([turn("t_old", 5, [item("t_old", 0), item("t_old", 4)])]));
+    expect(placed.turns.flatMap((t) => t.items).filter((i) => i.id === notice.key)).toHaveLength(1);
+    expect(shown(placed)).toEqual([
+      ["t_old", [itemKey("t_old", 0), itemKey("t_old", 4), notice.key]],
+      ["t_new", [itemKey("t_new", 50)]],
+    ]);
+
+    // Later success on the newer turn neither moves nor copies the notice.
+    const later = applyNotification(placed, updated([item("t_new", 51, { text: "success" })]), NOW);
+    expect(shown(later)[0]).toEqual(shown(placed)[0]);
+    expect(later.turns.flatMap((t) => t.items).filter((i) => i.id === notice.key)).toHaveLength(1);
+  });
+
+  test("a notice before any recorded entry waits while the prelude is outside the window", () => {
+    const notice = noticeOverlay(0, 0, "");
+    const tail = hydrate([turn("t_new", 51, [item("t_new", 50)])], { overlay: [notice] });
+    expect(shown(tail)).toEqual([["t_new", [itemKey("t_new", 50)]]]);
+
+    const prelude = item("turn_system", 0, {
+      type: "systemMessage",
+      eventKind: "system_prompt",
+      position: { entry: 0, item: 0 },
+    });
+    const placed = mergeOlderItemPage(tail, page([turn("turn_system", 1, [prelude])]));
+    expect(shown(placed)).toEqual([
+      ["turn_system", [prelude.id, notice.key]],
+      ["t_new", [itemKey("t_new", 50)]],
+    ]);
+  });
+
+  test("a notice before any recorded entry shows at the start of the loaded transcript", () => {
+    const notice = noticeOverlay(0, 0, "");
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], { overlay: [notice] });
+    expect(shown(model)).toEqual([["t1", [notice.key, itemKey("t1", 0)]]]);
+  });
+
+  test("a startup notice waits when a truncated window omits the prelude behind it", () => {
+    // The warning was emitted before any recorded entry, so it anchors at
+    // entry 0. The read truncated the prelude behind a real older cursor, so
+    // the oldest loaded entry is 1. Entry 1 alone does not make this window
+    // the transcript's beginning.
+    const notice = noticeOverlay(0, 0, "");
+    const tail = hydrate([turn("t1", 1, [item("t1", 0)])], {
+      overlay: [notice],
+      olderCursor: "cursor_before_prelude",
+    });
+    expect(shown(tail)).toEqual([["t1", [itemKey("t1", 0)]]]);
+    expect(tail.overlay?.[notice.key]).toBe(notice);
+
+    const prelude = item("turn_system", 0, {
+      type: "systemMessage",
+      eventKind: "system_prompt",
+      position: { entry: 0, item: 0 },
+    });
+    const placed = mergeOlderItemPage(tail, page([turn("turn_system", 1, [prelude])]));
+    expect(shown(placed)).toEqual([
+      ["turn_system", [prelude.id, notice.key]],
+      ["t1", [itemKey("t1", 0)]],
+    ]);
+  });
+
+  test("a running turn's warning with no recorded predecessor stays on the running turn", () => {
+    const notice = noticeOverlay(0, 5, "t_running");
+    const model = hydrate([turn("t_old", 51, [item("t_old", 50)])], {
+      overlay: [notice],
+      activeTurnId: "t_running",
+    });
+    expect(shown(model)).toEqual([
+      ["t_old", [itemKey("t_old", 50)]],
+      ["t_running", [notice.key]],
+    ]);
+  });
+
+  test("a turnless historical notice is not adopted by an unrelated running turn", () => {
+    // The notice was emitted while no turn ran, so it names no turn. A newer
+    // unrelated turn running now is no evidence of where the notice belongs.
+    const notice = noticeOverlay(0, 5, "");
+    const model = hydrate([turn("t_new", 51, [item("t_new", 50)])], {
+      overlay: [notice],
+      activeTurnId: "t_running",
+    });
+    expect(shown(model)).toEqual([["t_new", [itemKey("t_new", 50)]]]);
+    expect(model.overlay?.[notice.key]).toBe(notice);
+
+    const placed = mergeOlderItemPage(model, page([turn("t_old", 5, [item("t_old", 0), item("t_old", 4)])]));
+    expect(shown(placed)).toEqual([
+      ["t_old", [itemKey("t_old", 0), itemKey("t_old", 4), notice.key]],
+      ["t_new", [itemKey("t_new", 50)]],
+    ]);
+    expect(
+      shown(placed)
+        .flatMap(([, ids]) => ids)
+        .filter((id) => id === notice.key),
+    ).toHaveLength(1);
+  });
+
+  test("a turnless prelude notice with an unrelated running turn stays at the transcript start", () => {
+    const notice = noticeOverlay(0, 0, "");
+    const model = hydrate([turn("t1", 1, [item("t1", 0)])], {
+      overlay: [notice],
+      activeTurnId: "t_running",
+    });
+    expect(shown(model)).toEqual([["t1", [notice.key, itemKey("t1", 0)]]]);
+  });
+
+  test("a turnless prelude notice with no loaded turns and an unrelated running turn stays at the start", () => {
+    const notice = noticeOverlay(0, 0, "");
+    const model = hydrate([], { overlay: [notice], activeTurnId: "t_running" });
+    expect(shown(model)).toEqual([[SYSTEM_PRELUDE_TURN_ID, [notice.key]]]);
+  });
+
+  test("a notice naming its own partially loaded turn stays in that turn", () => {
+    // The notice names t_old, whose loaded fragment starts after the anchor.
+    // An unrelated running turn changes nothing.
+    const notice = noticeOverlay(0, 5, "t_old");
+    const model = hydrate([turn("t_old", 51, [item("t_old", 50)]), turn("t_new", 60, [item("t_new", 59)])], {
+      overlay: [notice],
+      activeTurnId: "t_running",
+    });
+    expect(shown(model)).toEqual([
+      ["t_old", [notice.key, itemKey("t_old", 50)]],
+      ["t_new", [itemKey("t_new", 59)]],
     ]);
   });
 

@@ -184,6 +184,11 @@ func TestRestoredHistoryCopyKeepsOrdinarySteerThatImitatesTheNotePrefix(t *testi
 		Model:     "gpt-5.2",
 		Config:    (SessionConfig{}).toSnapshot(),
 	}
+	seedTestTranscript(t, stateDir, meta, schema.Turn{
+		Kind:             schema.TurnSteering,
+		ClientMutationID: "cm-steer",
+		Message:          llm.User(text),
+	})
 	restored, err := RestoreSessionFromMetaWithConfig(
 		c,
 		NewOpenAIProfile("gpt-5.2"),
@@ -191,11 +196,6 @@ func TestRestoredHistoryCopyKeepsOrdinarySteerThatImitatesTheNotePrefix(t *testi
 		meta,
 		RestoreSessionConfig{
 			StateDir: stateDir,
-			resumeHistory: []schema.Turn{{
-				Kind:             schema.TurnSteering,
-				ClientMutationID: "cm-steer",
-				Message:          llm.User(text),
-			}},
 		},
 	)
 	if err != nil {
@@ -423,6 +423,10 @@ func TestRestoredForkEscapesItsInheritedPrefixWithoutTheChildJournal(t *testing.
 		ParentSessionID: "01KPARENT0000000000000000",
 		DivergenceTurn:  2,
 	}
+	seedTestTranscript(t, stateDir, meta,
+		schema.Turn{Kind: schema.TurnSteering, ClientMutationID: inheritedID, Message: llm.User(inheritedText)},
+		schema.Turn{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(ownText)},
+	)
 	restored, err := RestoreSessionFromMetaWithConfig(
 		c,
 		NewOpenAIProfile("gpt-5.2"),
@@ -430,10 +434,6 @@ func TestRestoredForkEscapesItsInheritedPrefixWithoutTheChildJournal(t *testing.
 		meta,
 		RestoreSessionConfig{
 			StateDir: stateDir,
-			resumeHistory: []schema.Turn{
-				{Kind: schema.TurnSteering, ClientMutationID: inheritedID, Message: llm.User(inheritedText)},
-				{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(ownText)},
-			},
 		},
 	)
 	if err != nil {
@@ -498,7 +498,7 @@ func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
 		{Kind: schema.TurnCheckpoint, Message: llm.User("checkpoint the child wrote after inheriting")},
 		{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(ownText)},
 	} {
-		if err := tw.AppendDurable(turn); err != nil {
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
@@ -589,7 +589,7 @@ func TestRestoredForkBoundaryCountsRepairInsertions(t *testing.T) {
 		{Kind: schema.TurnSteering, ClientMutationID: collideID, Message: llm.User(inheritedText)},
 		{Kind: schema.TurnUserInput, Message: llm.User("child own turn")},
 	} {
-		if err := tw.AppendDurable(turn); err != nil {
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}

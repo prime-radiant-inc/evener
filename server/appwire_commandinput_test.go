@@ -11,7 +11,7 @@ import (
 
 func TestCommandInputWiringAndCapability(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_318")
+	setAppIdentity(t, srv, "local", "th_318")
 	input := []appwire.InputItem{{Type: "command", Name: "probe"}, {Type: "skill", Name: "probe"}}
 	var received []appwire.InputItem
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{

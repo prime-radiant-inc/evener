@@ -26,7 +26,6 @@ import {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { createRoot } from "react-dom/client";
-import { TaskActivityTime } from "../panes/session/chrome/activityTime";
 import { TasksPanelBody } from "../panes/session/chrome/TasksPanel";
 import { RepoLocation } from "../panes/session/composer/RepoLocation";
 import activityStyles from "../shell/activitybar/activitybar.module.css";
@@ -38,7 +37,7 @@ import railRowStyles from "../shell/rail/RailRow.module.css";
 import { RailRenderObserver } from "../shell/rail/railRenderObserver";
 import { StatusBar } from "../shell/statusbar/StatusBar";
 import { workspaceStore } from "../shell/workspace";
-import { prefsStore, type ThemePref } from "../stores/prefs";
+import { type FontSizePref, prefsStore, type ThemePref } from "../stores/prefs";
 import {
   activityContext,
   activityDelegate,
@@ -49,9 +48,8 @@ import {
   activityWatch,
 } from "../stores/sessionActivityTestUtils";
 import buttonStyles from "../widgets/button/button.module.css";
-import "../styles/tokens.css";
-import "../styles/global.css";
 import { PaneScaffold } from "../widgets/panescaffold";
+import { harnessRoot, mountHarness } from "./mountHarness";
 
 window.addEventListener("error", (event) => {
   const target = window as typeof window & { __shellGuardErrors?: string[] };
@@ -401,10 +399,6 @@ async function navigationRead(params: NavigationReadParams): Promise<NavigationR
   }
 }
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("shellguard.html is missing #root");
-const root = rootEl;
-
 // The guard's own URL (/shellguard.html) resolves to no pane, which would
 // render NotFound and no rail. Stand on the welcome route instead - no
 // navigation, just the pathname AppShell's router reads at first render.
@@ -414,15 +408,50 @@ async function boot(): Promise<void> {
   const { AppShell } = await import("../shell/AppShell");
   const fake = new FakeClient("ready");
   fake.on("evener/navigation/read", navigationRead);
-  fake.on("thread/read", ({ ref }) => {
+  fake.on("thread/read", ({ ref, includeTurns }) => {
+    const turns =
+      includeTurns && ref === "local:p0-s1"
+        ? Array.from({ length: 24 }, (_, i) => ({
+            id: `tablet-turn-${i + 1}`,
+            status: "completed" as const,
+            itemsView: "full" as const,
+            items: [
+              {
+                id: `tablet-item-${i + 1}`,
+                turnId: `tablet-turn-${i + 1}`,
+                type: "agentMessage" as const,
+                text: `Tablet reading paragraph ${i + 1}. Keep the conversation mounted and preserve its reading position while the board toggles or resizes.`,
+              },
+            ],
+          }))
+        : undefined;
     const response = activityDetailsThread(ref, {
       id: "sessionidentifier".repeat(12),
+      ...(ref === "local:p0-s1" ? { name: "Tablet session" } : {}),
       modelProvider: `anthropic/${"modelidentifier".repeat(12)}`,
       cwd: `/work/${"directorysegment".repeat(12)}/session`,
       projectPath: "/work",
       gitInfo: { branch: `feature/${"branchidentifier".repeat(12)}` },
+      ...(turns ? { turns } : {}),
     });
-    return { ...response, thread: { ...response.thread, tasks: { total: 100, done: 100 } } };
+    return {
+      ...response,
+      thread: {
+        ...response.thread,
+        tasks: { total: 100, done: 100 },
+        evener: {
+          ...response.thread.evener,
+          capabilities: { ...response.thread.evener.capabilities, sharedNotes: ref === "local:p0-s1" },
+          sessionUrls: [
+            {
+              id: "guard-web-link",
+              label: "Saved review gallery",
+              url: `https://artifacts.example.test/p/${"linksegment".repeat(8)}/final-suffix`,
+            },
+          ],
+        },
+      },
+    };
   });
   fake.on("thread/unsubscribe", () => ({}));
   fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
@@ -508,7 +537,8 @@ async function boot(): Promise<void> {
     },
     navigation: { version: 1, readVersions: [3], generationId: "shellguard-generation", sequence: 0 },
   });
-  createRoot(root).render(
+  mountHarness(
+    "shellguard",
     <RailRenderObserver value={(id) => renderCounts.set(id, (renderCounts.get(id) ?? 0) + 1)}>
       <AppShell client={fake} />
     </RailRenderObserver>,
@@ -611,13 +641,13 @@ function leakingElements(viewportBottom: number): { selector: string; top: numbe
 
 function measureShell() {
   const de = document.documentElement;
-  const shell = root.firstElementChild;
+  const shell = harnessRoot("shellguard").firstElementChild;
   // Select the rail directly, independently of header control placement.
-  // The marker, not the class: composing railStyles.rail joins two class
-  // names with a space, which a single-dot interpolation turns into a
-  // descendant selector that matches nothing (kata: the .docked refactor).
+  // Markers, not classes: composing a module class joins two class names
+  // with a space, which a single-dot interpolation turns into a descendant
+  // selector that matches nothing (kata: the .docked refactor).
   const rail = document.querySelector("[data-sidebar-rail]");
-  const newSession = rail === null ? null : rail.querySelector<HTMLButtonElement>(`.${railStyles.newSession} button`);
+  const newSession = rail === null ? null : rail.querySelector<HTMLButtonElement>('[data-testid="rail-new-session"]');
   const railBody =
     rail === null ? null : ([...rail.children].find((el) => getComputedStyle(el).overflowY !== "visible") ?? null);
   // The rail's full ancestor chain up to <body>, with the computed properties
@@ -711,8 +741,14 @@ function measureShell() {
       primary: newSession?.classList.contains(buttonStyles.primary ?? "") ?? false,
       secondary: newSession?.classList.contains(buttonStyles.secondary ?? "") ?? false,
     },
+    // Filled primaries outside the rail's floating New-session action: the
+    // list's own primary verb is rail chrome and does not count against the
+    // task surface's one-primary budget.
     primaryButtons: [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
-      (button) => button.getClientRects().length > 0 && button.classList.contains(buttonStyles.primary ?? ""),
+      (button) =>
+        button.getClientRects().length > 0 &&
+        button !== newSession &&
+        button.classList.contains(buttonStyles.primary ?? ""),
     ).length,
     leaks: leakingElements(window.innerHeight),
     chain,
@@ -838,7 +874,7 @@ const target = window as typeof window & {
   settledShell: Promise<unknown>;
   shellGuardCalls: () => string[] | undefined;
   activityRowFixture: (open: boolean) => void;
-  configureOverview: (theme: ThemePref) => void;
+  configureOverview: (theme: ThemePref, fontSize?: FontSizePref) => void;
   overviewGuardState: () => unknown;
   overviewPane: (action: "duplicate" | "other" | "focus" | "close", id?: string) => string | undefined;
   measureShell: typeof measureShell;
@@ -965,7 +1001,6 @@ target.activityRowFixture = (open) => {
         <TasksPanelBody
           sessionRef={ROW_PADDING_REF}
           model={hydrateThread(activityThread(ROW_PADDING_REF), ROW_PADDING_REF, 0)}
-          renderTime={(task) => <TaskActivityTime task={task} now={ROW_TIME_NOW} />}
         />
       </div>
     </div>,
@@ -976,8 +1011,8 @@ target.activityRowFixture = (open) => {
   };
 };
 target.shellGuardCalls = () => shellClient?.calls.map((call) => call.method);
-target.configureOverview = (theme) => {
-  prefsStore.getState().setFontSize("xl");
+target.configureOverview = (theme, fontSize = "xl") => {
+  prefsStore.getState().setFontSize(fontSize);
   prefsStore.getState().setTheme(theme);
 };
 target.overviewGuardState = () => ({
@@ -1131,7 +1166,10 @@ target.focusScrollFixture = {
     spacer.setAttribute("aria-hidden", "true");
     // Taller than the scrollport, so the trigger leaves through the BOTTOM
     // however near the top of the client area it started.
+    // flex: none keeps the spacer's height authoritative inside the column
+    // flex rail body so it cannot shrink toward zero.
     spacer.style.height = `${Math.ceil(body.clientHeight + 40)}px`;
+    spacer.style.flex = "none";
     body.prepend(spacer);
     const after = clientArea(body);
     return {
@@ -1211,7 +1249,7 @@ target.settledShell = (async () => {
           `pane activity controls: ${activityControlCount}, ` +
           `pane repository links: ${repositoryLinkCount}, ` +
           `body children: ${[...document.body.children].map((el) => el.tagName).join(",")}, ` +
-          `root children: ${root.children.length}, pathname: ${window.location.pathname})`,
+          `root children: ${harnessRoot("shellguard").children.length}, pathname: ${window.location.pathname})`,
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 50));

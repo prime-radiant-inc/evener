@@ -58,7 +58,7 @@ func taskFaultHealthyRoundTrip(t *testing.T, input TaskInput) {
 	if err != nil || len(added) != 1 {
 		t.Fatalf("healthy Append = %#v, %v", added, err)
 	}
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, Notes: "done"}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, Notes: "done"}}); err != nil {
 		t.Fatalf("healthy Update: %v", err)
 	}
 
@@ -110,7 +110,7 @@ func taskFaultLifecycleMatrix(t *testing.T, input TaskInput) {
 		t.Fatalf("Append valid dependency = %#v, %v", dependent, err)
 	}
 
-	if err := s.Update([]TaskUpdate{{
+	if _, err := s.Update([]TaskUpdate{{
 		ID:              added[0].ID,
 		Status:          TaskDone,
 		Notes:           "completed",
@@ -118,7 +118,7 @@ func taskFaultLifecycleMatrix(t *testing.T, input TaskInput) {
 	}}); err != nil {
 		t.Fatalf("Update completed task: %v", err)
 	}
-	if err := s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskCancelled}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[1].ID, Status: TaskCancelled}}); err != nil {
 		t.Fatalf("Update cancelled task: %v", err)
 	}
 	if total, done := s.Progress(); total != 4 || done != 1 {
@@ -134,33 +134,33 @@ func taskFaultLifecycleMatrix(t *testing.T, input TaskInput) {
 	if _, ok := s.CurrentInProgress(); ok {
 		t.Fatal("CurrentInProgress reported a task before one was started")
 	}
-	if err := s.Update([]TaskUpdate{{ID: added[2].ID, Status: TaskInProgress}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[2].ID, Status: TaskInProgress}}); err != nil {
 		t.Fatalf("Update in-progress task: %v", err)
 	}
 	if current, ok := s.CurrentInProgress(); !ok || current.ID != added[2].ID {
 		t.Fatalf("CurrentInProgress = %#v, %v", current, ok)
 	}
 
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: "invalid"}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: "invalid"}}); err == nil {
 		t.Fatal("Update accepted an invalid status")
 	}
-	if err := s.Update([]TaskUpdate{{ID: 999, Status: TaskOpen}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: 999, Status: TaskOpen}}); err == nil {
 		t.Fatal("Update accepted an unknown task ID")
 	}
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskOpen}, {ID: added[1].ID, Status: TaskInProgress}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskOpen}, {ID: added[1].ID, Status: TaskInProgress}}); err == nil {
 		t.Fatal("Update accepted multiple in-progress tasks")
 	}
 	self := []int{added[0].ID}
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, DependsOn: &self}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, DependsOn: &self}}); err == nil {
 		t.Fatal("Update accepted a self dependency")
 	}
 	unknown := []int{999}
-	if err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, DependsOn: &unknown}}); err == nil {
+	if _, err := s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone, DependsOn: &unknown}}); err == nil {
 		t.Fatal("Update accepted an unknown dependency")
 	}
 	toSecond := []int{added[1].ID}
 	toFirst := []int{added[0].ID}
-	if err := s.Update([]TaskUpdate{
+	if _, err := s.Update([]TaskUpdate{
 		{ID: added[0].ID, Status: TaskDone, DependsOn: &toSecond},
 		{ID: added[1].ID, Status: TaskCancelled, DependsOn: &toFirst},
 	}); err == nil {
@@ -206,7 +206,7 @@ func taskFaultLifecycleMatrix(t *testing.T, input TaskInput) {
 	}
 
 	deps := []int{added[0].ID}
-	if err := s.Update([]TaskUpdate{{ID: dependent[0].ID, Status: TaskOpen, DependsOn: &deps}}); err != nil {
+	if _, err := s.Update([]TaskUpdate{{ID: dependent[0].ID, Status: TaskOpen, DependsOn: &deps}}); err != nil {
 		t.Fatalf("Update dependencies: %v", err)
 	}
 
@@ -260,7 +260,7 @@ func taskFaultUpdateFailure(t *testing.T, input TaskInput, failAt int) {
 	}
 
 	s.SetFs(fault.FS(base, fault.FromBytes(taskFaultPlan(failAt))))
-	err = s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}})
+	_, err = s.Update([]TaskUpdate{{ID: added[0].ID, Status: TaskDone}})
 	if !errors.Is(err, fault.ErrInjected) {
 		t.Fatalf("Update fault %d = %v", failAt, err)
 	}

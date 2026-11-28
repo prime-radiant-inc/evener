@@ -80,6 +80,9 @@ func TestCovstmtRequiresAProfile(t *testing.T) {
 		t.Fatalf("covstmtRun with no profiles exits %d, want 2", code)
 	}
 	assertCovstmtUsageError(t, out.String(), errOut.String())
+	if !strings.Contains(errOut.String(), "usage: evener-dev dev covstmt") {
+		t.Fatalf("usage does not name the evener-dev dev dispatch: %q", errOut.String())
+	}
 }
 
 func writeCovFixture(t *testing.T, path, content string) {
@@ -298,6 +301,9 @@ func TestCovstmtRejectsUnionWithGaps(t *testing.T) {
 		t.Fatalf("covstmtRun --gaps --union exits %d, want 2", code)
 	}
 	assertCovstmtUsageError(t, out.String(), errOut.String())
+	if !strings.Contains(errOut.String(), "evener-dev dev covstmt:") {
+		t.Fatalf("diagnostic does not name the evener-dev dev dispatch: %q", errOut.String())
+	}
 }
 
 // TestCovstmtGapsNoMatch pins the no-match line: the pattern is repr'd, and the

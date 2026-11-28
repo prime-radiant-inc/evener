@@ -257,9 +257,10 @@ func New[T any](maxEntries int) *Cache[T] {
 // caller (context.WithoutCancel): canceling any ONE caller — owner or
 // waiter — must never poison the shared result for every OTHER, still-live
 // caller. Each caller still races its own ctx against that shared result
-// independently, so a caller
-// whose own context is canceled or expires still returns promptly with its
-// own ctx.Err(), regardless of what the shared call is doing.
+// independently, and a tie is settled toward cancellation: once a caller is
+// waiting on the shared flight, its own cancellation or expiry returns its
+// ctx.Err() even when the result is ready at the same moment, rather than
+// depending on which select case the runtime happens to pick.
 //
 // A waiter whose own stat saw a longer file than the flight it joined began
 // with does not accept that flight's older snapshot: after the shared call
@@ -325,6 +326,14 @@ func (c *Cache[T]) get(ctx context.Context, path string, extend Extend[T], retri
 		var zero Result[T]
 		return zero, ctx.Err()
 	case res := <-resultCh:
+		// Select picks at random when both cases are ready, so a caller
+		// canceled while its flight finished could land here with its
+		// result in hand. Settle that tie toward cancellation, as Get
+		// promises a canceled caller its own ctx.Err().
+		if err := ctx.Err(); err != nil {
+			var zero Result[T]
+			return zero, err
+		}
 		if res.Err != nil {
 			var zero Result[T]
 			return zero, res.Err

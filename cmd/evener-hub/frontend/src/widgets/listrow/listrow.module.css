@@ -4,21 +4,14 @@
  * second-to-last column and the trailing slot the last one, which holds with
  * or without a leading column. */
 .row {
-  box-sizing: border-box;
+  composes: rowReset from "../internal/rowChrome.module.css";
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   align-content: center;
   column-gap: var(--space-2);
-  width: 100%;
-  margin: 0;
-  border-radius: var(--radius-control);
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
   font-weight: var(--font-weight-regular);
   line-height: var(--line-height-ui);
-  text-align: start;
 }
 
 .withLeading {
@@ -29,6 +22,7 @@
 
 /* design-system.md §10's collection row. */
 .collection {
+  composes: tapFloor from "../../styles/tapfloor.module.css";
   row-gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--edge);
@@ -44,25 +38,9 @@
 /* --- interaction ---------------------------------------------------- */
 
 .interactive {
-  cursor: pointer;
-  transition:
-    background-color var(--motion-duration-hover) var(--motion-easing-standard),
-    transform var(--motion-duration-press) var(--motion-easing-standard);
-}
-
-/* The current row (aria-current) is the shared selectable-row lift
- * (widgets/internal/selectableRow.module.css); the hover wash stays off it so
- * the selected state holds under the pointer. */
-.interactive:hover:not(:disabled):not([aria-disabled="true"]):not([aria-current]) {
-  background: var(--hover-1);
-}
-
-/* The press, as Button's: transform only, and gentler than a button's
- * because a row is wide and the same ratio would move its ends much further. */
-@media (prefers-reduced-motion: no-preference) {
-  .interactive:active:not(:disabled):not([aria-disabled="true"]) {
-    transform: scale(var(--press-scale-row));
-  }
+  composes: tapFloor from "../../styles/tapfloor.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: rowInteractive from "../internal/rowChrome.module.css";
 }
 
 /* Inset: rows sit flush in scrolling lists that would clip an outside ring. */
@@ -107,12 +85,10 @@
 }
 
 .label {
+  composes: truncate from "../../styles/text.module.css";
   flex: 1 1 12ch;
   min-width: 0;
   max-width: max-content;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Chips wrap among themselves on a line too narrow for all of them, rather
@@ -126,15 +102,32 @@
   max-width: 100%;
 }
 
+/* The caller's trailing readout: right-aligned on the label line and free to
+ * shrink, so a long value never pushes the label or the chevron out of the
+ * row. Only its place is the slot's; typography, truncation and wrapping are
+ * the caller's node. */
+.value {
+  display: inline-flex;
+  /* A zero basis keeps a long value on the label line instead of forcing the
+   * wrapping heading to put it on its own line; the value then takes the
+   * line's spare width and shrinks or wraps inside it. */
+  flex: 1 1 0;
+  justify-content: flex-end;
+  align-items: center;
+  min-width: 0;
+  max-width: max-content;
+  /* Absorbs the width a short value does not need, keeping it at the row's
+   * trailing edge instead of just after the label. */
+  margin-left: auto;
+}
+
 .meta {
+  composes: truncate from "../../styles/text.module.css";
   grid-row: 2;
   grid-column: -3 / -2;
   min-width: 0;
-  overflow: hidden;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .collection .meta {
@@ -196,12 +189,3 @@
   gap: var(--space-2);
 }
 
-/* Tap floor (--tap-min, phones and coarse pointers). A read-only
- * collection row takes it too, so it stays the same row as its tappable
- * twin. */
-@media (max-width: 899px), (any-pointer: coarse) {
-  .collection,
-  .interactive {
-    min-height: var(--tap-min);
-  }
-}

@@ -1,5 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { FocusScope, LayerFocusScope } from "./index";
@@ -11,6 +12,15 @@ test("renders its children", () => {
     </FocusScope>,
   );
   expect(screen.getByRole("button", { name: "Go" })).toBeTruthy();
+});
+
+test("applies a caller className to the scope root", () => {
+  const { container } = render(
+    <FocusScope className="focus-body">
+      <button type="button">Go</button>
+    </FocusScope>,
+  );
+  expect(container.firstElementChild?.className).toBe("focus-body");
 });
 
 test("on mount, focuses the first tabbable descendant", () => {
@@ -95,6 +105,41 @@ test("restores focus to the previously focused element when the scope unmounts",
   expect(document.activeElement).toBe(trigger);
 });
 
+function AutoFocusInput() {
+  // biome-ignore lint/a11y/noAutofocus: exercises React commitMount autoFocus on a child inside FocusScope
+  return <input aria-label="Auto focused" autoFocus />;
+}
+
+function EffectFocusedChild() {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
+  return <input ref={ref} aria-label="Effect focused" />;
+}
+
+test.each(["autoFocus", "child-effect"] as const)(
+  "restores focus to the outside trigger when a child moves focus into the scope via %s",
+  (mode) => {
+    render(<button type="button">Outside trigger</button>);
+    const trigger = screen.getByRole("button", { name: "Outside trigger" });
+    trigger.focus();
+
+    const { unmount } = render(
+      <StrictMode>
+        <FocusScope>
+          <button type="button">First</button>
+          {mode === "autoFocus" ? <AutoFocusInput /> : <EffectFocusedChild />}
+        </FocusScope>
+      </StrictMode>,
+    );
+    expect(document.activeElement).toBe(screen.getByRole("textbox"));
+
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+  },
+);
+
 test("does not throw restoring focus when the previous element was removed from the DOM", () => {
   const { unmount: unmountTrigger } = render(<button type="button">Gone soon</button>);
   const trigger = screen.getByRole("button", { name: "Gone soon" });
@@ -141,18 +186,23 @@ test("trap=true: Tab from the last tabbable loops back to the first", async () =
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "First" }));
 });
 
-test("trap=true: Shift+Tab from the first loops back to the last", async () => {
+test("trap=true: Shift+Tab from the first control or its focused dialog loops back to the last", async () => {
   const user = userEvent.setup();
   render(
     <div>
       <FocusScope trap>
-        <button type="button">First</button>
-        <button type="button">Last</button>
+        <div role="dialog" aria-label="Sessions" tabIndex={-1}>
+          <button type="button">First</button>
+          <button type="button">Last</button>
+        </div>
       </FocusScope>
       <button type="button">Outside</button>
     </div>,
   );
   screen.getByRole("button", { name: "First" }).focus();
+  await user.tab({ shift: true });
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Last" }));
+  screen.getByRole("dialog").focus();
   await user.tab({ shift: true });
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Last" }));
 });
@@ -274,6 +324,32 @@ test("releasing restores focus to the opener while the scope is still mounted", 
 
   rerender(<Layer released opener />);
   expect(screen.getByRole("button", { name: "inside" })).toBeTruthy();
+  expect(document.activeElement).toBe(opener);
+});
+
+test("releasing a newly mounted LayerFocusScope whose child used autoFocus restores focus to the opener", () => {
+  render(<button type="button">opener</button>);
+  const opener = screen.getByRole("button", { name: "opener" });
+  act(() => opener.focus());
+
+  const { rerender } = render(
+    <div inert={false}>
+      <LayerFocusScope trap released={false}>
+        <button type="button">First</button>
+        <AutoFocusInput />
+      </LayerFocusScope>
+    </div>,
+  );
+  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Auto focused" }));
+
+  rerender(
+    <div inert>
+      <LayerFocusScope trap released>
+        <button type="button">First</button>
+        <AutoFocusInput />
+      </LayerFocusScope>
+    </div>,
+  );
   expect(document.activeElement).toBe(opener);
 });
 

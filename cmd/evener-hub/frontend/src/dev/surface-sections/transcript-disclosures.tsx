@@ -1,8 +1,8 @@
 import { type ItemModel, makeTranscriptDisplayConfig, type ThreadModel } from "@evener/appwire-client";
 import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
 import { makeTranscriptPreviewModel } from "../../transcriptDisplay/previewFixture";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 const TURN_ID = "disclosure-turn";
 const SESSION_REF = "dev-surface-transcript-disclosures";
@@ -28,14 +28,14 @@ function systemItem(id: string, eventKind: ItemModel["eventKind"], text: string)
 }
 
 /** Every transcript row that folds behind a disclosure, in one turn: the
- * intent group, a thought, a steering divider, both notification card heads,
- * a system-prompt scaffold, and a grouped run of system events. */
+ * intent group, settled and live thoughts, a steering divider, both
+ * notification card heads, a system-prompt scaffold, and grouped system events. */
 function makeDisclosureModel(): ThreadModel {
   const model = makeTranscriptPreviewModel();
   model.turns = [
     {
       id: TURN_ID,
-      status: "completed",
+      status: "inProgress",
       items: [
         item("disclosure-user", "userMessage", "Check every folded transcript row"),
         item("disclosure-read", "commandExecution", "", {
@@ -71,6 +71,11 @@ function makeDisclosureModel(): ThreadModel {
         item("disclosure-model", "systemMessage", "Model switched to the preview model."),
         item("disclosure-skill", "systemMessage", "Skill activated: transcript review."),
         item("disclosure-plugin", "systemMessage", "Plugin loaded: preview tools."),
+        // Only the turn's tail is the current live thought.
+        item("disclosure-reasoning-live", "reasoning", "", {
+          status: "inProgress",
+          reasoningSummaries: [["The live summary keeps the same rail and disclosure geometry while it streams."]],
+        }),
       ],
     },
   ];
@@ -83,7 +88,7 @@ function config(expandByDefault: boolean) {
       kind: "custom",
       toolIntent: true,
       toolCalls: false,
-      reasoning: true,
+      reasoning: false,
       expandByDefault,
       thinkingOpenByDefault: expandByDefault,
     },
@@ -97,29 +102,31 @@ function config(expandByDefault: boolean) {
  */
 export default function TranscriptDisclosuresSurfaceSection() {
   return (
-    <section data-testid="transcript-disclosures-surface">
-      <h2>Transcript disclosures</h2>
-      <p className={styles.note}>
-        Every transcript row that folds behind a disclosure: the intent group, a thought, a steering divider, job and
-        delegate notification cards, the system prompt, and a grouped run of system events. Collapsed first, then
-        expanded.
-      </p>
-      <ThemeFlip>
-        <TranscriptBody
-          model={makeDisclosureModel()}
-          config={config(false)}
-          surface="preview"
-          disclosureScope="preview:dev-transcript-disclosures-collapsed"
-          sessionRef={`${SESSION_REF}-collapsed`}
-        />
-        <TranscriptBody
-          model={makeDisclosureModel()}
-          config={config(true)}
-          surface="preview"
-          disclosureScope="preview:dev-transcript-disclosures-expanded"
-          sessionRef={`${SESSION_REF}-expanded`}
-        />
-      </ThemeFlip>
-    </section>
+    <GallerySection
+      title="Transcript disclosures"
+      testId="transcript-disclosures-surface"
+      note={
+        <p className={styles.note}>
+          Every transcript row that folds behind a disclosure: the intent group, settled and live thoughts, a steering
+          divider, job and delegate notification cards, the system prompt, and a grouped run of system events. Collapsed
+          first, then expanded.
+        </p>
+      }
+    >
+      <TranscriptBody
+        model={makeDisclosureModel()}
+        config={config(false)}
+        surface="preview"
+        disclosureScope="preview:dev-transcript-disclosures-collapsed"
+        sessionRef={`${SESSION_REF}-collapsed`}
+      />
+      <TranscriptBody
+        model={makeDisclosureModel()}
+        config={config(true)}
+        surface="preview"
+        disclosureScope="preview:dev-transcript-disclosures-expanded"
+        sessionRef={`${SESSION_REF}-expanded`}
+      />
+    </GallerySection>
   );
 }

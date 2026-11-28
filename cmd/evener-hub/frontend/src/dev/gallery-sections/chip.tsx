@@ -1,8 +1,8 @@
 import { Chip, type ChipTone } from "../../widgets/chip";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
-const TONES: ChipTone[] = ["neutral", "attention", "alive", "danger"];
+const TONES: ChipTone[] = ["neutral", "attention", "alive", "danger", "accent"];
 
 function ToneRow({ tone }: { tone: ChipTone }) {
   return (
@@ -18,13 +18,21 @@ function ToneRow({ tone }: { tone: ChipTone }) {
 
 export default function ChipGallerySection() {
   return (
-    <section>
-      <h2>Chip</h2>
-      <ThemeFlip>
-        {TONES.map((tone) => (
-          <ToneRow key={tone} tone={tone} />
-        ))}
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Chip">
+      {TONES.map((tone) => (
+        <ToneRow key={tone} tone={tone} />
+      ))}
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>mono</p>
+        <Chip mono>apply_patch</Chip>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>quiet</p>
+        <Chip variant="quiet">current</Chip>
+        <Chip variant="quiet" mono>
+          apply_patch
+        </Chip>
+      </div>
+    </GallerySection>
   );
 }

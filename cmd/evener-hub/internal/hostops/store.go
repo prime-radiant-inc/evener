@@ -105,22 +105,22 @@ type snapshot struct {
 	AllocatorHighWaterMark uint64   `json:"allocatorHighWaterMark"`
 	Records                []Record `json:"records"`
 	// CompactSeq is §4's durable compaction sequence: advanced by every
-	// compacting write, pinned by every minted cursor (§8). Optional on read
-	// for the same reason as Boundaries: the key arrived after the store
-	// shipped, so a file without it is a store no write has compacted.
+	// compacting write. Optional on read for the same reason as Boundaries: the
+	// key arrived after the store shipped, so a file without it is a store no
+	// write has compacted.
 	CompactSeq uint64 `json:"compactSeq"`
 	// Tombstones is §4's bounded dedup-tombstone set: one per compacted
 	// terminal record, the replay source that answers a lost-response retry
 	// with `compacted: true`. Optional on read for the same reason.
 	Tombstones []Tombstone `json:"tombstones"`
-	// CompactionMarks is the bounded compaction ledger §8's refusal reads
-	// independently of the dedup tombstones' own bound (see
-	// MaxCompactionMarks). Optional on read for the same reason.
+	// CompactionMarks is the bounded compaction ledger the custody quarantine's
+	// removal-evidence accounting reads independently of the dedup tombstones'
+	// own bound (see MaxCompactionMarks). Optional on read for the same reason.
 	CompactionMarks []CompactionMark `json:"compactionMarks"`
 	// CompactionFloor is the highest compacting-write sequence whose ledger
-	// marks were evicted by the bound: evidence for a cursor pinned below it is
-	// incomplete, and §8's check refuses coarsely rather than skipping. Zero
-	// means no mark has ever been dropped.
+	// marks were evicted by the bound: removal evidence below it is incomplete,
+	// and the custody completeness check refuses rather than declaring the ids
+	// lost. Zero means no mark has ever been dropped.
 	CompactionFloor uint64 `json:"compactionFloor"`
 	// RemovedHosts records, per name, when the registry's removal tombstone
 	// was seen and the pair it tombstoned: §4 compacts a removed host's history
@@ -195,7 +195,8 @@ type storeCell struct {
 	// has since disappeared.
 	hasFile atomic.Bool
 	// quarantineEpoch is the durable §4 counter this path's store was opened at:
-	// or validates (§8 compares it before any boundary comparison).
+	// the number of custody quarantines the sidecar records, advanced by exactly
+	// one per quarantined store.
 	quarantineEpoch uint64
 	// quarantine is the operator-visible health signal §4 requires a quarantined
 	// store to boot with, nil when no custody file exists for this path.
@@ -245,8 +246,10 @@ func StorePath(stateRoot string) string {
 	return filepath.Join(stateRoot, storeSubdir, storeFilename)
 }
 
-// Open loads the operation store at path. A missing file is an empty store: a
-// fresh install has nothing to recover, and Open writes nothing.
+// Open loads the operation store at path under policy; a zero RetentionPolicy
+// (or any non-positive knob) takes the documented defaults. A missing file is
+// an empty store: a fresh install has nothing to recover, and Open writes
+// nothing.
 //
 // A second Open of a path in the same process shares the first handle's store
 // mutex and state, so both handles serialize on one lock over one snapshot.
@@ -254,14 +257,7 @@ func StorePath(stateRoot string) string {
 // The call refuses a store file readable beyond its owner, and refuses a file
 // that is corrupt or schema-invalid (ErrStoreCorrupt) rather than serving a
 // half-understood store.
-func Open(path string) (*Store, error) {
-	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, RetentionPolicy{})
-}
-
-// OpenWithRetention opens the operation store at path under one §4
-// owner-knob set. Every knob's zero value takes its documented default; a
-// store opened with the zero policy behaves exactly like Open.
-func OpenWithRetention(path string, policy RetentionPolicy) (*Store, error) {
+func Open(path string, policy RetentionPolicy) (*Store, error) {
 	return openFSWithRetention(afero.NewOsFs(), path, storeFaults{}, policy)
 }
 
@@ -468,49 +464,6 @@ func (s *Store) Records() []Record {
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
 	return cloneSnapshot(s.cell.state).Records
-}
-
-// Create assigns the next controller-assigned id and persists a fresh `pending`
-// record for the operation, in one atomic write. Creation is not a terminal
-// transition, so it moves no sequence value.
-//
-// Dedup — recognizing a replay by (host, kind, client operation ID, pinned
-// generation, pinned incarnation id) — belongs to the pipeline slice that reads
-// the registry's current pair; this is only the durable append beneath it.
-func (s *Store) Create(newRecord NewRecord) (Record, error) {
-	if s == nil {
-		return Record{}, errors.New("hostops: store is not configured")
-	}
-	s.cell.mu.Lock()
-	defer s.cell.mu.Unlock()
-
-	now := nowUTC()
-	next := cloneSnapshot(s.cell.state)
-	next.AllocatorHighWaterMark++
-	record := Record{
-		ID:                formatAllocatorID(next.AllocatorHighWaterMark),
-		ClientOperationID: newRecord.ClientOperationID,
-		Host:              newRecord.Host,
-		Kind:              newRecord.Kind,
-		State:             StatePending,
-		Generation:        newRecord.Generation,
-		IncarnationID:     newRecord.IncarnationID,
-		CreatedAt:         now,
-		UpdatedAt:         now,
-	}
-	if err := validateRecord(record); err != nil {
-		return Record{}, err
-	}
-	next.Records = append(next.Records, record)
-	adopted, err := s.commitLocked(next)
-	if err != nil && !adopted {
-		// Nothing was written: the refusal reports no record.
-		return Record{}, err
-	}
-	// A write whose rename landed is the operation's durable record even when
-	// the directory sync behind it failed, so the caller gets the id it must
-	// reconcile with (see RenameLanded).
-	return cloneRecord(record), err
 }
 
 // Transition moves one stored record to state to and commits it atomically.

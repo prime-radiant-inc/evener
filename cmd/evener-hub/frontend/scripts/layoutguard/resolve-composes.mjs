@@ -19,13 +19,12 @@
 // mirrors the build exactly for the simple element/class inners this
 // codebase uses.
 //
-// This does one level of inlining: for every simple `.class { ... }` rule
-// across ALL provided sources, if its body contains
-// `composes: a[, b] from "...";`, splice in the (already-defined) target
-// rule's own declarations in place of the composes line. Good enough for the
-// flat one-file-deep composes chains this codebase actually uses (verified:
-// fieldTrigger.module.css itself composes nothing, so there is no chain to
-// walk recursively).
+// This inlines transitively: a consumer composing a class that itself
+// composes another receives the whole chain, the way postcss-modules merges
+// class lists recursively at build time (a single pass would leave the
+// second hop as a literal composes line the browser drops - the mobile
+// Overview sidebar lost its docked ground exactly that way). A cycle throws
+// instead of looping.
 //
 // The one refinement correctness demands: a composes target whose rule sits
 // INSIDE a media block must not have its body spliced ungated. The build step
@@ -49,6 +48,10 @@
 // whitespace then `{` rules those out.
 const RULE_RE = /(\.[A-Za-z0-9_-]+)[ \t]*\{([^}]*)\}/g;
 const COMPOSES_RE = /composes:\s*([^;]+?)\s+from\s+["'][^"']*["'];?/g;
+// The local form, `composes: name;` (or a comma list, which the local form
+// allows): no `from`, the target lives in the same module. Runs after the
+// `from` form so its pattern cannot swallow a `from "..."` clause.
+const COMPOSES_LOCAL_RE = /composes:\s*([^;]+?)\s*;/g;
 
 // `:global(<inner>)` unwrapping: the build strips the wrapper and keeps the
 // inner selector verbatim. The pattern below only matches paren-free inners;
@@ -57,6 +60,100 @@ const COMPOSES_RE = /composes:\s*([^;]+?)\s+from\s+["'][^"']*["'];?/g;
 // drop the selector and the guard pass without testing the rule.
 const GLOBAL_RE = /:global\(\s*([^()]+?)\s*\)/g;
 const LEFTOVER_GLOBAL_RE = /:global\(/;
+
+function prefixSelectorList(selector, prefix) {
+  let out = "";
+  let i = 0;
+  while (i < selector.length) {
+    const ch = selector[i];
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let end = i + 1;
+      while (end < selector.length) {
+        if (selector[end] === "\\") end += 2;
+        else if (selector[end] === quote) {
+          end += 1;
+          break;
+        } else end += 1;
+      }
+      out += selector.slice(i, end);
+      i = end;
+      continue;
+    }
+    // A :global(...) inner is not this module's class, so it must survive
+    // unwrapGlobal unprefixed. Skip the whole balanced call.
+    if (selector.startsWith(":global(", i)) {
+      let depth = 1;
+      let end = i + ":global(".length;
+      while (end < selector.length && depth > 0) {
+        if (selector[end] === "(") depth += 1;
+        else if (selector[end] === ")") depth -= 1;
+        end += 1;
+      }
+      out += selector.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (ch === "." && /[-_a-zA-Z]/.test(selector[i + 1] ?? "")) {
+      let end = i + 1;
+      while (end < selector.length && /[-_a-zA-Z0-9]/.test(selector[end])) end += 1;
+      out += `.${prefix}${selector.slice(i + 1, end)}`;
+      i = end;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * Prefixes every class selector in one module's stylesheet, plus every
+ * same-file `composes:` target, so two modules whose unhashed class names
+ * collide can be loaded into one layoutguard sheet. A `composes: x from "..."`
+ * target belongs to the other module and is left alone, and a `:global(...)`
+ * inner is left for unwrapGlobal.
+ */
+export function prefixClassSelectors(cssText, prefix) {
+  if (!/^[-_a-zA-Z][-_a-zA-Z0-9]*$/.test(prefix)) {
+    throw new Error(`prefixClassSelectors: ${JSON.stringify(prefix)} is not a CSS identifier prefix`);
+  }
+  const css = cssText.replace(/\/\*[\s\S]*?\*\//g, "");
+  let out = "";
+  let start = 0;
+  let quote = null;
+  for (let i = 0; i < css.length; i++) {
+    const ch = css[i];
+    if (quote !== null) {
+      if (ch === "\\") i += 1;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "{") {
+      const prelude = css.slice(start, i);
+      out += prelude.trimStart().startsWith("@") ? prelude : prefixSelectorList(prelude, prefix);
+      out += "{";
+      start = i + 1;
+    } else if (ch === "}") {
+      out += `${css.slice(start, i)}}`;
+      start = i + 1;
+    }
+  }
+  out += css.slice(start);
+  return out.replace(/composes:\s*([^;{}]+);/g, (whole, names) => {
+    if (/\bfrom\s+["']/.test(names)) return whole;
+    const list = names
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
+    if (list.length === 0) return whole;
+    return `composes: ${list.map((name) => `${prefix}${name}`).join(", ")};`;
+  });
+}
 
 export function unwrapGlobal(cssText) {
   const unwrapped = cssText.replace(GLOBAL_RE, (_whole, inner) => {
@@ -127,13 +224,28 @@ export function resolveComposes(cssTexts) {
     entries.push({ body: m[2], gate: gateAt(m.index) });
     bodies.set(m[1], entries);
   }
+  // A zero-specificity wrapper (`:where(.panel)`) names the same class a
+  // composes line targets; the wrapper only lowers its specificity, so a
+  // consumer must still receive its declarations. The wrapper itself stays in
+  // the sheet untouched.
+  const WHERE_RULE_RE = /:where\((\.[A-Za-z0-9_-]+)\)[ \t]*\{([^}]*)\}/g;
+  for (const m of combined.matchAll(WHERE_RULE_RE)) {
+    const entries = bodies.get(m[1]) ?? [];
+    entries.push({ body: m[2], gate: gateAt(m.index) });
+    bodies.set(m[1], entries);
+  }
 
   return combined.replace(RULE_RE, (_whole, selector, body, offset) => {
     const consumerGate = gateAt(offset);
     // Gated composed bodies for this consumer, grouped by gate so one
     // re-stated block carries all of that gate's declarations.
     const gatedByGate = new Map();
-    const resolvedBody = body.replace(COMPOSES_RE, (_composesDecl, names) => {
+    function inlineBody(source, chain) {
+      return source
+        .replace(COMPOSES_RE, (_composesDecl, names) => inlineOne(names, chain))
+        .replace(COMPOSES_LOCAL_RE, (_composesDecl, names) => inlineOne(names, chain));
+    }
+    function inlineOne(names, chain) {
       // One class per composes line. A comma list would not mean what it
       // looks like it means: the build (postcss-modules) binds `from` to the
       // last comma entry only, so every earlier name resolves as a LOCAL
@@ -146,8 +258,18 @@ export function resolveComposes(cssTexts) {
         );
       }
       const name = names.trim();
-      const entries = bodies.get(`.${name}`);
-      if (entries === undefined || entries.length === 0) {
+      if (chain.has(name)) {
+        throw new Error(`composes cycle: ${[...chain, name].join(" -> ")}`);
+      }
+      const nextChain = new Set(chain).add(name);
+      // A rule whose body composes this same class is a CONSUMER of it (the
+      // same-name import: popover's .panel composing floatingSurface's
+      // .panel), never a target of it - with every source's rules in one
+      // map, leaving such entries in would recurse the consumer into itself.
+      const entries = (bodies.get(`.${name}`) ?? []).filter(
+        (entry) => !new RegExp(`composes:\\s*${name}(?![A-Za-z0-9_-])`).test(entry.body),
+      );
+      if (entries.length === 0) {
         // A class that only appears inside compound or grouped selectors
         // (.a::after, .b > div > :last-child) styles pseudo-elements and
         // descendants, never the consumer's own box, so the consumer's
@@ -160,11 +282,12 @@ export function resolveComposes(cssTexts) {
       }
       const inlined = [];
       for (const entry of entries) {
+        const entryBody = inlineBody(entry.body, nextChain);
         if (entry.gate === null) {
-          inlined.push(entry.body);
+          inlined.push(entryBody);
         } else if (consumerGate === null) {
           const decls = gatedByGate.get(entry.gate) ?? [];
-          decls.push(entry.body.trim());
+          decls.push(entryBody.trim());
           gatedByGate.set(entry.gate, decls);
         } else {
           throw new Error(
@@ -173,7 +296,8 @@ export function resolveComposes(cssTexts) {
         }
       }
       return inlined.join("\n");
-    });
+    }
+    const resolvedBody = inlineBody(body, new Set());
 
     let out = `${selector} {${resolvedBody}}`;
     for (const [gate, decls] of gatedByGate) {

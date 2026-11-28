@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>joblog-long-command-starves-output layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; animation: none !important; box-sizing: border-box; }
+  html, body { margin: 0; overflow: hidden; background: var(--surface-0); font-family: var(--font-sans); color: var(--ink-hi); }
+  .fixtures { display: flex; gap: 24px; align-items: flex-start; }
+  .fixture { display: flex; flex-direction: column; gap: 4px; }
+  .fixtureLabel { height: 16px; color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); }
+  /* The workspace column the guard screenshotted: 402px wide and as tall as a
+     pane in a 1440x913 window is. */
+  .paneHost { width: 402px; height: 700px; }
+  /* Stands in for the header's Button widget; only the header's height matters
+     to the geometry under test. */
+  .actionStandIn { color: var(--ink-mid); font: var(--font-size-caption) var(--font-sans); }
+</style>
+</head>
+<body data-font-size="m">
+<main class="fixtures"></main>
+<script>
+// The 20 display lines ShellCommandBlock rendered for the background-jobs
+// guard's late job (832-character barrier script), recovered from the guard's
+// retained failure DOM. It wraps to roughly 39 visual lines in this column.
+const LONG_COMMAND_LINES = [
+  "printf 'BACKGROUND_LATE_INITIAL\\n'; ",
+  "deadline=${deadline:-$((SECONDS+300))}; ",
+  "while ! test -e \"/tmp/evener-sandbox-2127623390/tmp/evener-hub-test-2772884323/tmp/TestBackgroundJobsBrowser277770484/002/refresh\" && ",
+  "[ \"$SECONDS\" -lt \"$deadline\" ]; ",
+  "do sleep 0.02; ",
+  "done; ",
+  "printf 'BACKGROUND_LATE_REFRESH\\n'; ",
+  "deadline=${deadline:-$((SECONDS+300))}; ",
+  "while ! test -e \"/tmp/evener-sandbox-2127623390/tmp/evener-hub-test-2772884323/tmp/TestBackgroundJobsBrowser277770484/002/reconnect\" && ",
+  "[ \"$SECONDS\" -lt \"$deadline\" ]; ",
+  "do sleep 0.02; ",
+  "done; ",
+  "printf 'BACKGROUND_LATE_RECONNECT\\n'; ",
+  "deadline=${deadline:-$((SECONDS+300))}; ",
+  "while ! test -e \"/tmp/evener-sandbox-2127623390/tmp/evener-hub-test-2772884323/tmp/TestBackgroundJobsBrowser277770484/002/finish\" && ",
+  "[ \"$SECONDS\" -lt \"$deadline\" ]; ",
+  "do sleep 0.02; ",
+  "done; ",
+  "printf 'BACKGROUND_LATE_FINAL\\n'; ",
+  "exit 2",
+];
+// A command that fits the column: the bound must not clip it.
+const SHORT_COMMAND_LINES = ["printf 'BACKGROUND_LATE_INITIAL\\n'; ", "do sleep 0.02; ", "exit 0"];
+const OUTPUT_LINES = ["BACKGROUND_LATE_INITIAL", "BACKGROUND_LATE_REFRESH", "BACKGROUND_LATE_RECONNECT", "BACKGROUND_LATE_FINAL"];
+const COPY_SVG = '<svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true"><rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2" /><path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" stroke-width="1.2" /></svg>';
+
+// JobLog.tsx's real chain: PaneScaffold's pane/header/body, the transcript
+// column's .body holding the status note, the command block (CodeBlock's real
+// DOM) and the virtual list's scroll port, whose sizer is the 4 rows x 20px the
+// virtualizer measures. Class names are the real component classes; the three
+// leaf stylesheets are prefixed in case.json to keep unhashed names distinct,
+// and a list whose viewport collapses to 0px is exactly what a zero-height
+// `.joblog` gives the virtualizer.
+const HTML = `
+  <div class="fixtureLabel"></div>
+  <div class="paneHost">
+    <div class="pane" data-pane="">
+      <div class="header">
+        <h2 class="title">Background job 000</h2>
+        <div class="actions"><span class="actionStandIn">Refresh</span></div>
+      </div>
+      <div class="body" data-pane-body data-pane-scaffold="transcript:job:local:fixture">
+        <div class="log-body" data-log>
+          <span class="log-joblogNote">Command failed · Exit code 2</span>
+          <div class="log-joblogCommand" data-command>
+            <div class="code-root">
+              <div class="code-codeArea">
+                <div class="code-header" data-code-header><span class="code-language">shell</span><span class="code-copy"><button type="button" class="button quiet squareXs" data-copy-button aria-label="Copy command"><span class="icon">${COPY_SVG}</span></button></span></div>
+                <pre class="code-pre"><code class="code-code"></code></pre>
+              </div>
+            </div>
+          </div>
+          <!-- No whitespace inside the log host: .joblog is white-space: pre-wrap, so an
+               indented text node here renders as a real 20px line box and shifts every
+               measurement below it. React renders these three nodes with no text between. -->
+          <div class="log-joblog"><div class="list-root" data-list><div class="list-sizer" data-sizer style="height: 80px"></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+function buildFixture(kind, lines) {
+  const section = document.createElement("section");
+  section.className = "fixture";
+  section.insertAdjacentHTML("beforeend", HTML);
+  section.querySelector("[data-pane]").dataset.pane = kind;
+  section.querySelector(".fixtureLabel").textContent = `${kind} command`;
+  section.querySelector(".code-code").textContent = lines.join("\n");
+  const sizer = section.querySelector("[data-sizer]");
+  for (const [index, line] of OUTPUT_LINES.entries()) {
+    const row = document.createElement("div");
+    row.className = "list-item";
+    row.style.transform = `translateY(${index * 20}px)`;
+    row.textContent = line;
+    sizer.append(row);
+  }
+  return section;
+}
+
+const root = document.querySelector(".fixtures");
+root.append(buildFixture("long", LONG_COMMAND_LINES));
+root.append(buildFixture("short", SHORT_COMMAND_LINES));
+
+window.measure = () => {
+  const pane = (kind) => {
+    const scope = document.querySelector(`[data-pane="${kind}"]`);
+    const body = scope.querySelector("[data-pane-body]");
+    const log = scope.querySelector("[data-log]");
+    const command = scope.querySelector("[data-command]");
+    const pre = command.querySelector("pre");
+    const header = command.querySelector("[data-code-header]");
+    const copyButton = command.querySelector("[data-copy-button]");
+    const list = scope.querySelector("[data-list]");
+    const height = (element) => element.getBoundingClientRect().height;
+    const scroller = [command, pre].find((el) => {
+      const overflowY = getComputedStyle(el).overflowY;
+      return overflowY === "auto" || overflowY === "scroll";
+    }) ?? command;
+    const scrollTopBefore = scroller.scrollTop;
+    const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (maxScrollTop > 0) scroller.scrollTop = maxScrollTop;
+    const scrollTopAfter = scroller.scrollTop;
+    const rect = (element) => {
+      const { top, right, bottom, left } = element.getBoundingClientRect();
+      return { top, right, bottom, left };
+    };
+    const commandRect = rect(command);
+    const headerRect = rect(header);
+    const copyRect = rect(copyButton);
+    const copyCenterX = (copyRect.left + copyRect.right) / 2;
+    const copyCenterY = (copyRect.top + copyRect.bottom) / 2;
+    const hitAtCopyCenter = document.elementFromPoint(copyCenterX, copyCenterY);
+    const copyHitClickable = hitAtCopyCenter !== null && copyButton.contains(hitAtCopyCenter);
+    return {
+      bodyClientHeight: body.clientHeight,
+      bodyScrollHeight: body.scrollHeight,
+      logClientHeight: log.clientHeight,
+      commandClientHeight: command.clientHeight,
+      commandScrollHeight: scroller.scrollHeight,
+      commandOverflowY: getComputedStyle(scroller).overflowY,
+      commandScrollerClientHeight: scroller.clientHeight,
+      scrollTopBefore,
+      scrollTopAfter,
+      listClientHeight: list.clientHeight,
+      sizerHeight: height(scope.querySelector("[data-sizer]")),
+      commandRect,
+      headerRect,
+      copyRect,
+      copyHitClickable,
+    };
+  };
+  return {
+    viewportHeight: document.documentElement.clientHeight,
+    documentHeight: document.documentElement.scrollHeight,
+    long: pane("long"),
+    short: pane("short"),
+  };
+};
+</script>
+</body>
+</html>

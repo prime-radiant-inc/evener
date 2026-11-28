@@ -5,9 +5,11 @@
 // so tests can supply a fixture; it defaults to the real
 // stores/settingsOverview adapter.
 import { type SettingsOverviewStoreState, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Chip, EmptyState, InlineNotice, ListRow, OpenButton, Skeleton } from "../../../widgets";
+import surfaceStyles from "../../../styles/surface.module.css";
+import { Chip, EmptyState, ListRow, OpenButton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
+import { SectionGate } from "./sectionGate";
 import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
@@ -38,19 +40,18 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
 
   return (
     <div className={CLASS.root}>
-      <h2>Agents</h2>
+      <h2 className={`${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingPaneTitle}`}>
+        Agents
+      </h2>
       <p className={CLASS.help}>
         Agents discovered from plugin directories and built-in defaults. Open an agent file to view or edit its
         definition.
       </p>
-      {loading && <Skeleton />}
       {/* The overview store already holds the friendly text (it translates
           the error while it still has its type); converting again would turn
           a hub-reported explanation into the generic fallback. */}
-      {error && <InlineNotice tone="danger">Failed to load: {error}</InlineNotice>}
-      {!loading &&
-        !error &&
-        (agents.length === 0 ? (
+      <SectionGate loading={loading} error={error && `Failed to load: ${error}`}>
+        {agents.length === 0 ? (
           <EmptyState title="No agents discovered." />
         ) : (
           <ul className={CLASS.list}>
@@ -64,7 +65,8 @@ export function AgentsSection({ useOverview = useSettingsOverviewStore }: Agents
               </li>
             ))}
           </ul>
-        ))}
+        )}
+      </SectionGate>
     </div>
   );
 }

@@ -12,15 +12,13 @@
  * has one) right after it on the summary's line rather than inside the
  * summary - a summary is one control and must not nest another. */
 .collapsible {
+  composes: textSecondary from "../../../../styles/text.module.css";
   /* The expanded card below sizes itself against this row (100cqi). */
   container-type: inline-size;
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-1) 0;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
 }
 
 /* Content-sized, so the Open control after it follows the head text instead
@@ -63,20 +61,18 @@
  * whose whole error is its ending - mockups 24-delegate-complete §C): the
  * head grammar with no disclosure to open, so it renders as a static line. */
 .staticHead {
+  composes: textSecondary from "../../../../styles/text.module.css";
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   gap: var(--space-2);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
 }
 
-/* The static head's status glyph in the rail beside its first line - the same seat
- * ToolRow's .rowIcon gives the tool-kind glyph, composed from the shared
- * icon-rail seat (styles/railseat.module.css): .seat is the avatar-column
- * slot geometry (its margin-right net of this head's own --space-2 gap
- * seats the title at the content edge), .gutterPull the breakpoint-gated
+/* The notification head's status glyph in the rail beside its first line
+ * (both static heads and collapsible Disclosure summaries) - composed from
+ * the shared icon-rail seat (styles/railseat.module.css): .seat is the
+ * avatar-column slot geometry (its margin-right net of the row's --space-2
+ * gap seats the title at the content edge), .gutterPull the breakpoint-gated
  * reach into .runContent's reserved padding. Composed, not restated, so the
  * rail's glyphs cannot drift apart; railseat.contract.test.ts pins the
  * wiring. */
@@ -99,19 +95,10 @@
   opacity: 1;
 }
 
-/* The same glyph leading a Disclosure summary, which sits in the content
- * column like every Disclosure: the glyph's own box at the rail's ambient
- * 50%, and the failure variant at full strength. */
-.summaryIcon {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  opacity: 0.5;
-}
-
-.summaryIconError {
-  composes: summaryIcon;
-  opacity: 1;
+/* Inside a collapsible Disclosure summary, center the rail glyph on the
+ * summary line so phones' 44px tap floor does not pin it above the text. */
+.collapsible .statusIcon {
+  align-self: center;
 }
 
 .headingText {
@@ -237,13 +224,11 @@
  * A <pre> keeps the note on its own line; the UA's monospace default and
  * margin are overridden back to the excerpt block's sans treatment. */
 .prose {
+  composes: textSecondary from "../../../../styles/text.module.css";
   display: block;
   width: 100%;
   min-width: 0;
   margin: var(--space-2) 0 0;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-mid);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -268,14 +253,12 @@
 }
 
 .rawBody {
+  composes: verbatim from "../../../../styles/text.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: verbatimWrap from "../../../../styles/text.module.css";
   display: block;
   width: 100%;
   max-width: 100%;
   min-width: 0;
   margin: var(--space-1) 0 0;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-  white-space: pre-wrap;
-  word-break: break-word;
 }

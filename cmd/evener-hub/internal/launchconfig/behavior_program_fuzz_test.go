@@ -89,6 +89,7 @@ func FuzzLaunchConfigBehaviorProgram(f *testing.F) {
 		checkMerge_ModelFallbacksGlobalOnly,
 		checkMerge_EmptyModelFallbacksClearsInherited,
 		checkMerge_BlockedCredentialEnvKeys,
+		checkMerge_ProjectCopilotEndpointRefused,
 		checkMerge_CoversRemainingScalarAndListFields,
 		checkMerge_AppReplaySizeNonGlobalDiagnostic,
 		checkMerge_AppReplaySizeGlobalApplied,
@@ -110,6 +111,10 @@ func FuzzLaunchConfigBehaviorProgram(f *testing.F) {
 		checkSaveLayer_RenameError,
 		checkSaveMeta_RenameError,
 		checkLaunchConfigThreeStateRoundTrip,
+		checkMerge_ProjectProvidersConfigRefused,
+		checkToEnv_ProjectLayerCannotRedirectProviderResolution,
+		checkToEnv_ProjectMalformedEnvNameCannotAliasReservedNames,
+		checkToEnv_ProjectEndpointExclusionsKeepTrustedValues,
 	}
 	for i := range checks {
 		f.Add(uint8(i))

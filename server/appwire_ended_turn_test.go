@@ -14,7 +14,7 @@ import (
 // rule can tell whose end it was.
 func TestSettlementFrameNamesTheEndedTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_settlement")
+	setAppIdentity(t, srv, "local", "th_settlement")
 	srv.SetProcessingTurn("turn_settled")
 	cursor := srv.appNotifier.CurrentSequence()
 
@@ -36,7 +36,7 @@ func TestSettlementFrameNamesTheEndedTurn(t *testing.T) {
 // SESSION_END both arrive before SetProcessing(false), the production
 func TestSettlementFrameNamesTheEndedTurnWhenBothEndEventsDrainFirst(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_drained_ends")
+	setAppIdentity(t, srv, "local", "th_drained_ends")
 	// The execution runs the way production runs one: published
 	// server-side, and projected so the projector holds the turn.
 	srv.SetProcessingTurn("turn_drained")
@@ -77,7 +77,7 @@ func TestDelayedSessionEndDoesNotNameTheNewerTurn(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", "th_guard")
+			setAppIdentity(t, srv, "local", "th_guard")
 			srv.SetProcessingTurn("turn_new")
 			cursor := srv.appNotifier.CurrentSequence()
 
@@ -116,7 +116,7 @@ func TestDelayedSessionEndDoesNotNameTheNewerTurn(t *testing.T) {
 // as B's.
 func TestDeferredSettlementNamesTheTurnItCleared(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_deferred_settlement")
+	setAppIdentity(t, srv, "local", "th_deferred_settlement")
 	// Turn A runs: published, started, ended. The root discards the
 	// execution end's own status the way it discards every boundary.
 	srv.SetProcessingTurn("turn_a")
@@ -171,7 +171,7 @@ func TestDeferredActiveForecastNormalizesWhenProcessingEnds(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", "th_forecast")
+			setAppIdentity(t, srv, "local", "th_forecast")
 			srv.SetProcessingTurn("turn_a")
 			srv.RecordAppEvent(threadEvent("th_forecast", events.ExecutionStartedData{TurnID: "turn_a"}))
 
@@ -213,7 +213,7 @@ func TestDeferredActiveForecastNormalizesWhenProcessingEnds(t *testing.T) {
 // (SESSION_END without one, the root's own suppressed-end shape).
 func TestDescendantStopFramesNameTheEndedTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 
 	// The delegate's own projector path: an execution ends while running.
 	srv.RecordDescendantAppEvent("root", threadEvent("child-1", events.ExecutionStartedData{TurnID: "child-turn-1"}))

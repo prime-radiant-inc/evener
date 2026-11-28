@@ -25,15 +25,26 @@ export default function assert(m) {
     }
   }
 
+  // The close control is the shared IconButton under the dialog's seat: its
+  // real classes carry the phone tap floor, which a hand-rolled stand-in
+  // once shrank back to the desktop 24px square.
+  if (m.closeButton.height < 44 || m.closeButton.width < 44) {
+    failures.push(`close control is below the phone tap floor: ${JSON.stringify(m.closeButton)}`);
+  }
+
   // The browse pane keeps its primary controls in its box: the aside's
   // basis is bounded to a 40% share of the row, so the browse pane keeps
   // the majority however long the recents list is, and the path input
   // and the New folder affordance stay inside its box.
   if (!inside(m.pathInput, m.browse)) {
-    failures.push(`path input escapes the browse pane: input ${JSON.stringify(m.pathInput)} vs browse ${JSON.stringify(m.browse)}`);
+    failures.push(
+      `path input escapes the browse pane: input ${JSON.stringify(m.pathInput)} vs browse ${JSON.stringify(m.browse)}`,
+    );
   }
   if (!inside(m.newFolder, m.browse)) {
-    failures.push(`New folder button escapes the browse pane: ${JSON.stringify(m.newFolder)} vs browse ${JSON.stringify(m.browse)}`);
+    failures.push(
+      `New folder button escapes the browse pane: ${JSON.stringify(m.newFolder)} vs browse ${JSON.stringify(m.browse)}`,
+    );
   }
 
   // The invariant the fix's comment states: the browse pane keeps the
@@ -55,7 +66,9 @@ export default function assert(m) {
     failures.push(`pane overflow contract broken: recents ${m.recents.overflowY}, browse ${m.browse.overflowY}`);
   }
   if (m.recents.bottom > m.panel.bottom + 1 || m.browse.bottom > m.panel.bottom + 1) {
-    failures.push(`a pane escapes the panel: recents ${JSON.stringify(m.recents)} browse ${JSON.stringify(m.browse)} panel ${JSON.stringify(m.panel)}`);
+    failures.push(
+      `a pane escapes the panel: recents ${JSON.stringify(m.recents)} browse ${JSON.stringify(m.browse)} panel ${JSON.stringify(m.panel)}`,
+    );
   }
 
   return failures.length === 0

@@ -22,7 +22,7 @@ func TestColdAttentionAppendWhileSessionWriterOpenKeepsOneSequence(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := seed.Append(schema.NewTurn(schema.TurnSteering, llm.User("before resume"))); err != nil {
+	if _, err := seed.Record(schema.NewTurn(schema.TurnSteering, llm.User("before resume")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("seed append: %v", err)
 	}
 	if err := seed.Close(); err != nil {
@@ -41,11 +41,11 @@ func TestColdAttentionAppendWhileSessionWriterOpenKeepsOneSequence(t *testing.T)
 			t.Fatalf("cold append %s = (%v, %v), want (true, nil)", attentionID, appended, err)
 		}
 	}
-	if err := sessionWriter.AppendDurable(schema.NewTurn(schema.TurnSteering, llm.User("session durable"))); err != nil {
-		t.Fatalf("session AppendDurable: %v", err)
+	if _, err := sessionWriter.Record(schema.NewTurn(schema.TurnSteering, llm.User("session durable")), transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
+		t.Fatalf("session Record(DoorDurable): %v", err)
 	}
-	if err := sessionWriter.Append(schema.NewTurn(schema.TurnSteering, llm.User("session buffered"))); err != nil {
-		t.Fatalf("session Append: %v", err)
+	if _, err := sessionWriter.Record(schema.NewTurn(schema.TurnSteering, llm.User("session buffered")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+		t.Fatalf("session Record(DoorBuffered): %v", err)
 	}
 
 	entries := readAttentionTranscriptEntries(t, path)

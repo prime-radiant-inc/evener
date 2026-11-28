@@ -13,7 +13,7 @@ import { currentSessionRef, presentedPanes, workspaceStore } from "../workspace"
 
 export const ACTIVITY_VIEW_STORAGE_KEY = "evener.activity-sidebar.v1";
 export const ACTIVITY_VIEW_LIMIT = 100;
-const TABS: readonly ActivityTab[] = ["agents", "jobs", "watches", "tasks", "about"];
+const TABS: readonly ActivityTab[] = ["about", "links", "agents", "jobs", "watches", "tasks"];
 let hydrated = false;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 const SAVE_DELAY_MS = 400;
@@ -154,7 +154,7 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
   }
   return {
     open: false,
-    tab: "agents",
+    tab: "about",
     ref: null,
     explicitScopeRef: null,
     views: new Map(),
@@ -225,9 +225,11 @@ export const activitySidebarStore = createStore<ActivitySidebarState>()((set, ge
       if (ref === null) return set({ ref });
       const views = hydrated ? state.views : readViews();
       hydrated = true;
-      // A fresh child keeps the ongoing inspection open on its current kind;
-      // a visited session restores its own category and explicit close choice.
-      const view = views.get(ref) ?? { open: state.open, tab: state.tab, categories: {} };
+      // A fresh scope inherits the current tab only while an inspection is
+      // already open (such as drilling into a child); a newly inspected
+      // session after dismissal starts on About. A visited session restores
+      // its own category and explicit close choice.
+      const view = views.get(ref) ?? { open: state.open, tab: state.open ? state.tab : "about", categories: {} };
       set({ ref, open: view.open, tab: view.tab, views: rememberView(views, ref, view) });
       if (view.open && !state.open) captureActivitySidebarOpener();
     },
@@ -362,5 +364,5 @@ export function resetActivitySidebarStoreForTests({ preserveStorage = false } = 
   clearTimeout(saveTimer);
   saveTimer = undefined;
   hydrated = false;
-  activitySidebarStore.setState({ open: false, tab: "agents", ref: null, explicitScopeRef: null, views: new Map() });
+  activitySidebarStore.setState({ open: false, tab: "about", ref: null, explicitScopeRef: null, views: new Map() });
 }

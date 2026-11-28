@@ -52,7 +52,7 @@ import {
 } from "./scrollMetrics";
 import { failedTurnCount, isAttentionWorthy, isFailedTurn, totalItemCount } from "./scrollPredicates";
 import { type CapturedTranscriptView, retainTranscriptView } from "./transcriptViewRegistry";
-import { useReaderGestures } from "./useReaderGestures";
+import { readerScrollInput, useReaderGestures } from "./useReaderGestures";
 import {
   captureTopAnchor,
   type PendingViewAnchor,
@@ -861,6 +861,7 @@ export function useTranscriptScroll({
     if (!el) return;
 
     if (!initializedRef.current) {
+      readerScrollInput.set(el, "opening");
       // Opening a session always lands at the end (kata cmjb, Jesse's call):
       // the latest content is what a reader clicks in for. This deliberately
       // replaced the earlier per-ref restore of a stored scroll offset — the
@@ -1026,6 +1027,7 @@ export function useTranscriptScroll({
           wasAtBottomRef.current = false;
         }
         if (!gesture?.admitted) {
+          readerScrollInput.delete(el);
           pendingViewAnchorRef.current = null;
           readerCallbacksRef.current.onReaderIntent?.();
         }
@@ -1085,6 +1087,19 @@ export function useTranscriptScroll({
       // it to its own end for a frame. That is not the reader arriving at the
       // end: the landing says where they are once it settles.
       const arrived = atBottom && !heldRef.current && pendingViewAnchorRef.current?.openingRow === undefined;
+      // After the measured opening lands at the end, a native scrollbar can
+      // take over without producing a touch, wheel or pointer event.
+      if (
+        readerScrollInput.get(el) === "opening" &&
+        arrived &&
+        m.scrollTop > 0 &&
+        layoutCurrent &&
+        !openingPendingRef.current &&
+        !pendingInitialEndRef.current &&
+        !pendingViewAnchorRef.current
+      ) {
+        readerScrollInput.set(el, "followingEnd");
+      }
       wasAtBottomRef.current =
         preserveEndFollow || (arrived && (wasFollowingBefore || jumpLanded || (layoutCurrent && !collapsedToFit)));
       // Only a real arrival (not a one-frame clamp) establishes the intent; a

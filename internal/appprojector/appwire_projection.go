@@ -77,6 +77,13 @@ func (p *AppEventProjector) TaskPublicationRevision() uint64 {
 	return p.taskPublicationRevision
 }
 
+// RunningTurnID returns the execution whose start its matching end has not
+// settled. An end projected before that execution's own end must know it
+// would be settling a turn it does not own.
+func (p *AppEventProjector) RunningTurnID() string {
+	return p.runningTurnID
+}
+
 func (p *AppEventProjector) observeTaskPublication(epoch, revision uint64) {
 	if epoch > p.taskPublicationEpoch || (epoch == p.taskPublicationEpoch && revision > p.taskPublicationRevision) {
 		p.taskPublicationEpoch = epoch
@@ -150,16 +157,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.runningTurnID = ""
 		p.endedTurnID = ended
 		return []AppNotification{p.threadStatusEnded(appwire.ThreadStatusIdle, ended)}
-	case events.EventStatusSettled:
-		// A resting session's state moved outside any turn (a needs_response
-		// rest arming awaiting after its quiet period). Only a resting state
-		// settles this way; the bridge ignores anything else, and so does
-		// this.
-		state := eventData[events.StatusSettledData](event.Data).State
-		if state != appwire.ThreadStatusAwaiting && state != appwire.ThreadStatusIdle {
-			return nil
-		}
-		return []AppNotification{p.threadStatus(state)}
 	case events.EventGoalUpdated:
 		data := eventData[events.GoalUpdatedData](event.Data)
 		var state *appwire.GoalState
@@ -307,6 +304,25 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Ref:                    p.ref,
 			ModelProvider:          data.NewProvider,
 			Model:                  data.NewModel,
+			ReasoningEffortLevels:  data.ReasoningEffortLevels,
+			SupportsReasoning:      data.SupportsReasoning,
+			DefaultReasoningEffort: data.DefaultReasoningEffort,
+			ContextUsed:            data.ContextUsed,
+			ContextWindow:          data.ContextWindow,
+			ContextPressure:        data.ContextPressure,
+			ContextAssumed:         data.ContextAssumed,
+			CompactionThreshold:    data.CompactionThreshold,
+		})}
+	case events.EventNextModelChanged:
+		// An accepted pick folds into the same frame a committed switch does:
+		// the client reducer cannot tell them apart, so the composer's label
+		// moves at pick time exactly as it moves at the boundary.
+		data := eventData[events.NextModelChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadModelChanged, appwire.ThreadModelChangedParams{
+			ThreadID:               p.threadID,
+			Ref:                    p.ref,
+			ModelProvider:          data.Provider,
+			Model:                  data.Model,
 			ReasoningEffortLevels:  data.ReasoningEffortLevels,
 			SupportsReasoning:      data.SupportsReasoning,
 			DefaultReasoningEffort: data.DefaultReasoningEffort,

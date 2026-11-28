@@ -90,8 +90,8 @@ func TestWriter_FailedWriteConsumesSeqButNotOrdinal(t *testing.T) {
 	defer w.Close()
 
 	// Write one successful entry (seq 0).
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
-		t.Fatalf("Append 0: %v", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record 0: %v", err)
 	}
 
 	// Close the underlying file to force the next write to fail.
@@ -99,10 +99,10 @@ func TestWriter_FailedWriteConsumesSeqButNotOrdinal(t *testing.T) {
 	w.file.Close()
 	w.mu.Unlock()
 
-	// This Append should fail (file is closed).
-	err = w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("should fail")))
+	// This Record should fail (file is closed).
+	_, err = w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("should fail")), RecordOptions{Door: DoorBuffered})
 	if err == nil {
-		t.Fatal("expected error from Append on closed file")
+		t.Fatal("expected error from Record on closed file")
 	}
 
 	// Reopen the file so future writes succeed.
@@ -116,8 +116,8 @@ func TestWriter_FailedWriteConsumesSeqButNotOrdinal(t *testing.T) {
 
 	// The next successful write uses seq 2: the failed write consumed seq 1,
 	// though it recorded nothing and so took no entry ordinal.
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after failure"))); err != nil {
-		t.Fatalf("Append after reopen: %v", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after failure")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record after reopen: %v", err)
 	}
 
 	// Read back and check seq numbers.
@@ -166,8 +166,8 @@ func TestWriter_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
 
 	// Write several entries rapidly.
 	for i := range 5 {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
-			t.Fatalf("Append %d: %v", i, err)
+		if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i))), RecordOptions{Door: DoorBuffered}); err != nil {
+			t.Fatalf("Record %d: %v", i, err)
 		}
 	}
 
@@ -215,8 +215,8 @@ func TestWriter_AppendDurableSyncsWithinInterval(t *testing.T) {
 	w.SyncInterval = 1 * time.Hour
 
 	before := time.Now()
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("durable"))); err != nil {
-		t.Fatalf("AppendDurable: %v", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("durable")), RecordOptions{Door: DoorDurable}); err != nil {
+		t.Fatalf("Record(DoorDurable): %v", err)
 	}
 
 	w.mu.Lock()
@@ -255,8 +255,8 @@ func TestWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 	w.SyncInterval = 1 * time.Millisecond
 
 	// Write first entry.
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 
 	// Advance lastSync into the past so the interval appears elapsed without
@@ -266,8 +266,8 @@ func TestWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 	w.mu.Unlock()
 
 	// Next write should trigger a sync because the interval has elapsed.
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
-		t.Fatalf("Append: %v", err)
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
 	}
 
 	// After the sync, dirty should be false.
@@ -298,15 +298,15 @@ func TestWriter_PeriodicSync_ZeroIntervalSyncsEveryWrite(t *testing.T) {
 	w.SyncInterval = 0
 
 	for i := range 3 {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
-			t.Fatalf("Append %d: %v", i, err)
+		if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i))), RecordOptions{Door: DoorBuffered}); err != nil {
+			t.Fatalf("Record %d: %v", i, err)
 		}
 		// After each write with zero interval, dirty should be false.
 		w.mu.Lock()
 		dirty := w.dirty
 		w.mu.Unlock()
 		if dirty {
-			t.Errorf("Append %d: expected dirty=false with zero SyncInterval", i)
+			t.Errorf("Record %d: expected dirty=false with zero SyncInterval", i)
 		}
 	}
 }
@@ -325,7 +325,9 @@ func TestOpenWriter_SetsLastSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 0")))
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 0")), RecordOptions{Door: DoorBuffered}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
 	w.Close()
 
 	// Reopen for resume.
@@ -351,7 +353,7 @@ func TestTranscriptPreservesToolArgumentsSpellingAndHTMLChars(t *testing.T) {
 	spell.Arguments, spell.ArgumentsSpelling = llm.NormalizeToolArguments([]byte(spelled))
 	w, path := newRecordWriter(t)
 	calls := []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &spell}}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: calls})); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: calls}), RecordOptions{Door: DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	last := readTranscriptLines(t, path)

@@ -5,26 +5,54 @@ package main
 import (
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/llm"
 )
 
 func testServeLLMClientErrors(t *testing.T) {
-	oldLoad, oldAttach := serveLoadClient, serveAttachAPILogger
-	t.Cleanup(func() { serveLoadClient, serveAttachAPILogger = oldLoad, oldAttach })
+	oldLoad := serveLoadClient
+	t.Cleanup(func() { serveLoadClient = oldLoad })
 
-	serveLoadClient = func(string) (*llm.Client, error) { return nil, errors.New("load") }
-	if _, _, err := newServeLLMClient(t.TempDir(), io.Discard); err == nil {
-		t.Fatal("expected load error")
+	loadErr := errors.New("load")
+	serveLoadClient = func(string) (*llm.Client, error) { return nil, loadErr }
+	if _, _, err := newUnloggedServeLLMClient(t.TempDir(), io.Discard); !errors.Is(err, loadErr) {
+		t.Fatalf("newUnloggedServeLLMClient error = %v, want %v", err, loadErr)
 	}
 
 	serveLoadClient = func(string) (*llm.Client, error) { return llm.NewClient(), nil }
-	serveAttachAPILogger = func(*llm.Client, string, io.Writer) (func() error, error) {
-		return nil, errors.New("attach")
+	client, closeClient, err := newUnloggedServeLLMClient(t.TempDir(), io.Discard)
+	if err != nil {
+		t.Fatalf("newUnloggedServeLLMClient: %v", err)
 	}
-	if _, _, err := newServeLLMClient(t.TempDir(), io.Discard); err == nil {
-		t.Fatal("expected attach error")
+	if err := closeClient(); err != nil {
+		t.Fatalf("closeClient: %v", err)
+	}
+
+	badStateDir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(badStateDir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write bad state file: %v", err)
+	}
+	if _, _, err := serveAttachSessionAPILogger(client, badStateDir, io.Discard, false); err == nil {
+		t.Fatal("expected attach error for file state dir")
+	}
+
+	attachErr := errors.New("attach")
+	d := exactServeDeps(t)
+	closed := false
+	d.newClient = func(string, io.Writer) (*llm.Client, func() error, error) {
+		return llm.NewClient(), func() error { closed = true; return nil }, nil
+	}
+	d.attachAPILogger = func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error) {
+		return nil, nil, attachErr
+	}
+	if err := runServeWithDeps(exactServeArgs(t), d); !errors.Is(err, attachErr) {
+		t.Fatalf("runServeWithDeps error = %v, want %v", err, attachErr)
+	}
+	if !closed {
+		t.Fatal("expected client closer to run when attachAPILogger fails")
 	}
 }
 

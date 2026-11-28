@@ -108,7 +108,7 @@ it("shows ⋯ as its own 44pt target when a change can go out", () => {
 	expect(style.minWidth).toBeGreaterThanOrEqual(44);
 	expect(style.minHeight).toBeGreaterThanOrEqual(44);
 	expect(menu.findAllByType("SymbolView" as never).map((node) => [node.props.name, node.props.tintColor])).toEqual([
-		["ellipsis.circle", palette.inkLow],
+		["ellipsis", palette.inkLow],
 	]);
 	act(() => menu.props.onPress());
 	expect(onMenu).toHaveBeenCalledTimes(1);

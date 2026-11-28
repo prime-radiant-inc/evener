@@ -21,6 +21,31 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test("a newly inspected session defaults to About while revisited and explicit opens honor their tab", () => {
+  const store = activitySidebarStore;
+  store.getState().openFor("remote:fresh");
+  expect(store.getState()).toMatchObject({ open: true, ref: "remote:fresh", tab: "about" });
+  store.getState().setTab("jobs");
+  store.getState().close();
+  // After closing on another tab, a never-inspected session still opens on About.
+  store.getState().openFor("remote:second-fresh");
+  expect(store.getState()).toMatchObject({ open: true, ref: "remote:second-fresh", tab: "about" });
+  // Retargeting while already open keeps the ongoing inspection's active category.
+  store.getState().setTab("watches");
+  store.getState().retarget("remote:child");
+  expect(store.getState()).toMatchObject({ open: true, ref: "remote:child", tab: "watches" });
+  store.getState().close();
+  store.getState().openFor("remote:explicit", "agents");
+  expect(store.getState()).toMatchObject({ open: true, ref: "remote:explicit", tab: "agents" });
+  store.getState().openFor("remote:fresh");
+  expect(store.getState()).toMatchObject({ open: true, ref: "remote:fresh", tab: "jobs" });
+  store.getState().setTab("links");
+  store.getState().close();
+  resetActivitySidebarStoreForTests({ preserveStorage: true });
+  store.getState().openFor("remote:fresh");
+  expect(store.getState()).toMatchObject({ open: true, ref: "remote:fresh", tab: "links" });
+});
+
 test("About reload preserves another category's view intent", () => {
   const store = activitySidebarStore;
   store.getState().retarget("remote:a");
@@ -544,9 +569,9 @@ test("equivalent scroll choices do not rewrite storage or notify the view", () =
 });
 
 describe("activitySidebarStore", () => {
-  test("starts closed on the agents tab", () => {
+  test("starts closed on the about tab", () => {
     expect(activitySidebarStore.getState().open).toBe(false);
-    expect(activitySidebarStore.getState().tab).toBe("agents");
+    expect(activitySidebarStore.getState().tab).toBe("about");
   });
 
   test("openWith opens onto the given tab", () => {

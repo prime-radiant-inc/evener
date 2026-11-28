@@ -230,6 +230,27 @@ test("the status icon is decorative: aria-hidden, no accessible name of its own"
   expect(screen.getByTestId("notification-status-icon").getAttribute("aria-hidden")).toBe("true");
 });
 
+test("collapsible and static notification heads share the exact same statusIcon seat class", () => {
+  const collapsible = render(<NotificationCard notification={notif({ tone: "success", message: "Report body" })} />);
+  const collapsibleClass = collapsible.getByTestId("notification-status-icon").className;
+  collapsible.unmount();
+
+  const staticHead = render(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        tone: "success",
+        title: "Delegate completed",
+        secondary: "stopped",
+        message: undefined,
+        excerpt: "",
+      })}
+    />,
+  );
+  const staticClass = staticHead.getByTestId("notification-status-icon").className;
+  expect(collapsibleClass).toBe(staticClass);
+});
+
 test("renders stable delegate identity as Delegate while shell identity remains Job", async () => {
   const _user = userEvent.setup();
   const { rerender } = render(
@@ -475,6 +496,11 @@ test("an unlabeled static delegate keeps its ending and Open control", () => {
   const head = screen.getByTestId("notification-card");
   expect(head.textContent).toContain("stopped by its coordinator");
   expect(screen.getByRole("button", { name: "Open subagent" })).toBeTruthy();
+  // The static head still seats its status glyph first: the extracted
+  // NotificationHead owns the seat for both branches.
+  const icon = head.firstElementChild;
+  expect(icon?.getAttribute("data-testid")).toBe("notification-status-icon");
+  expect(icon?.getAttribute("aria-hidden")).toBe("true");
   expect(head.closest("details")).toBeNull();
 });
 

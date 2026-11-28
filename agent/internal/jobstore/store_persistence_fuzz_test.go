@@ -212,9 +212,8 @@ func drawEvent(r *progReader, ec *int) Event {
 		e.OwnerSessionID = sess
 		e.VisibleToSession = sess
 	case 1:
-		e.Kind = EventJobMessageSent
-		e.Target = sess
-		e.Action = "note"
+		e.Kind = EventJobNotificationConsumed
+		e.TerminalGen = "tg1"
 	case 2:
 		e.Kind = EventJobStarted
 		e.Type = JobShell
@@ -245,7 +244,7 @@ func drawEvent(r *progReader, ec *int) Event {
 			Key:        WatchSendKey{VisibleSessionID: sess, WatchID: "watch_" + sess, WatchTarget: "job_t", ResolvedWatchedIdentity: "job_t", ResolvedSendTo: sess, WatchGeneration: "wg1"},
 			DeliveryID: "wd1",
 			UpdateSeq:  uint64(*ec),
-			Message:    "m",
+			Frame:      "m",
 		}
 	}
 	return e

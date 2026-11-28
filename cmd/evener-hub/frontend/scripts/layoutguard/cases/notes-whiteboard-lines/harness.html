@@ -35,29 +35,34 @@
     <p class="prose" id="agent-note"></p>
   </section>
 </div>
-<!-- TopNotesPanel.tsx's collapsed bar: the summary button with the chevron,
-     the source icon and the note preview in .clampedText. One bar carries a
-     note longer than the clamp, the other a two-line note under it. -->
+<!-- TopNotesPanel.tsx's collapsed bar: the shared Disclosure's details/summary
+     with the leading chevron, the source icon and the note preview in
+     .clampedText. One bar carries a note longer than the clamp, the other a
+     two-line note under it. -->
 <div class="pane">
   <div class="topNotesPanel" data-expanded="false">
-    <button type="button" class="summary" aria-expanded="false">
-      <span class="summaryLeft">
-        <span class="chevron" data-open="false"><svg width="16" height="16" aria-hidden="true"></svg></span>
-        <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
-        <span class="clampedText" id="summary-long"></span>
-      </span>
-    </button>
+    <details class="disclosure-details">
+      <summary class="disclosure-summary summary">
+        <span class="chevron"><svg width="16" height="16" aria-hidden="true"></svg></span>
+        <span class="summaryLeft">
+          <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
+          <span class="clampedText" id="summary-long"></span>
+        </span>
+      </summary>
+    </details>
   </div>
 </div>
 <div class="pane">
   <div class="topNotesPanel" data-expanded="false">
-    <button type="button" class="summary" aria-expanded="false">
-      <span class="summaryLeft">
-        <span class="chevron" data-open="false"><svg width="16" height="16" aria-hidden="true"></svg></span>
-        <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
-        <span class="clampedText" id="summary-short"></span>
-      </span>
-    </button>
+    <details class="disclosure-details">
+      <summary class="disclosure-summary summary">
+        <span class="chevron"><svg width="16" height="16" aria-hidden="true"></svg></span>
+        <span class="summaryLeft">
+          <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
+          <span class="clampedText" id="summary-short"></span>
+        </span>
+      </summary>
+    </details>
   </div>
 </div>
 <script>

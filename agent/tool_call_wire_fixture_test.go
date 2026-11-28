@@ -498,7 +498,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 		{
 			id: "call_edit_file", tool: "edit_file",
 			note: "One replacement in one file.",
-			args: map[string]any{"file_path": "agent/tree.go", "old_string": "func settle() {}\n", "new_string": "func settle() {\n\tdrain()\n}\n"},
+			args: map[string]any{"file_path": "agent/tree.go", "edits": []any{map[string]any{"old_string": "func settle() {}\n", "new_string": "func settle() {\n\tdrain()\n}\n"}}},
 		},
 		{
 			id: "call_write_file", tool: "write_file",
@@ -783,11 +783,11 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_communicate", tool: "communicate",
-			note: "A final report to the parent: end_turn ends the turn, and the step's words read it as done. The output envelope is required by the tool's schema.",
+			note: "A final report to the parent: next=\"send_and_end_turn\" (default) ends the turn, and the step's words read it as done. The output envelope is optional unless a schema requires it.",
 			args: map[string]any{
-				"message":  "The settle race is fixed.",
-				"end_turn": true,
-				"output":   map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
+				"message": "The settle race is fixed.",
+				"next":    "send_and_end_turn",
+				"output":  map[string]any{"message": "", "data": map[string]any{}, "artifacts": []any{}},
 			},
 		},
 	}
@@ -833,10 +833,12 @@ func TestToolCallWireFixtures(t *testing.T) {
 		notes[call.id] = call.note
 	}
 	reg := apptranscript.NewToolCallRegistry()
-	items := apptranscript.ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
-	items = append(items, apptranscript.ProjectTurn("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)...)
+	items, _ := apptranscript.ProjectTurnParts("turn_1", 1, schema.Turn{Kind: schema.TurnAssistant, Message: announce, Timestamp: wireFixtureStart}, reg, nil, nil)
+	resultItems, _ := apptranscript.ProjectTurnParts("turn_1", 2, schema.Turn{Kind: schema.TurnToolResults, Message: results, Timestamp: wireFixtureStart.Add(2 * time.Second)}, reg, nil, nil)
+	items = append(items, resultItems...)
 	// The user's reply to the ask_user question starts the next turn.
-	items = append(items, apptranscript.ProjectTurn("turn_2", 3, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User(toolWireAnswers), Timestamp: wireFixtureStart.Add(60 * time.Second)}, reg, nil, nil)...)
+	userItems, _ := apptranscript.ProjectTurnParts("turn_2", 3, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User(toolWireAnswers), Timestamp: wireFixtureStart.Add(60 * time.Second)}, reg, nil, nil)
+	items = append(items, userItems...)
 
 	checkWireFixture(t, toolWireFixturePath, struct {
 		Note  string               `json:"note"`

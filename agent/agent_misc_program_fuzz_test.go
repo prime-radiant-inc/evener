@@ -77,7 +77,7 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 	if err != nil || len(created) != 2 {
 		t.Fatalf("append tasks = %#v, %v", created, err)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: token}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: token}}); err != nil {
 		t.Fatal(err)
 	}
 	// Both tool-availability variants of the gated reminders keep the envelope.
@@ -106,7 +106,7 @@ func miscCatalogAndReminderProgram(t *testing.T, token string) {
 	if got := taskReminderFull(taskpkg.NewTaskStore(t.TempDir(), "empty")); got != "" {
 		t.Fatalf("empty reminder = %q", got)
 	}
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := taskReminderForInactivity(store, true); got != "" {

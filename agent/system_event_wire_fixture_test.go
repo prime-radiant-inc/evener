@@ -55,7 +55,7 @@ func TestSystemEventWireFixtures(t *testing.T) {
 	projected := func(t *testing.T, name string, turn schema.Turn) appwire.ThreadItem {
 		t.Helper()
 		turn.Timestamp = wireFixtureStart
-		items := apptranscript.ProjectTurn("turn_1", 1, turn, nil, nil, nil)
+		items, _ := apptranscript.ProjectTurnParts("turn_1", 1, turn, nil, nil, nil)
 		if len(items) != 1 {
 			t.Fatalf("%s: projected %d items, want 1", name, len(items))
 		}
@@ -156,8 +156,8 @@ func TestSystemEventWireFixtures(t *testing.T) {
 		},
 		{
 			Case: "steer-no-tool-calls",
-			Note: "The retry steer after an empty response (session_tool_round.go's first empty-response text, copied: it is inline there).",
-			Item: steer(t, "steer-no-tool-calls", events.SteeringKindNoToolCalls, "Your previous response was empty. Please continue working on the task."),
+			Note: "The retry steer after an empty response (session_tool_round.go's decideNoToolCalls first empty-response text, built from the producer as the harness reminder it is).",
+			Item: steer(t, "steer-no-tool-calls", events.SteeringKindNoToolCalls, decideNoToolCalls(true, retryTracker{}, "communicate").SteeringText),
 		},
 		{
 			Case: "steer-loop-detected",
@@ -227,26 +227,28 @@ func systemEventWireFailedTurn(t *testing.T) appwire.Turn {
 
 	reg := apptranscript.NewToolCallRegistry()
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, nil, nil)
+		items, _ := apptranscript.ProjectTurnParts(turnID, turnIndex, turn, reg, nil, nil)
+		return items
 	}
 	path := filepath.Join(t.TempDir(), "system-event-wire.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{})
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(user); err != nil {
+	if _, err := w.Record(user, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append user turn: %v", err)
 	}
-	if err := w.Append(failure); err != nil {
+	if _, err := w.Record(failure, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append failure turn: %v", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("close transcript: %v", err)
 	}
-	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, project)
+	proj, err := apptranscript.ItemTurnProjectionFromFile(path, transcript.DefaultMaxLineBytes, project)
 	if err != nil {
 		t.Fatalf("project the failed turn: %v", err)
 	}
+	turns := proj.Turns
 	if len(turns) != 1 {
 		t.Fatalf("the failed turn grouped into %d turns, want 1", len(turns))
 	}

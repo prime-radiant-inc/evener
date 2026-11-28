@@ -285,6 +285,21 @@ Every replacement bounds its own omissions by the highest entry ordinal the
 response reported: a held item recorded after that ordinal survives, while an
 item the response covered and did not return is omitted.
 
+## Live overlay notice placement
+
+An overlay notice belongs where its anchor places it: after the recorded entry
+it follows, or after the prelude items when it has no preceding entry. The
+shared projection retains a notice in the overlay while no held item precedes
+its anchor and the loaded window starts after the transcript's first entry, so
+the first visible turn never stands in for the notice's owner. A later page
+that supplies the anchor's neighbor renders the notice once, at that neighbor.
+A notice whose own turn is loaded or running renders without a recorded
+predecessor, and so does a prelude notice once a source read or page names the
+end of older history. A window whose oldest entry is 0 or 1 is not that proof:
+a truncated read carries an older cursor for the omitted prelude, and the
+notice waits for that page. A notice that names no turn is placed by its anchor
+alone; a different turn running now does not adopt it.
+
 The browser repository persists normal-page omissions only inside the original
 wire interval. The cache commits rows, omission fences, certificates and header
 observations together, preserving newer item versions and rows outside that
@@ -364,7 +379,13 @@ supported position-based request for missing ranges. The paging scheduler
 pane's load-older control are part of the guarantee, not just the repository
 and store beneath them: a null scheduling key or a hidden control makes
 genuine cached bodies unreachable. The store's tagged scheduling key
-(`olderTranscriptPageKey`) never goes onto the wire.
+(`olderTranscriptPageKey`) never goes onto the wire. A settled page that adds
+no height — its rows hidden by the active detail level — moves no observed
+geometry, so the load-older control re-decides its short-page predicate from
+the advanced scheduling key instead of waiting for a resize that never comes.
+That re-decision waits for an active reader — the pane's document visible and
+its view and reader readable, the same state that gates paging activation — so
+a mounted pane whose reader is away adds no demand for a page nobody can see.
 
 Reopen honors an explicit older-page demand. A caught-up pane with healthy
 durable coverage needs no activation `thread/read` — zero activation reads is
@@ -375,6 +396,12 @@ or dropped opening work requires reconciliation. A rendered retained-items
 flag alone does not prove healthy durable coverage: the repository's recovery
 verdict (`openLocal`'s status and the opening-cut certificate) decides whether
 a recovery read is owed.
+
+While a healthy reopen's local restore is pending, a notice-only display of
+historical notices over released bodies stays withheld (preserving the recorded
+turn shells so the reader stays mounted); a notice raised after the open began
+still publishes, and the restore (or settling on a notice-only fallback)
+publishes the historical notices.
 
 ## Original transcript authors
 

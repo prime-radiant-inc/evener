@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 
@@ -44,21 +45,10 @@ type sessionOpts struct {
 	cfgSet              bool
 	stateDir            string
 	environmentSnapshot bool
-	immediateRest       bool
 	clock               clock.Clock
 }
 
 type sessionOpt func(*sessionOpts)
-
-// withImmediateRest drops the needs_response quiet period, so a turn that
-// ended on needs_response rests awaiting at the settle itself.
-func withImmediateRest() sessionOpt { return func(o *sessionOpts) { o.immediateRest = true } }
-
-// immediateRestConfig is testConfig with the needs_response quiet period
-// dropped, for tests that build a SessionConfig literal.
-func immediateRestConfig() testConfig {
-	return testConfig{needsResponseQuietPeriod: new(time.Duration)}
-}
 
 // minimalTestSessionConfig is newTestSession's fixture configuration: the
 // smallest deterministic session that still runs the real init path.
@@ -170,9 +160,6 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 		cfg.StateDir = o.stateDir
 	}
 	cfg.testOnly.skipGitSnapshot = !o.environmentSnapshot
-	if o.immediateRest {
-		cfg.testOnly.needsResponseQuietPeriod = new(time.Duration)
-	}
 	if o.clock != nil {
 		cfg.clock = o.clock
 	}
@@ -348,4 +335,34 @@ func failAppendN(jm *jobManager, kind jobstore.EventKind, n int) *atomic.Int32 {
 		return orig(e)
 	}
 	return &attempts
+}
+
+// seedTestTranscript creates the JSONL transcript file for meta in stateDir
+// and writes turns verbatim so restore tests exercise the real decode path.
+func seedTestTranscript(t *testing.T, stateDir string, meta schema.SessionMeta, turns ...schema.Turn) {
+	t.Helper()
+	tpath := schema.SessionTranscriptPath(stateDir, meta.ID)
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID: meta.ID,
+		CreatedAt: meta.CreatedAt,
+		ProfileID: meta.ProfileID,
+		Model:     meta.Model,
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	recordTestTranscriptTurns(t, tw, turns)
+}
+
+func recordTestTranscriptTurns(t *testing.T, tw *transcript.Writer, turns []schema.Turn) {
+	t.Helper()
+	for i, turn := range turns {
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			_ = tw.Close()
+			t.Fatalf("record transcript turn %d (%s): %v", i, turn.Kind, err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close transcript writer: %v", err)
+	}
 }

@@ -28,20 +28,20 @@ func writeSinglePassFixture(t *testing.T) string {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	ts := time.Unix(1_700_000_000, 0).UTC()
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run"))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("run")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
 	call := llm.ToolCallData{ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
-	if err := w.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}); err != nil {
+	if _, err := w.Record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append call: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "out", false))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "out", false)), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append result: %v", err)
 	}
 	usageTurn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))
 	usageTurn.Usage = llm.Usage{InputTokens: 3, OutputTokens: 4, TotalTokens: 7}
 	usageTurn.Timestamp = ts
-	if err := w.Append(usageTurn); err != nil {
+	if _, err := w.Record(usageTurn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatalf("append usage: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -65,10 +65,11 @@ func singlePassProjector(turn schema.Turn, turnID string, entryIndex int) []appw
 func TestItemTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
 	path := writeSinglePassFixture(t)
 
-	fileTurns, err := ItemTurnsFromFile(path, 1<<20, singlePassProjector)
+	fileProj, err := ItemTurnProjectionFromFile(path, 1<<20, singlePassProjector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	fileTurns := fileProj.Turns
 	w, entries, err := transcript.OpenWriterForSession(path, "th_single")
 	if err != nil {
 		t.Fatalf("OpenWriterForSession: %v", err)
@@ -101,10 +102,11 @@ func TestItemTurnsFromFileSinglePassMatchesEntriesForm(t *testing.T) {
 // per-entry projection applies, proving the shared projector kept them.
 func TestItemTurnsFromFileSinglePassStillStampsUsageAndTimestamp(t *testing.T) {
 	path := writeSinglePassFixture(t)
-	turns, err := ItemTurnsFromFile(path, 1<<20, singlePassProjector)
+	proj, err := ItemTurnProjectionFromFile(path, 1<<20, singlePassProjector)
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	var stamped *appwire.Turn
 	for i := range turns {
 		if turns[i].Usage != nil {
@@ -153,7 +155,7 @@ func TestItemTurnsFromFileSinglePassSkipsOversizeLine(t *testing.T) {
 	if err := os.WriteFile(path, []byte(string(header)+"\n"+string(big)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ItemTurnsFromFile(path, 32, singlePassProjector); err == nil {
+	if _, err := ItemTurnProjectionFromFile(path, 32, singlePassProjector); err == nil {
 		t.Fatal("oversize line was accepted")
 	}
 }

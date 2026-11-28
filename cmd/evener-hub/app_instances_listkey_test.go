@@ -15,6 +15,8 @@ package hub
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -29,7 +31,7 @@ func fingerprintableInstances(t *testing.T, f *instancesFixture) []string {
 	t.Helper()
 	names := []string{"work", "home"}
 	for _, name := range names {
-		if err := f.ctl.Create(appwire.InstanceCreateParams{
+		if _, err := f.ctl.Create(appwire.InstanceCreateParams{
 			Name:    name,
 			Base:    "openai",
 			BaseURL: "https://" + name + ".example.test/v1",
@@ -48,6 +50,9 @@ func fingerprintableInstances(t *testing.T, f *instancesFixture) []string {
 func TestInstances_ListResolvesTheFingerprintKeyOnceBeforeTheCredentialLock(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	names := fingerprintableInstances(t, f)
+	if err := os.Remove(filepath.Join(f.stateDir, endpointFingerprintKeyFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Remove fingerprint key: %v", err)
+	}
 
 	var (
 		calls        int

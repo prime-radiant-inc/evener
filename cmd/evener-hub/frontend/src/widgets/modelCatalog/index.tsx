@@ -7,9 +7,9 @@
 // widget itself is wire-free and both swap sites drop it in with a
 // one-import change.
 //
-// The list rendering is this widget's own rather than a shared generic
-// options-list: it needs provider group heads, non-interactive diagnostic
-// lines, and a list expanded the moment it opens.
+// Each row's content is this widget's own (provider group heads,
+// non-interactive diagnostic lines); the listbox container, option row and
+// Arrow/Home/End engine are the shared internal ones every picker uses.
 
 import {
   buildPickerRows,
@@ -18,12 +18,15 @@ import {
   type ModelCatalog as ModelCatalogShape,
   pickableModelRows,
 } from "@evener/appwire-client";
-import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { InlineNotice } from "../inlinenotice";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
-import { Chevron } from "../chevron";
+import { Listbox, ListboxOption } from "../internal/listbox";
+import { PickerTrigger } from "../internal/pickerTrigger";
 import { requireClass } from "../internal/requireClass";
+import { ariaActiveDescendant, optionDomId, useListbox } from "../internal/useListbox";
 import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
 import styles from "./modelCatalog.module.css";
@@ -35,12 +38,9 @@ const CLASS = {
   triggerValue: requireClass(styles.triggerValue, "modelCatalog.module.css", "triggerValue"),
   triggerDefault: requireClass(styles.triggerDefault, "modelCatalog.module.css", "triggerDefault"),
   chevron: requireClass(styles.chevron, "modelCatalog.module.css", "chevron"),
-  srOnly: requireClass(styles.srOnly, "modelCatalog.module.css", "srOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "modelCatalog.module.css", "popoverPanel"),
   panel: requireClass(styles.panel, "modelCatalog.module.css", "panel"),
   input: requireClass(styles.input, "modelCatalog.module.css", "input"),
-  error: requireClass(styles.error, "modelCatalog.module.css", "error"),
-  list: requireClass(styles.list, "modelCatalog.module.css", "list"),
   groupRow: requireClass(styles.groupRow, "modelCatalog.module.css", "groupRow"),
   row: requireClass(styles.row, "modelCatalog.module.css", "row"),
   rowActive: requireClass(styles.rowActive, "modelCatalog.module.css", "rowActive"),
@@ -106,10 +106,6 @@ export interface ModelCatalogPanelProps {
   variant?: "default" | "sheet";
 }
 
-function rowDomId(listboxId: string, key: string): string {
-  return `${listboxId}-${key}`;
-}
-
 /**
  * The open picker's content only (input + grouped list) with no trigger or
  * closed-state rendering of its own - extracted so a caller that needs its
@@ -142,9 +138,16 @@ export function ModelCatalogPanel({
   // unfiltered. Once typing starts, the typed text is both the input's value
   // and the query - including when it's cleared back to "".
   const [typed, setTyped] = useState<string | null>(null);
-  const [activeIndex, setActiveIndex] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
-  const listboxId = useId();
+  // Typing re-filters the rows, and the first match of the NEW list is the
+  // answer the user is narrowing toward - so Enter right after typing picks
+  // it. The key cannot be chosen in the onChange (the new rows do not exist
+  // yet), so the effect below activates the first row once one exists. It
+  // re-runs on every edit, including an edit that leaves the rows unchanged
+  // (Backspace clearing the prefill to the empty query), and stays pending
+  // while the query matches nothing - so an async catalog arrival still
+  // activates the row the user is now looking at.
+  const firstMatchQueryRef = useRef<string | null>(null);
   const isSheet = variant === "sheet";
 
   // The sheet variant has no input to own focus or drive a query: the list is
@@ -153,7 +156,9 @@ export function ModelCatalogPanel({
   const query = isSheet ? "" : (typed ?? "");
   const rows = useMemo(() => buildPickerRows(catalog, query), [catalog, query]);
   const picks = useMemo(() => pickableModelRows(rows), [rows]);
-  const activeKey = activeIndex >= 0 && activeIndex < picks.length ? picks[activeIndex]?.key : undefined;
+  const pickKeys = useMemo(() => picks.map((row) => row.key), [picks]);
+  const { listboxId, activeIndex, activeDescendantKey, activeKeyDropped, setActiveKey, handleNavigationKey } =
+    useListbox(pickKeys);
   // The current model can appear TWICE (once under Recent, once under its
   // provider group), but a single-select listbox may have exactly one
   // aria-selected option - so the marker goes on the first occurrence only.
@@ -167,7 +172,7 @@ export function ModelCatalogPanel({
   // re-scrolling then would fight a user already scrolling.
   useEffect(() => {
     if (!isSheet || currentKey === undefined) return;
-    document.getElementById(rowDomId(listboxId, currentKey))?.scrollIntoView?.({ block: "center" });
+    document.getElementById(optionDomId(listboxId, currentKey))?.scrollIntoView?.({ block: "center" });
   }, [isSheet, currentKey, listboxId]);
 
   // Focus the input and select all of it, so the first keystroke replaces the
@@ -191,18 +196,25 @@ export function ModelCatalogPanel({
   // state update + re-render whose output the sheet markup never reads.
   useEffect(() => {
     if (isSheet || typed !== null) return;
-    setActiveIndex(picks.findIndex((row) => row.option.qualified === value));
-  }, [isSheet, picks, value, typed]);
+    setActiveKey(picks.find((row) => row.option.qualified === value)?.key);
+  }, [isSheet, picks, value, typed, setActiveKey]);
 
-  // Keep the highlighted row visible inside the list's own scroll container -
-  // both for the current value on open and for keyboard walks past the fold.
-  // scrollIntoView is called optionally: jsdom implements none at all.
-  // Sheet variant: the sheet's own mount-only effect above (block: "center")
-  // handles scroll-into-view, so this activedescendant-driven scroll is skipped.
   useEffect(() => {
-    if (isSheet || activeKey === undefined) return;
-    document.getElementById(rowDomId(listboxId, activeKey))?.scrollIntoView?.({ block: "nearest" });
-  }, [isSheet, activeKey, listboxId]);
+    if (firstMatchQueryRef.current !== typed || typed === null) return;
+    if (picks.length === 0) return;
+    firstMatchQueryRef.current = null;
+    setActiveKey(picks[0]?.key);
+  }, [typed, picks, setActiveKey]);
+
+  // A background catalog refresh re-keys rows (their keys carry the row's
+  // position), so the row the user is on can stop resolving even though the
+  // list still shows it. Re-activate the first match rather than leave Enter
+  // with no highlight; a key that still resolves is the user's chosen row and
+  // is left alone.
+  useEffect(() => {
+    if (typed === null || !activeKeyDropped || picks.length === 0) return;
+    setActiveKey(picks[0]?.key);
+  }, [typed, activeKeyDropped, picks, setActiveKey]);
 
   function pickAt(index: number): boolean {
     const row = picks[index];
@@ -212,44 +224,19 @@ export function ModelCatalogPanel({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    switch (event.key) {
-      case "ArrowDown":
-        event.preventDefault();
-        if (picks.length === 0) break;
-        setActiveIndex((current) => Math.min(current + 1, picks.length - 1));
-        break;
-      case "ArrowUp":
-        event.preventDefault();
-        if (picks.length === 0) break;
-        setActiveIndex((current) => Math.max(current - 1, 0));
-        break;
-      case "Home":
-        if (picks.length === 0) break;
-        event.preventDefault();
-        setActiveIndex(0);
-        break;
-      case "End":
-        if (picks.length === 0) break;
-        event.preventDefault();
-        setActiveIndex(picks.length - 1);
-        break;
-      case "Enter": {
-        if (pickAt(activeIndex)) {
-          event.preventDefault();
-          break;
-        }
-        // Nothing highlighted (no current value, nothing typed yet): an
-        // exactly-typed id or display name is still an unambiguous answer.
-        const wanted = text.trim();
-        const exact = picks.findIndex((row) => row.option.qualified === wanted || row.option.label === wanted);
-        if (exact >= 0) {
-          event.preventDefault();
-          pickAt(exact);
-        }
-        break;
-      }
-      default:
-        break;
+    if (handleNavigationKey(event)) return;
+    if (event.key !== "Enter") return;
+    if (pickAt(activeIndex)) {
+      event.preventDefault();
+      return;
+    }
+    // Nothing highlighted (no current value, nothing typed yet): an
+    // exactly-typed id or display name is still an unambiguous answer.
+    const wanted = text.trim();
+    const exact = picks.findIndex((row) => row.option.qualified === wanted || row.option.label === wanted);
+    if (exact >= 0) {
+      event.preventDefault();
+      pickAt(exact);
     }
   }
 
@@ -263,37 +250,20 @@ export function ModelCatalogPanel({
           value={text}
           onChange={(event) => {
             setTyped(event.target.value);
-            // The first match is the answer the user is narrowing toward, so
-            // Enter right after typing picks it.
-            setActiveIndex(0);
+            firstMatchQueryRef.current = event.target.value;
           }}
           onKeyDown={handleKeyDown}
           aria-expanded={listShown}
           aria-autocomplete="list"
           aria-controls={listShown ? listboxId : undefined}
-          aria-activedescendant={activeKey !== undefined ? rowDomId(listboxId, activeKey) : undefined}
+          aria-activedescendant={ariaActiveDescendant(listboxId, activeDescendantKey)}
           aria-label="Model"
         />
       )}
       {loading && <Skeleton lines={SKELETON_LINES} />}
-      {error !== null && (
-        <p className={CLASS.error} role="alert">
-          {error}
-        </p>
-      )}
+      {error !== null && <InlineNotice tone="danger">{error}</InlineNotice>}
       {listShown && (
-        // <ul role="listbox">/<li role="option"> is the WAI-ARIA APG
-        // combobox-with-listbox-popup pattern's own example markup
-        // (w3.org/WAI/ARIA/apg/patterns/combobox) - not an interactive role
-        // bolted onto an arbitrary static element, Biome's role-vs-element
-        // heuristic just doesn't special-case ul/li for it.
-        <ul
-          // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ul/li is the ARIA APG's own listbox markup, see above
-          role="listbox"
-          id={listboxId}
-          aria-label="Model"
-          className={`${CLASS.list} ${isSheet ? CLASS.listSheet : ""}`}
-        >
+        <Listbox id={listboxId} label="Model" className={isSheet ? CLASS.listSheet : undefined}>
           {rows.map((row) => {
             if (row.kind === "group") {
               return (
@@ -327,7 +297,7 @@ export function ModelCatalogPanel({
                 <li key={row.key} role="presentation" className={CLASS.sheetRowItem}>
                   <button
                     type="button"
-                    id={rowDomId(listboxId, row.key)}
+                    id={optionDomId(listboxId, row.key)}
                     role="option"
                     aria-selected={current}
                     className={`${CLASS.sheetRow} ${current ? CLASS.sheetRowSelected : ""}`}
@@ -347,24 +317,14 @@ export function ModelCatalogPanel({
               );
             }
             return (
-              // Real focus never leaves the input (ARIA 1.2 activedescendant
-              // pattern): aria-activedescendant above tracks the "virtual"
-              // active option, and handleKeyDown's own Enter case already
-              // calls this same pick - so this <li> is deliberately not
-              // focusable and needs no onKeyDown of its own.
-              // biome-ignore lint/a11y/useFocusableInteractive: activedescendant pattern, real focus stays on the input, see above
-              // biome-ignore lint/a11y/useKeyWithClickEvents: activedescendant pattern, Enter on the input already does this, see above
-              <li
+              <ListboxOption
                 key={row.key}
-                id={rowDomId(listboxId, row.key)}
-                // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ARIA APG listbox markup, see the ul above
-                role="option"
-                aria-selected={current}
-                className={`${CLASS.row} ${row.key === activeKey ? CLASS.rowActive : ""}`}
-                // Selecting with the mouse must not blur the input (the ARIA
-                // 1.2 pattern keeps real focus there throughout).
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => onPick(row.option.entry)}
+                id={optionDomId(listboxId, row.key)}
+                selected={current}
+                active={row.key === activeDescendantKey}
+                className={CLASS.row}
+                activeClassName={CLASS.rowActive}
+                onSelect={() => onPick(row.option.entry)}
               >
                 <span className={CLASS.rowName}>{row.option.label}</span>
                 {current && (
@@ -373,10 +333,10 @@ export function ModelCatalogPanel({
                   </span>
                 )}
                 {row.meta !== "" && <span className={CLASS.meta}>{row.meta}</span>}
-              </li>
+              </ListboxOption>
             );
           })}
-        </ul>
+        </Listbox>
       )}
     </div>
   );
@@ -465,28 +425,21 @@ export function ModelCatalog({
       // with the Input/Select siblings beside it.
       stretchTrigger
       trigger={
-        <button
+        <PickerTrigger
           ref={triggerRef}
-          type="button"
-          className={CLASS.trigger}
+          open={open}
           onClick={() => (open ? closePicker() : setOpen(true))}
-        >
-          {/* Plain text, not a Chip: the trigger already draws the control's
-              own border, and a bordered chip inside it read as a double
-              border. */}
-          <span
-            className={`${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`}
-            data-state={value === "" ? "default" : undefined}
-          >
-            {value === "" ? emptyLabel : value}
-          </span>
-          <span className={CLASS.chevron} aria-hidden="true">
-            <Chevron direction="down" />
-          </span>{" "}
-          {/* That separating space is load-bearing - see ModelSwitch.tsx's own
-              trigger for why the space cannot live inside either span. */}
-          <span className={CLASS.srOnly}>— change model</span>
-        </button>
+          ariaMode="listbox"
+          actionLabel="change model"
+          value={value === "" ? emptyLabel : value}
+          fill
+          valueState={value === "" ? "default" : undefined}
+          classes={{
+            trigger: CLASS.trigger,
+            value: `${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`,
+            chevron: CLASS.chevron,
+          }}
+        />
       }
     >
       <div className={CLASS.popoverPanel}>

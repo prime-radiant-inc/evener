@@ -67,7 +67,7 @@ func TestBuildTreeTitleTiebreakOrder(t *testing.T) {
 	}
 	projects := map[string]identifier.Project{"/workspace": {ID: "project", CanonicalPath: "/workspace"}}
 
-	tree := BuildTreeAtWithProjects(metas, nil, nil, now, projects)
+	tree := BuildTreeAt(metas, nil, nil, now, projects)
 	if len(tree.Projects) != 1 {
 		t.Fatalf("projects = %#v, want one", tree.Projects)
 	}
@@ -117,6 +117,6 @@ func BenchmarkBuildTreeLongTitles(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		input := slices.Clone(metas)
-		BuildTreeAtWithProjects(input, nil, nil, now, projects)
+		BuildTreeAt(input, nil, nil, now, projects)
 	}
 }

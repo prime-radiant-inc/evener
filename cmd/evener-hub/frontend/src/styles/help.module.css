@@ -1,0 +1,20 @@
+/* The quiet caption line that explains the content beside it: a field's help,
+   a row's note, a gallery hint. The muted variant keeps the face and size for
+   a caveat or footnote that must not compete with what it qualifies. */
+.helpCaption {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+.helpMuted {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+/* The settings paragraph that explains a control at UI-text size: the same
+   ink as the help body, one size up, with its own paragraph margin. */
+.helpUi {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}

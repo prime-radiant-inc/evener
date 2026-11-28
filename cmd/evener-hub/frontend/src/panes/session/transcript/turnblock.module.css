@@ -3,14 +3,12 @@
    * tokens.css (44rem, or 64rem under the Transcript width preference), so
    * this column, the composer's .measure and the cold-start block all read
    * one value and stay aligned. */
+  composes: measureColumn from "../../../styles/surface.module.css";
   /* Speaker geometry (--speaker-avatar-size/-gap/-gutter) comes from
    * tokens.css: .turn and the focused view are sibling render trees, so no
    * component class could be the single source for both. */
   display: flex;
   flex-direction: column;
-  width: 100%;
-  max-width: var(--session-measure);
-  margin-inline: auto;
   /* Let the column shrink below a wide child's natural width (a long
    * unwrapped token, a wide diff) instead of pinning the virtual list's
    * 100%-width item wider than its scroller (overflow containment,
@@ -35,4 +33,9 @@
   .runContent {
     padding-left: var(--speaker-gutter);
   }
+}
+
+.quietYieldGroupBody {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--edge);
 }

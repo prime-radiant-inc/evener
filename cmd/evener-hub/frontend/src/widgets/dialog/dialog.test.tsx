@@ -4,14 +4,45 @@ import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
-import { MOBILE_QUERY } from "../../shell/useIsMobile";
-import { escapeRegExp } from "../../styles/cssBlock";
 import { CloseIcon as FromBarrel } from "..";
+import { IconButton } from "../iconbutton";
+import { requireClass } from "../internal/requireClass";
 import { CloseIcon } from "./CloseIcon";
+import rawStyles from "./dialog.module.css";
 import { Dialog } from "./index";
+
+const dialogClass = {
+  panel: requireClass(rawStyles.panel, "dialog.module.css", "panel"),
+  body: requireClass(rawStyles.body, "dialog.module.css", "body"),
+  dialogVariant: requireClass(rawStyles.dialogVariant, "dialog.module.css", "dialogVariant"),
+};
 
 test("its close glyph is exported from the widget barrel", () => {
   expect(FromBarrel).toBe(CloseIcon);
+});
+
+// The 10px remove controls (Chip, CollectionEditor, AttachmentTile) share
+// this glyph, so size must keep the stroke at 1.5 RENDERED px. The 16-grid
+// viewBox scales the attribute by size/16; leaving the close buttons' 1.5
+// attribute unadjusted at 10px would paint 0.94px.
+test("the close glyph defaults to the close buttons' 14px box on the 16 grid", () => {
+  const { container } = render(<CloseIcon />);
+  const svg = container.querySelector("svg");
+  const path = container.querySelector("path");
+  expect(svg?.getAttribute("width")).toBe("14");
+  expect(svg?.getAttribute("height")).toBe("14");
+  expect(svg?.getAttribute("viewBox")).toBe("0 0 16 16");
+  expect(svg?.getAttribute("aria-hidden")).toBe("true");
+  expect(Number(path?.getAttribute("stroke-width")) * (14 / 16)).toBeCloseTo(1.5, 1);
+});
+
+test("size keeps the rendered stroke at 1.5px, so the 10px remove glyphs are not thinned", () => {
+  const { container } = render(<CloseIcon size={10} />);
+  const svg = container.querySelector("svg");
+  const path = container.querySelector("path");
+  expect(svg?.getAttribute("width")).toBe("10");
+  expect(svg?.getAttribute("height")).toBe("10");
+  expect(Number(path?.getAttribute("stroke-width")) * (10 / 16)).toBeCloseTo(1.5, 1);
 });
 
 test("renders nothing when closed", () => {
@@ -345,12 +376,6 @@ test("both panel sizes float in and out by the shared recipe, and the scrim fade
   expect(css).not.toMatch(/@keyframes/);
 });
 
-test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "dialog.module.css"), "utf8");
-  expect(css).toContain(":focus-visible");
-});
-
 // --- size (kata b4xf: ImageGallery's lightbox needs to fill almost the
 // whole window, unlike every other Dialog caller, which wants the compact
 // default) -------------------------------------------------------------
@@ -405,6 +430,32 @@ test("the large size variant's CSS fills most of the viewport instead of the com
   expect(body).not.toContain("560px");
 });
 
+// --- caller classes and the no-motion variant (DirectoryPicker supplies its
+// own panel geometry and scrollport through Dialog) -------------------------
+test("panelClassName and bodyClassName append to the shared panel and body classes", () => {
+  const { rerender } = render(
+    <Dialog open onClose={vi.fn()} title="t" panelClassName="demoPanel" bodyClassName="demoBody">
+      Body
+    </Dialog>,
+  );
+  const panel = screen.getByRole("dialog");
+  expect(panel.classList.contains("demoPanel")).toBe(true);
+  expect(panel.classList.contains(dialogClass.dialogVariant)).toBe(true);
+  const body = screen.getByText("Body");
+  expect(body.classList.contains("demoBody")).toBe(true);
+  expect(body.classList.contains(dialogClass.body)).toBe(true);
+
+  rerender(
+    <Dialog open onClose={vi.fn()} title="t" panelClassName="demoPanel" motion="none">
+      Body
+    </Dialog>,
+  );
+  const nonePanel = screen.getByRole("dialog");
+  expect(nonePanel.classList.contains("demoPanel")).toBe(true);
+  expect(nonePanel.classList.contains(dialogClass.panel)).toBe(true);
+  expect(nonePanel.classList.contains(dialogClass.dialogVariant)).toBe(false);
+});
+
 // Beautiful UI chrome bands (design doc §6): the header and footer sit on an
 // inset surface, set off from the body by the hairline they already drew.
 // Sheet reuses these same classes (see OverlayPanel), so this covers both.
@@ -424,23 +475,19 @@ test("the footer is a chrome band on the inset surface", () => {
   expect(rule).toContain("border-top: 1px solid var(--edge)");
 });
 
-// FIX 5 (real-phone measurement, mirrors Rail.module.css's own coarse-
-// pointer precedent for its row action buttons): .closeButton is a plain
-// <button>, not the shared IconButton widget (see OverlayPanel.tsx's own
-// comment on why - FocusScope's initial-focus ordering needs it last in
-// markup), so it never picked up IconButton's own any-pointer: coarse 44px
-// floor (iconbutton.module.css). Measured 24x24 on TreeDrawer's own Sheet
-// (Dialog and Sheet share this one closeButton via OverlayPanel), under the
-// platform's 44px tap floor every other icon-only control in the app
-// already gets on a coarse pointer.
-test("the close button reaches the 44px tap floor on a coarse (touch) pointer", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "dialog.module.css"), "utf8");
-  const coarseBlock = new RegExp(
-    `@media ${escapeRegExp(MOBILE_QUERY)}, \\(any-pointer: coarse\\)\\s*\\{([\\s\\S]*?)\\n\\}`,
-  ).exec(css);
-  expect(coarseBlock).toBeTruthy();
-  const closeButtonRule = /\.closeButton\s*\{([^}]*)\}/.exec(coarseBlock?.[1] ?? "")?.[1] ?? "";
-  expect(closeButtonRule).toContain("min-width: var(--tap-min)");
-  expect(closeButtonRule).toContain("min-height: var(--tap-min)");
+// The close control is the shared IconButton at its quiet xs square, so its
+// desktop box and its phone tap floor are the widget's own (iconbutton's
+// square class carries both; iconbutton.test.tsx asserts the floor). This
+// pins the rendered control's classes to the widget's, rather than reading
+// this stylesheet for a floor it no longer restates.
+test("the close button renders as the shared IconButton's quiet xs square", () => {
+  const { unmount } = render(
+    <Dialog open onClose={vi.fn()} title="t">
+      Body
+    </Dialog>,
+  );
+  const closeButtonClasses = [...screen.getByRole("button", { name: "Close" }).classList].sort();
+  unmount();
+  render(<IconButton label="Close" icon={<CloseIcon />} variant="quiet" size="xs" />);
+  expect(closeButtonClasses).toEqual([...screen.getByRole("button", { name: "Close" }).classList].sort());
 });

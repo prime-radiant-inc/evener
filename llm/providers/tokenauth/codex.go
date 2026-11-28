@@ -82,7 +82,12 @@ func (c *Codex) Apply(ctx context.Context, req *http.Request, res registry.Resol
 		return notSignedIn(res.Instance)
 	}
 	req.Header.Set("Authorization", "Bearer "+creds.BearerToken)
-	if id := c.accountID(res.Instance); id != "" {
+	// Prefer the account id the credentials were resolved with. A rename can
+	// move the record to another name while a refresh is in flight, so the
+	// record this instance name points at can be gone by now (#1045).
+	if id := creds.AccountID; id != "" {
+		req.Header.Set("ChatGPT-Account-ID", id)
+	} else if id := c.accountID(res.Instance); id != "" {
 		req.Header.Set("ChatGPT-Account-ID", id)
 	}
 	if req.Header.Get("originator") == "" {

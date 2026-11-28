@@ -50,8 +50,8 @@ func TestDelegatePresentedAttentionDoesNotEarnSuccessorGeneration(t *testing.T) 
 	if got := attentionRunStarts(t, fixture); got != 0 {
 		t.Fatalf("attention generations = %d, want 0", got)
 	}
-	if resolution, generation := childAttentionResolution(t, sub, "attention:mid-run"); resolution != delegateAttentionConsumed || generation != 0 {
-		t.Fatalf("mid-run attention resolution = %q for generation %d, want consumed by the generation that presented it (0)", resolution, generation)
+	if present, _ := childAttentionRow(t, sub, "attention:mid-run"); present {
+		t.Fatal("mid-run attention is still queued: the generation that presented it must consume it")
 	}
 	// The delegate does not stay marked as needing attention it consumed.
 	controller := root.delegateController
@@ -103,8 +103,8 @@ func TestDelegateAttentionAfterLastRequestStillWakesTheDelegate(t *testing.T) {
 	if got := attentionRunStarts(t, fixture); got != 1 {
 		t.Fatalf("attention generations = %d, want 1", got)
 	}
-	if resolution, generation := childAttentionResolution(t, sub, "attention:late"); resolution != delegateAttentionConsumed || generation == 0 {
-		t.Fatalf("late attention resolution = %q for generation %d, want consumed by its own attention generation", resolution, generation)
+	if present, _ := childAttentionRow(t, sub, "attention:late"); present {
+		t.Fatal("late attention is still queued: its own attention generation must consume it")
 	}
 }
 
@@ -144,8 +144,8 @@ func TestDelegateAttentionLandingBetweenRequestSnapshotsIsConsumed(t *testing.T)
 	if got := attentionRunStarts(t, fixture); got != 0 {
 		t.Fatalf("attention generations = %d, want 0", got)
 	}
-	if resolution, generation := childAttentionResolution(t, sub, "attention:between-snapshots"); resolution != delegateAttentionConsumed || generation != 0 {
-		t.Fatalf("attention resolution = %q for generation %d, want consumed by the send generation that presented it (0)", resolution, generation)
+	if present, _ := childAttentionRow(t, sub, "attention:between-snapshots"); present {
+		t.Fatal("attention is still queued: the send generation that presented it must consume it")
 	}
 }
 
@@ -178,8 +178,8 @@ func TestDelegateConsumingPresentedAttentionClearsNeedsAttentionWithoutAParentDr
 	if got := supervisionRequestCount(fixture.adapter); got != 3 {
 		t.Fatalf("provider requests = %d, want 3", got)
 	}
-	if resolution, _ := childAttentionResolution(t, sub, "attention:unserved"); resolution != delegateAttentionConsumed {
-		t.Fatalf("attention resolution = %q, want consumed", resolution)
+	if present, _ := childAttentionRow(t, sub, "attention:unserved"); present {
+		t.Fatal("attention is still queued, want consumed")
 	}
 	// The finalize tail clears the mark after the run reads as quiesced.
 	controller := root.delegateController
@@ -240,8 +240,8 @@ func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttention
 	case <-time.After(30 * time.Second):
 		t.Fatal("the successor attention drive was not reached")
 	}
-	if resolution, _ := childAttentionResolution(t, sub, "attention:presented"); resolution != delegateAttentionConsumed {
-		t.Fatalf("presented attention resolution = %q, want consumed", resolution)
+	if present, _ := childAttentionRow(t, sub, "attention:presented"); present {
+		t.Fatal("presented attention is still queued, want consumed")
 	}
 
 	controller := root.delegateController
@@ -269,8 +269,8 @@ func TestDelegateStopAfterConsumingPresentedAttentionCompletesWithLaterAttention
 	default:
 		t.Fatal("stop did not complete")
 	}
-	if resolution, _ := childAttentionResolution(t, sub, "attention:late"); resolution != delegateAttentionDiscarded {
-		t.Fatalf("late attention resolution = %q, want discarded by the stop", resolution)
+	if present, _ := childAttentionRow(t, sub, "attention:late"); present {
+		t.Fatal("late attention is still queued: a stop discards a row no generation accepted")
 	}
 	releaseOnce.Do(func() { close(releaseDrive) })
 }
@@ -337,18 +337,29 @@ func attentionRunStarts(t *testing.T, fixture coldDelegateFixture) int {
 	return starts
 }
 
-// childAttentionResolution reads how the child transcript resolved
-// attentionID: its disposition, and the generation it was consumed for, which
-// is zero when the generation that presented it consumed it.
-func childAttentionResolution(t *testing.T, sub *subagent, attentionID string) (delegateAttentionResolution, uint64) {
+// childAttentionRow reports whether the child's durable queue still holds the
+// row, and whether a stop has quieted it. Slice 2 consumes a child-delegate row
+// directly in delegatestore when a settled request presents it, so absence is
+// the consumed state and the transcript no longer carries a child mirror.
+func childAttentionRow(t *testing.T, sub *subagent, attentionID string) (present, held bool) {
 	t.Helper()
-	// A fresh read: the session's fold cursor belongs to attentionMu, which
-	// the running drive holds while it reads.
-	fold, err := readDelegateAttentionFold(sub.sess.TranscriptPath(), sub.sess.id)
-	if err != nil {
-		t.Fatalf("fold child attention: %v", err)
+	controller := sub.sess.delegateController
+	delegateID := sub.sess.owningDelegateID
+	if controller == nil || delegateID == "" {
+		t.Fatalf("child attention: session %q has no controller identity", sub.sess.id)
 	}
-	return fold.resolutions[attentionID], fold.resumeGenerations[attentionID]
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	aggregate := controller.durable[delegateID]
+	if aggregate == nil {
+		return false, false
+	}
+	for _, row := range aggregate.PendingAttention {
+		if row.AttentionID == attentionID {
+			return true, row.HeldThrough > 0
+		}
+	}
+	return false, false
 }
 
 // Attention already pending when a leased generation starts is consumed by
@@ -387,13 +398,13 @@ func TestDelegateAttentionPendingBeforeASendIsConsumedByThatSend(t *testing.T) {
 	if got := attentionRunStarts(t, fixture); got != 0 {
 		t.Fatalf("attention generations = %d, want 0", got)
 	}
-	if resolution, generation := childAttentionResolution(t, sub, "attention:before-send"); resolution != delegateAttentionConsumed || generation != 0 {
-		t.Fatalf("pending attention resolution = %q for generation %d, want consumed by the send generation that presented it (0)", resolution, generation)
+	if present, _ := childAttentionRow(t, sub, "attention:before-send"); present {
+		t.Fatal("attention is still queued: the send generation that presented it must consume it")
 	}
 }
 
 // A delegate turn that presented attention in a settled request and then
-// failed consumes nothing: the item stays pending, and the delegate does not
+// failed consumes the presented item, and the delegate does not
 // take on the root's paused-updates rail (no "Background updates paused"
 // warning, which belongs to the root). A permanent provider failure gates the
 // delegate's attention drive until its parent re-engages, so recovery comes
@@ -443,8 +454,8 @@ func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 		defer sub.mu.Unlock()
 		return sub.fatalRunGated && !sub.running && !sub.finalizing && !sub.driving
 	})
-	if resolution, _ := childAttentionResolution(t, sub, "attention:failed-turn"); resolution != "" {
-		t.Fatalf("attention resolution after the failed turn = %q, want still pending", resolution)
+	if present, held := childAttentionRow(t, sub, "attention:failed-turn"); present || held {
+		t.Fatalf("attention row after the failed turn = present:%t held:%t, want consumed by the presented-then-aborted rule", present, held)
 	}
 
 	sendAndAcknowledge(t, root, fixture.delegateID, "FOLLOW-UP: try again")
@@ -455,8 +466,8 @@ func TestDelegateFailedTurnLeavesPresentedAttentionPending(t *testing.T) {
 	if got := attentionRunStarts(t, fixture); got != 0 {
 		t.Fatalf("attention generations = %d, want 0", got)
 	}
-	if resolution, generation := childAttentionResolution(t, sub, "attention:failed-turn"); resolution != delegateAttentionConsumed || generation != 0 {
-		t.Fatalf("attention resolution = %q for generation %d, want consumed by the follow-up generation that presented it (0)", resolution, generation)
+	if present, _ := childAttentionRow(t, sub, "attention:failed-turn"); present {
+		t.Fatal("attention is still queued after the follow-up, want consumed")
 	}
 	if warnings := childPausedWarnings(); len(warnings) != 0 {
 		t.Fatalf("child emitted paused-updates warnings %+v, want none: that rail is the root's", warnings)

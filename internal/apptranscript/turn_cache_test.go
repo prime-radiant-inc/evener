@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,12 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
+
+// loadItemProjection is the cache core, split out so tests can supply a
+// counting parse function.
+func (c *TurnCache) loadItemProjection(path string, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
+	return c.loadItemProjectionContext(context.Background(), path, parse)
+}
 
 func TestTurnCacheReusesParseUntilFileChanges(t *testing.T) {
 	dir := t.TempDir()

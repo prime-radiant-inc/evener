@@ -291,6 +291,7 @@ describe("PinSectionPicker", () => {
     const desktop = render(<PinSectionPicker {...props()} />);
     await screen.findByRole("dialog", { name: /pin session one/i });
     expect(screen.getByRole("dialog").className.split(" ")).not.toContain(sheetStyles.bottom);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
     desktop.unmount();
 
     vi.stubGlobal(
@@ -306,6 +307,7 @@ describe("PinSectionPicker", () => {
       render(<PinSectionPicker {...props()} />);
       await screen.findByRole("dialog", { name: /pin session one/i });
       expect(screen.getByRole("dialog").className.split(" ")).toContain(sheetStyles.bottom);
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
       expect(vi.mocked(window.matchMedia)).toHaveBeenCalledWith(MOBILE_QUERY);
     } finally {
       vi.unstubAllGlobals();

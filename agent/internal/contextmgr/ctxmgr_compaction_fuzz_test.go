@@ -255,16 +255,16 @@ func ctxmgr_countToolParts(history []schema.Turn, cutoff int) int {
 //     then the checkpoint carries the truncation marker and the transcript
 //     pointer stays at its head.
 func FuzzCtxmgrCheckpointData(f *testing.F) {
-	f.Add([]byte("\x00\x05hello\x03\x03cat\x05\x04msg1"), uint8(3), "sess-1", "skillA\nskillB")
-	f.Add([]byte("\x03\x00\x06/x/y.go\x06\x02ls\x040"), uint8(2), "", "")
-	f.Add([]byte{}, uint8(0), "", "")
-	f.Add([]byte("\x07data\x08sum\x09steer\x0a\x02hi\x04think"), uint8(4), "S", "s1")
+	f.Add([]byte("\x00\x05hello\x03\x03cat\x05\x04msg1"), uint8(3), "sess-1")
+	f.Add([]byte("\x03\x00\x06/x/y.go\x06\x02ls\x040"), uint8(2), "")
+	f.Add([]byte{}, uint8(0), "")
+	f.Add([]byte("\x07data\x08sum\x09steer\x0a\x02hi\x04think"), uint8(4), "S")
 	// A rich, hand-built history exercising every collectCheckpointData branch
 	// (edit/write/apply_patch/read/grep/use_skill/shell/communicate/web_search/
 	// thinking/checkpoint/summary/steering), walked to the very end (cutoff=all).
-	f.Add(ctxmgr_richHistorySeed, uint8(255), "sess-rich", "using-git\nusing-tmux")
+	f.Add(ctxmgr_richHistorySeed, uint8(255), "sess-rich")
 
-	f.Fuzz(func(t *testing.T, data []byte, cutoffSel uint8, sessionID, skillsRaw string) {
+	f.Fuzz(func(t *testing.T, data []byte, cutoffSel uint8, sessionID string) {
 		r := &ctxmgr_reader{b: data}
 		history := ctxmgr_buildHistory(r)
 
@@ -285,13 +285,7 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 			t.Fatalf("toolCounts sum=%d want=%d", sum, want)
 		}
 
-		var skills []string
-		for s := range strings.SplitSeq(skillsRaw, "\n") {
-			if s = strings.TrimSpace(s); s != "" {
-				skills = append(skills, s)
-			}
-		}
-		meta := &CompactionMeta{SessionID: sessionID, ActivatedSkills: skills}
+		meta := &CompactionMeta{SessionID: sessionID}
 
 		cp := formatCheckpoint(got, meta, 60_000)
 		if cp2 := formatCheckpoint(got, meta, 60_000); cp != cp2 {
@@ -317,7 +311,7 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 					t.Fatalf("tool name %q missing from checkpoint", name)
 				}
 			}
-			for _, s := range skills {
+			for s := range got.activatedSkills {
 				if !strings.Contains(cp, s) {
 					t.Fatalf("activated skill %q missing from checkpoint", s)
 				}

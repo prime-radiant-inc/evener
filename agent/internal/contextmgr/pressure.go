@@ -10,30 +10,64 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// RecordInputTokens stores the exact input token count from an API response,
-// along with the history length at that point. This enables accurate pressure
-// calculation for subsequent turns without relying on the char/4 heuristic.
-func (cm *Manager) RecordInputTokens(tokens int, historyLen int) {
+// RecordInputTokens stores the exact input token count from an API response, the
+// history length at that point, and the anchor fingerprinting the turn at
+// historyLen-1, so subsequent turns price from the count instead of char/4. An
+// empty anchor stands as counts did before anchors existed.
+func (cm *Manager) RecordInputTokens(tokens int, historyLen int, anchor string) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	cm.lastInputTokens = tokens
-	cm.historyLenAtMeasure = historyLen
+	cm.recordInputTokensLocked(tokens, historyLen, anchor)
 }
 
 // RecordInputTokensFor records an API measurement only when the manager still
-// holds the profile that produced it. A SetProfile that lands while a request is
-// in flight already invalidated the measurement that request belonged to, so
-// writing it afterwards would attribute one model's count to another -- and the
-// estimator reads the target, so the count would be wrong under the new rules too.
-func (cm *Manager) RecordInputTokensFor(profile *provider.Profile, tokens int, historyLen int) bool {
+// holds the profile that produced it. A SetProfile landing while the request was
+// in flight already invalidated it, and the estimator reads the target, so such a
+// count would be wrong under the new rules too.
+func (cm *Manager) RecordInputTokensFor(profile *provider.Profile, tokens int, historyLen int, anchor string) bool {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	if !sameProfileTarget(cm.profile, profile) {
 		return false
 	}
+	cm.recordInputTokensLocked(tokens, historyLen, anchor)
+	return true
+}
+
+func (cm *Manager) recordInputTokensLocked(tokens int, historyLen int, anchor string) {
 	cm.lastInputTokens = tokens
 	cm.historyLenAtMeasure = historyLen
-	return true
+	cm.measuredAnchor = anchor
+	cm.measuredTarget = measurementTarget(cm.profile)
+}
+
+// ClearInputMeasurement drops the saved count together with its prefix identity
+// and producing target. A session calls it in the same lock hold that publishes
+// rewritten history, so a count measured against the pre-rewrite prefix cannot
+// outlive the publication. The compaction layers call it before and after a
+// pass, so between-layer pressure readings fall back to char/4 estimates that
+// reflect their in-place history changes.
+func (cm *Manager) ClearInputMeasurement() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.clearMeasurementLocked()
+}
+
+// clearMeasurementLocked drops the count together with its prefix identity and
+// producing target. Callers hold cm.mu.
+func (cm *Manager) clearMeasurementLocked() {
+	cm.lastInputTokens = 0
+	cm.historyLenAtMeasure = 0
+	cm.measuredAnchor = ""
+	cm.measuredTarget = ""
+}
+
+// measurementTarget names the instance, model, and protocol a count belongs to.
+func measurementTarget(profile *provider.Profile) string {
+	if profile == nil {
+		return ""
+	}
+	return profile.ID() + "/" + profile.Model() + "/" + profile.Protocol()
 }
 
 // SetProfile replaces the provider profile so that ContextWindowSize() and
@@ -44,8 +78,7 @@ func (cm *Manager) SetProfile(profile *provider.Profile) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	if !sameProfileTarget(cm.profile, profile) {
-		cm.lastInputTokens = 0
-		cm.historyLenAtMeasure = 0
+		cm.clearMeasurementLocked()
 		// The unknown-window disclosure names the model it assumed for, so
 		// it belongs to the outgoing target: a different model — still
 		// unknown — discloses its own assumption on its first fold.
@@ -98,6 +131,36 @@ func (cm *Manager) LastInputTokens() int {
 	return cm.lastInputTokens
 }
 
+// LastInputMeasurement returns the count with the measured length, its prefix
+// anchor, and the target that produced it, for persistence. It answers zeros
+// unless configured is that target: a --model-fallback count belongs to the
+// fallback, which a resume under the configured model must not inherit.
+func (cm *Manager) LastInputMeasurement(configured *provider.Profile) (tokens, measuredLen int, anchor, target string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.lastInputTokens <= 0 || cm.measuredTarget == "" || cm.measuredTarget != measurementTarget(configured) {
+		return 0, 0, "", ""
+	}
+	return cm.lastInputTokens, cm.historyLenAtMeasure, cm.measuredAnchor, cm.measuredTarget
+}
+
+// RestoreInputMeasurement seeds a persisted count only when this manager's
+// profile is the target that produced it and history still carries the measured
+// prefix, whose last turn must fingerprint to anchor. A missing target or anchor
+// is a meta written before they existed, and such a count is not trusted.
+func (cm *Manager) RestoreInputMeasurement(tokens int, measuredLen int, anchor string, target string, history []schema.Turn) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if tokens <= 0 || target == "" || target != measurementTarget(cm.profile) {
+		return false
+	}
+	if anchor == "" || measuredLen <= 0 || !prefixAnchorHolds(anchor, history, measuredLen) {
+		return false
+	}
+	cm.recordInputTokensLocked(tokens, measuredLen, anchor)
+	return true
+}
+
 // Pressure returns the current context pressure as a fraction of the window.
 // It may exceed 1.0 when the estimated usage is larger than the window.
 func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
@@ -110,28 +173,28 @@ func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 // a model switch (SetProfile) cannot pair one model's window with another's
 // tokens.
 func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
-	prof, lastTokens, measuredLen, _ := cm.profileSnapshot()
-	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, history, sysPromptChars)
+	prof, lastTokens, measuredLen, anchor, _ := cm.profileSnapshot()
+	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, anchor, history, sysPromptChars)
 }
 
 // pressureWithProfile reads pressure and the profile it was measured against from
 // ONE snapshot, so a compaction layer's decision and that layer's before/after
 // diagnostics describe one model even if SetProfile lands in between.
 func (cm *Manager) pressureWithProfile(history *[]schema.Turn, sysPromptChars int) (float64, *provider.Profile) {
-	prof, lastTokens, measuredLen, _ := cm.profileSnapshot()
-	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
+	prof, lastTokens, measuredLen, anchor, _ := cm.profileSnapshot()
+	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, anchor, *history, sysPromptChars), prof
 }
 
 // pressureFromSnapshot is estimatePressure's core for callers that already hold a
 // (profile, measurement) snapshot. The compaction phases read pressure and their
 // before/after diagnostics from one snapshot apiece, so a concurrent SetProfile
 // cannot decide a layer by one model and describe it by another.
-func (cm *Manager) pressureFromSnapshot(prof *provider.Profile, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) float64 {
+func (cm *Manager) pressureFromSnapshot(prof *provider.Profile, lastTokens, measuredLen int, anchor string, history []schema.Turn, sysPromptChars int) float64 {
 	cw, _ := effectiveWindowOf(prof)
 	if cw <= 0 {
 		return 0
 	}
-	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
+	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, anchor, history, sysPromptChars)
 	return pressureOf(used, cw)
 }
 
@@ -258,10 +321,10 @@ func resolvedTargetOf(prof *provider.Profile) registry.Resolved {
 // clears the measurement in one section of the same lock, so reading them in
 // separate sections could pair one model's window with another model's cleared
 // measurement.
-func (cm *Manager) profileSnapshot() (*provider.Profile, int, int, uint64) {
+func (cm *Manager) profileSnapshot() (*provider.Profile, int, int, string, uint64) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	return cm.profile, cm.lastInputTokens, cm.historyLenAtMeasure, cm.profileGen
+	return cm.profile, cm.lastInputTokens, cm.historyLenAtMeasure, cm.measuredAnchor, cm.profileGen
 }
 
 // estimateUsedTokens is the pure token-accounting core shared by estimatePressure
@@ -272,15 +335,15 @@ func (cm *Manager) profileSnapshot() (*provider.Profile, int, int, uint64) {
 // baseline and estimates only the turns appended since; otherwise it falls back to
 // the char/4 heuristic over the whole history plus the system prompt. It takes a
 // fresh profile snapshot for callers that hold none.
-func (cm *Manager) estimateUsedTokens(lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
-	return cm.estimateUsedTokensFor(cm.currentProfile(), lastTokens, measuredLen, history, sysPromptChars)
+func (cm *Manager) estimateUsedTokens(lastTokens, measuredLen int, anchor string, history []schema.Turn, sysPromptChars int) int {
+	return cm.estimateUsedTokensFor(cm.currentProfile(), lastTokens, measuredLen, anchor, history, sysPromptChars)
 }
 
 // estimateUsedTokensFor is the snapshot-taking core: the caller passes the same
 // profile it read the window from, so a model switch mid-computation cannot
 // combine one model's window with another model's accounting.
-func (cm *Manager) estimateUsedTokensFor(prof *provider.Profile, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
-	if lastTokens > 0 && measuredLen <= len(history) {
+func (cm *Manager) estimateUsedTokensFor(prof *provider.Profile, lastTokens, measuredLen int, anchor string, history []schema.Turn, sysPromptChars int) int {
+	if lastTokens > 0 && measuredLen <= len(history) && prefixAnchorHolds(anchor, history, measuredLen) {
 		// Use the known token count as baseline, then estimate only new turns.
 		return lastTokens + cm.estimateTokensFor(prof, history[measuredLen:])
 	}

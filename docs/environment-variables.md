@@ -64,6 +64,7 @@ build-llmcall` builds `./llmcall`; run that path or install it separately on you
 | `OPENAI_PROJECT_ID` | no | OpenAI project header for API-key requests. |
 | `ANTHROPIC_API_KEY` | yes | Anthropic API key. |
 | `ANTHROPIC_BASE_URL` | no | Anthropic API base URL override. |
+| `GITHUB_COPILOT_BASE_URL` | no | GitHub Copilot API base URL override (default https://api.githubcopilot.com). |
 | `GEMINI_API_KEY` | yes | Google Gemini API key; checked before GOOGLE_API_KEY. |
 | `GOOGLE_API_KEY` | yes | Google Gemini API key fallback. |
 | `GOOGLE_BASE_URL` | no | Google Gemini API base URL override. |
@@ -101,8 +102,6 @@ build-llmcall` builds `./llmcall`; run that path or install it separately on you
 | `GOOGLE_VERTEX_PROJECT` | no | Google Vertex project the endpoint is built from. |
 | `GOOGLE_VERTEX_LOCATION` | no | Google Vertex location the endpoint host is built from. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | no | Path to the Google application-default credentials file; when unset, the well-known gcloud path is used. |
-| `GOOGLE_VERTEX_API_KEY` | yes | Google Cloud API key for Vertex AI express mode; the google-vertex-express instance. |
-| `GOOGLE_VERTEX_EXPRESS_BASE_URL` | no | Vertex AI express-mode base URL override (default https://aiplatform.googleapis.com/v1). |
 | `CLOUDFLARE_ACCOUNT_ID` | no | Cloudflare account id the Workers AI endpoint is built from. |
 | `DATABRICKS_HOST` | no | Databricks workspace host the endpoint is built from. |
 | `INFOMANIAK_PRODUCT_ID` | no | Infomaniak product id the endpoint is built from. |
@@ -127,7 +126,7 @@ These are host conventions, not a second Evener configuration file:
 | `XDG_CACHE_HOME` | Cache base |
 | `PATH`, `SHELL` | Executable lookup and shell; session command environments can use the resolved login-shell PATH |
 | `GOCACHE`, `GOMODCACHE`, `GOPATH`, `GOENV` | Go tooling and sandbox cache resolution |
-| `GOGC` | Go collector target for Evener's own processes. Unset means Evener's own target of 200; an exported value is honored as it stands (`off` disables collection, `100` restores Go's default). A value the collector would not honor stops startup instead of being silently read as 100. |
+| `GOGC` | Go collector target for Evener's own processes. Unset or empty means Evener's own target of 200; an exported value is honored as it stands and parsed by the Go runtime (`off` disables collection, `100` restores Go's default). |
 | `CARGO_HOME`, `RUSTUP_HOME`, `NVM_DIR`, `PYENV_ROOT` | Toolchain paths inherited by core command environments |
 | `SSH_CONNECTION`, `SSH_TTY`, `DISPLAY`, `WAYLAND_DISPLAY` | Headless/graphical login detection |
 | `TMPDIR` | Session-dependent temporary directory, not necessarily private when sandbox is off |

@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { Button } from "../../widgets/button";
 import { Popover } from "../../widgets/popover";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./popover.module.css";
 
 // Shown in its natural closed state, not forced open, for the same two
@@ -23,9 +24,9 @@ function PopoverDemo() {
         open={open}
         onClose={() => setOpen(false)}
         trigger={
-          <button type="button" onClick={() => setOpen((v) => !v)}>
+          <Button variant="quiet" size="sm" onClick={() => setOpen((v) => !v)}>
             Details
-          </button>
+          </Button>
         }
       >
         <p className={styles.panelBody}>
@@ -38,11 +39,8 @@ function PopoverDemo() {
 
 export default function PopoverGallerySection() {
   return (
-    <section>
-      <h2>Popover</h2>
-      <ThemeFlip>
-        <PopoverDemo />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Popover">
+      <PopoverDemo />
+    </GallerySection>
   );
 }

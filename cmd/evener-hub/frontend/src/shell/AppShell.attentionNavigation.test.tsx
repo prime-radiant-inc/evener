@@ -2150,7 +2150,7 @@ test("desktop to mobile to desktop keeps the same needs-you owner and Next usabl
     expectOwnerRegistrations(record);
 
     act(() => setMobile(true));
-    await screen.findByRole("button", { name: "Back" });
+    await screen.findByRole("button", { name: /^Sessions/ });
     act(() => setMobile(false));
     await waitFor(() => expect(getDockviewApi()).not.toBeNull());
     expect(window.location.pathname).toBe("/s/local%3Any1");
@@ -2364,7 +2364,7 @@ test("phone host swap keeps attention navigation over the focused session", asyn
   await screen.findByTestId("next-needs-you-next");
 
   act(() => setMobile(true));
-  await screen.findByRole("button", { name: "Back" });
+  await screen.findByRole("button", { name: /^Sessions/ });
   await screen.findByRole("textbox", { name: "Message" });
   const owner = paneFor("local:owner");
   expect(workspaceStore.getState().focusedPaneId).toBe(owner?.id);

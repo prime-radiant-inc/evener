@@ -776,7 +776,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	}); err != nil {
 		t.Fatalf("configure watch: %v", err)
 	}
@@ -803,7 +803,7 @@ func TestJobManagerCloseContinuesAfterWatchSendCleanupFailure(t *testing.T) {
 	cfg.pending[pendingKey] = &jobstore.WatchSendState{
 		Key:        pendingKey,
 		DeliveryID: jobstore.NewWatchSendDeliveryID(),
-		Message:    "observe",
+		Frame:      "observe",
 	}
 	jm.mu.Unlock()
 	run := jm.running[rec.JobID]

@@ -1,16 +1,17 @@
+/* The id and its trailing open control stay on one line whenever a line can
+ * fit them: the group is one inline-level unit, so it moves to the next
+ * line whole, and overflow-wrap breaks the id only when even a full line
+ * cannot fit it (a long job id at the question's pane-title prose size on a
+ * 390px phone) - the same escape table cells already get, where the fixed
+ * table layout owns the column's width. Without the clamp, a too-wide group
+ * paints past the row's clip and the open control lands untappable
+ * offscreen. */
 .group {
   display: inline-flex;
   align-items: baseline;
-  white-space: nowrap;
-}
-
-/* In prose the chip moves to the next line as one unit; inside a table cell
- * it cannot, because the table owns the column's width (the markdown widget
- * lays its GFM tables out fixed, and GFM has no width syntax). A nowrap chip
- * wider than its column would paint over the neighboring cell, so there the
- * chip wraps like any other long token instead. */
-table .group {
   white-space: normal;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .trigger {

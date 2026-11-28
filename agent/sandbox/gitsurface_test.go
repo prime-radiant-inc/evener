@@ -19,7 +19,7 @@ import (
 func gitSurfaceFixture(t *testing.T, kind WorkspaceKind, mode Mode) (ResolvedPolicy, string) {
 	t.Helper()
 	home := identifier.ResolveClean(t.TempDir())
-	cwd := MaterializeWorkspace(t, kind)
+	cwd := materializeWorkspace(t, kind)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: mode, Network: &net}, bwrapFacts(home), cwd)
 	if err != nil {
@@ -52,7 +52,7 @@ func readFile(t *testing.T, path string) string {
 // instead create it holding ".", the self-referential common dir a git dir
 // without the file already means.
 func TestPrepareGitSurfacesCreatesCommondirForMainCheckout(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	rp, cwd := gitSurfaceFixture(t, MainCheckout, ModeWorkspaceWrite)
 	commondir := filepath.Join(cwd, ".git", "commondir")
 	if pathExists(commondir) {
@@ -79,7 +79,7 @@ func TestPrepareGitSurfacesCreatesCommondirForMainCheckout(t *testing.T) {
 // a write into the user's real .git, so it is confined to the one surface whose
 // empty residue is fatal.
 func TestPrepareGitSurfacesTouchesOnlyCommondir(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	rp, cwd := gitSurfaceFixture(t, MainCheckout, ModeWorkspaceWrite)
 	gitDir := filepath.Join(cwd, ".git")
 
@@ -105,7 +105,7 @@ func TestPrepareGitSurfacesTouchesOnlyCommondir(t *testing.T) {
 // Preparation must never modify a surface that already exists — truncating a real
 // commondir (or any protected file) would be its own corruption bug.
 func TestPrepareGitSurfacesNeverModifiesExistingFile(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	rp, cwd := gitSurfaceFixture(t, MainCheckout, ModeWorkspaceWrite)
 	commondir := filepath.Join(cwd, ".git", "commondir")
 	const sentinel = "../weird-but-not-ours\n"
@@ -131,7 +131,7 @@ func TestPrepareGitSurfacesNeverModifiesExistingFile(t *testing.T) {
 // The claim is a hardlink, so exactly one wins and the losers succeed on EEXIST —
 // and the name never appears with partial content.
 func TestPrepareGitSurfacesIsConcurrencySafe(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	rp, cwd := gitSurfaceFixture(t, MainCheckout, ModeWorkspaceWrite)
 	commondir := filepath.Join(cwd, ".git", "commondir")
 
@@ -156,7 +156,7 @@ func TestPrepareGitSurfacesIsConcurrencySafe(t *testing.T) {
 // A read-only session pins nothing (no write root can reach a protected surface),
 // so it must write nothing into the user's .git either.
 func TestPrepareGitSurfacesSkipsReadOnlyMode(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	rp, cwd := gitSurfaceFixture(t, MainCheckout, ModeReadOnly)
 	mustWrapper(t, rp)
 	if pathExists(filepath.Join(cwd, ".git", "commondir")) {
@@ -167,9 +167,9 @@ func TestPrepareGitSurfacesSkipsReadOnlyMode(t *testing.T) {
 // The Seatbelt backend matches path strings and creates nothing, so it needs no
 // preparation and must not write into the user's repo.
 func TestPrepareGitSurfacesNotRunForSeatbelt(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	home := identifier.ResolveClean(t.TempDir())
-	cwd := MaterializeWorkspace(t, MainCheckout)
+	cwd := materializeWorkspace(t, MainCheckout)
 	net := true
 	facts := HostFacts{OS: "darwin", Home: home, SandboxExecPath: "/usr/bin/sandbox-exec"}
 	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
@@ -190,7 +190,7 @@ func TestPrepareGitSurfacesNotRunForSeatbelt(t *testing.T) {
 // create packed-refs.lock / packed-refs.new / logs / rr-cache there, which a
 // leaf-by-leaf bind cannot express.
 func TestBwrapCommonDirGrantedWritableForLinkedWorktree(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	rp, cwd := gitSurfaceFixture(t, LinkedWorktree, ModeWorkspaceWrite)
 	cd := rp.Git.CommonDir
 	if cd == "" || isUnderAnyRoot(cd, rp.Spawned.WriteRoots) {
@@ -210,7 +210,7 @@ func TestBwrapCommonDirGrantedWritableForLinkedWorktree(t *testing.T) {
 }
 
 func TestBwrapCommonDirNotGrantedForMainCheckout(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	rp, cwd := gitSurfaceFixture(t, MainCheckout, ModeWorkspaceWrite)
 	if got := commonDirWriteGrant(rp); got != "" {
 		t.Errorf("a main checkout's .git is already under the worktree write root; extra grant %q is a widening", got)
@@ -222,7 +222,7 @@ func TestBwrapCommonDirNotGrantedForMainCheckout(t *testing.T) {
 }
 
 func TestBwrapCommonDirNotGrantedInReadOnlyMode(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	rp, cwd := gitSurfaceFixture(t, LinkedWorktree, ModeReadOnly)
 	if got := commonDirWriteGrant(rp); got != "" {
 		t.Errorf("a read-only session must never bind the common dir writable, got %q", got)
@@ -295,7 +295,7 @@ func hostWritableMount(op string) bool { return op == "--bind" || op == "--dev-b
 // This is an argv-structural proof plus bwrap's documented later-mount-wins
 // ordering; it is not an executed bwrap run (this backend runs only on Linux).
 func TestBwrapProtectedGitSurfacesStayWriteDenied(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	for _, kind := range []WorkspaceKind{MainCheckout, LinkedWorktree} {
 		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 			t.Run(kind.String()+"/"+mode.String(), func(t *testing.T) {
@@ -323,7 +323,7 @@ func TestBwrapProtectedGitSurfacesStayWriteDenied(t *testing.T) {
 // The protection re-binds must be emitted AFTER the writable common-dir bind, or
 // the bind would land on top and silently invert the denial.
 func TestBwrapProtectedRebindsFollowCommonDirGrant(t *testing.T) {
-	requireGitHarness(t)
+	requireGit(t)
 	rp, cwd := gitSurfaceFixture(t, LinkedWorktree, ModeWorkspaceWrite)
 	mustWrapper(t, rp)
 	args := buildBwrapArgv(rp, t.TempDir(), cwd)

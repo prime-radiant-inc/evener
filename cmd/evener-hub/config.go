@@ -19,12 +19,6 @@ import (
 var configUserHomeDir = os.UserHomeDir
 var configReadFile = os.ReadFile
 
-// ProviderConfig lists the models available from a single provider.
-type ProviderConfig struct {
-	Name   string   `toml:"name"`
-	Models []string `toml:"models"`
-}
-
 // HostConfig is one [[hosts]] entry: a controller's connection entry for a
 // remote hub. Name is the source ID used in refs and URLs; SSH is the
 // destination passed to ssh (component 04), and User overrides its user.
@@ -61,16 +55,15 @@ type Config struct {
 	addrPresent bool   `toml:"-"`
 	// removedKnobs names the retired keys the file still sets. They are
 	// ignored; runMain warns about each one at boot.
-	removedKnobs       []string         `toml:"-"`
-	HubStateRoot       string           `toml:"hub_state_root"`
-	StateGlob          string           `toml:"state_glob"`
-	RunDir             string           `toml:"run_dir"`
-	PastIndexDB        string           `toml:"past_index_db"`
-	PastIndexRebuild   time.Duration    `toml:"past_index_rebuild_interval"`
-	SpawnTimeout       time.Duration    `toml:"spawn_timeout"`
-	PastResultsPerPage int              `toml:"past_results_per_page"`
-	Providers          []ProviderConfig `toml:"providers"`
-	Hosts              []HostConfig     `toml:"hosts"`
+	removedKnobs       []string      `toml:"-"`
+	HubStateRoot       string        `toml:"hub_state_root"`
+	StateGlob          string        `toml:"state_glob"`
+	RunDir             string        `toml:"run_dir"`
+	PastIndexDB        string        `toml:"past_index_db"`
+	PastIndexRebuild   time.Duration `toml:"past_index_rebuild_interval"`
+	SpawnTimeout       time.Duration `toml:"spawn_timeout"`
+	PastResultsPerPage int           `toml:"past_results_per_page"`
+	Hosts              []HostConfig  `toml:"hosts"`
 	// Roots are the hub's own machine's project roots (hub.toml's top-level
 	// `roots`), the same shape a [[hosts]] entry's roots take. They describe
 	// the machine the hub itself runs on and are reported in ServerInfo, so a

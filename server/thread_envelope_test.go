@@ -13,9 +13,9 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// feedBridge runs the real Bridge over evs and returns when it has drained
-// them. Tests use it rather than calling RecordAppEvent directly whenever the
-// thing under test is the envelope, because the refresh lives in the bridge:
+// feedBridge runs BridgeEvent over evs and returns when it has drained them.
+// Tests use it rather than calling RecordAppEvent directly whenever the thing
+// under test is the envelope, because the refresh lives in BridgeEvent:
 // RecordAppEvent alone would prove nothing about freshness.
 func feedBridge(srv *Server, evs ...events.SessionEvent) {
 	ch := make(chan events.SessionEvent, len(evs))
@@ -23,7 +23,7 @@ func feedBridge(srv *Server, evs ...events.SessionEvent) {
 		ch <- ev
 	}
 	close(ch)
-	Bridge(srv, ch)
+	bridgeForTest(srv, ch, nil)
 }
 
 // readThreadOverWire performs a thread/read through a real connection and
@@ -384,7 +384,7 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", "th_1")
+			setAppIdentity(t, srv, "local", "th_1")
 			src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
 
 			if len(tc.pre) > 0 {
@@ -402,7 +402,7 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 
 func TestThreadEnvelopeSeedUsesTaskAggregateAndStructuredMetaGoal(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	source := &stubThreadEnvelopeSource{}
 	source.tasks = &appwire.TaskAggregate{
 		Total:   2,
@@ -422,7 +422,7 @@ func TestThreadEnvelopeSeedUsesTaskAggregateAndStructuredMetaGoal(t *testing.T) 
 
 func TestThreadCWDSeedsFromSessionMetaAndCheckpoint(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.SetWorkingDir("/launch/checkout")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
 		ID: "root", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/restored/worktree"},
@@ -447,7 +447,7 @@ func TestThreadCWDSeedsFromSessionMetaAndCheckpoint(t *testing.T) {
 
 	// Restoration replaces the envelope with the replacement session's metadata,
 	// not the launch checkout retained in StatusInfo.
-	srv.SetAppIdentity("local", "restored")
+	setAppIdentity(t, srv, "local", "restored")
 	src.meta = schema.SessionMeta{ID: "restored", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/second/restored-worktree"}}
 	srv.RefreshThreadEnvelope()
 	if got := readThreadOverWire(t, srv, "local:restored").CWD; got != "/second/restored-worktree" {
@@ -457,7 +457,7 @@ func TestThreadCWDSeedsFromSessionMetaAndCheckpoint(t *testing.T) {
 
 func TestEnvironmentChangedCWDCheckpointCannotOverwriteConcurrentCarrier(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	srv.SetWorkingDir("/launch/A")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{
 		ID: "root", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/worktree/A"},
@@ -508,7 +508,7 @@ func TestEnvironmentChangedCWDCheckpointCannotOverwriteConcurrentCarrier(t *test
 
 func TestSessionStartSeedTriStatePreservesUnknownAndAppliesExplicitClear(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "legacy-root")
+	setAppIdentity(t, srv, "local", "legacy-root")
 	source := publishEnvelope(srv, &stubThreadEnvelopeSource{
 		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "pre-bridge task"}},
 		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "pre-bridge goal", Status: "active", Iterations: 4}},
@@ -523,7 +523,7 @@ func TestSessionStartSeedTriStatePreservesUnknownAndAppliesExplicitClear(t *test
 		t.Fatalf("legacy start goal = %+v, want pre-bridge seed preserved", legacy.Evener.Goal)
 	}
 
-	srv.SetAppIdentity("local", "seeded-root")
+	setAppIdentity(t, srv, "local", "seeded-root")
 	source.tasks = &appwire.TaskAggregate{Total: 2, Current: &appwire.TaskSummary{ID: 2, Description: "replacement pre-seed"}}
 	source.meta = schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "goal to clear", Status: "active", Iterations: 1}}
 	srv.RefreshThreadEnvelope()
@@ -541,7 +541,7 @@ func TestSessionStartSeedTriStatePreservesUnknownAndAppliesExplicitClear(t *test
 
 func TestTaskAndGoalCarrierEventsDoNotRepullEnvelopeStores(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	source := publishEnvelope(srv, &stubThreadEnvelopeSource{
 		tasks: &appwire.TaskAggregate{Total: 1},
 		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "stale goal", Status: "active"}},
@@ -568,7 +568,7 @@ func TestTaskAndGoalCarrierEventsDoNotRepullEnvelopeStores(t *testing.T) {
 
 func TestTaskAndGoalCarriersReplaceSeededRootState(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{
 		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "old task"}},
 		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "old goal", Status: "active", Iterations: 1}},
@@ -596,7 +596,7 @@ func TestTaskAndGoalCarriersReplaceSeededRootState(t *testing.T) {
 
 func TestSessionTurnCheckpointRecoversOldTaskAndGoalProducer(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	source := publishEnvelope(srv, &stubThreadEnvelopeSource{})
 	// An old producer changes its stores without emitting structured carriers.
 	source.tasks = &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "checkpoint task"}}
@@ -631,7 +631,7 @@ func (c *contextStatusCallSource) ContextStatus() (ContextMetrics, float64) {
 // facetQueue, so that counter moves for reasons unrelated to context.
 func TestThreadEnvelopeContextFacetSamplesOnce(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	src := &contextStatusCallSource{}
 	srv.SetThreadEnvelopeSource(src)
 	srv.RefreshThreadEnvelope()
@@ -675,7 +675,7 @@ func TestThreadEnvelopeContextFacetSamplesOnce(t *testing.T) {
 // rather than a stand-in for it.
 func TestThreadReadUnderTheCutReachesNoSession(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	counter := &countingThreadEnvelopeSource{}
 	srv.SetThreadEnvelopeSource(counter)
 	srv.RefreshThreadEnvelope()
@@ -718,7 +718,7 @@ func TestThreadReadUnderTheCutReachesNoSession(t *testing.T) {
 // connection, because that is where the harm lands.
 func TestReplacingTheIdentityReplacesTheEnvelope(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	failures := 9
 	publishEnvelope(srv, &stubThreadEnvelopeSource{
 		queue:            appwire.QueueState{Depth: 3, Revision: 2},
@@ -734,7 +734,7 @@ func TestReplacingTheIdentityReplacesTheEnvelope(t *testing.T) {
 
 	// The daemon's session is replaced. Nothing has published the replacement's
 	// state yet, which is the window this guards.
-	srv.SetAppIdentity("local", "th_2")
+	setAppIdentity(t, srv, "local", "th_2")
 
 	after := readThreadOverWire(t, srv, "local:th_2")
 	if after.Name != "" {
@@ -767,7 +767,7 @@ func TestReplacingTheIdentityReplacesTheEnvelope(t *testing.T) {
 // waits, and the assertion reads the response. Nothing consults the notifier.
 func TestEnvelopeCommittedBeforeTheCutIsInTheResponse(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
 
 	atGate := make(chan struct{})
@@ -852,7 +852,7 @@ func TestEnvelopeCommittedBeforeTheCutIsInTheResponse(t *testing.T) {
 // One row is enough. The ordering is a property of BridgeEvent, not of a facet.
 func TestEnvelopeLeadsTheCommitThatAnnouncesIt(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
 
 	var atCommit *int
@@ -955,7 +955,7 @@ func (c *countingThreadEnvelopeSource) ClientMutationProjection() (appwire.Queue
 // source pull after the callback emits the update.
 func TestClearingTheGoalClearsItOnTheWire(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{
 		meta: schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "old goal", Status: "active", Iterations: 2}},
 	})
@@ -1015,7 +1015,7 @@ func TestClearingTheGoalClearsItOnTheWire(t *testing.T) {
 // sample is parked in its last facet while the replacement runs to completion.
 func TestSampleLandingAfterAnIdentityReplacementIsDropped(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 
 	parked := make(chan struct{})
 	release := make(chan struct{})
@@ -1043,7 +1043,7 @@ func TestSampleLandingAfterAnIdentityReplacementIsDropped(t *testing.T) {
 	<-parked
 
 	// The daemon's session is replaced while that sample is in flight.
-	srv.SetAppIdentity("local", "th_2")
+	setAppIdentity(t, srv, "local", "th_2")
 	close(release)
 	<-sampled
 
@@ -1232,7 +1232,7 @@ func TestEveryMutationHandlerPublishesItsQueueChange(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.method, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
-			srv.SetAppIdentity("local", "th_1")
+			setAppIdentity(t, srv, "local", "th_1")
 			src := publishEnvelope(srv, &stubThreadEnvelopeSource{})
 			srv.SetRetrySafeTurnFunctions(tc.install(src, tc.mutationID))
 

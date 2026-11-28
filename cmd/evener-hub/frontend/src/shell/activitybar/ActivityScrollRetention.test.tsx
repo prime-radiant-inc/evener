@@ -238,9 +238,9 @@ test.each(["refresh", "reconnect"] as const)(
       ],
     );
 
-    fireEvent.click(screen.getByRole("radio", { name: "About" }));
+    fireEvent.click(screen.getByRole("tab", { name: "About" }));
     await screen.findByText("owner");
-    fireEvent.click(screen.getByRole("radio", { name: /Jobs/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Jobs/ }));
     // The re-observed jobs read walks to the retained boundary page by page,
     // paced by the store's own clock. Await the walk's registered read span —
     // an awaitable completion — instead of polling a condition ceiling that
@@ -469,7 +469,7 @@ test("reopening during sidebar exit resumes the same viewport and its pending an
   const original = viewport();
   const boundary = Visibility.latest();
   vi.useFakeTimers();
-  fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
+  fireEvent.click(screen.getByRole("button", { name: "Hide Overview" }));
   // Real AnimatePresence keeps its one exiting aside mounted until motion ends.
   expect(original.isConnected).toBe(true);
   act(() => boundary.emit(true));
@@ -505,7 +505,7 @@ test.each(["tab", "scope", "completed exit"])(
     const obsoleteBody = viewport();
     const obsoleteBoundary = Visibility.latest();
     if (replacement !== "completed exit") vi.useFakeTimers();
-    fireEvent.click(screen.getByRole("button", { name: "Close Overview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide Overview" }));
     expect(obsoleteBody.isConnected).toBe(true);
     if (replacement === "tab") {
       act(() => activitySidebarStore.getState().openWith("watches"));

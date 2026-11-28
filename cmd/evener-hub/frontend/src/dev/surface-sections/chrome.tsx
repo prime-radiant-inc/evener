@@ -1,52 +1,26 @@
-// The session chrome surface: StatusRow / TasksPanel, all real components that
-// take a plain ThreadModel prop - no store seeding needed, just a fixture model
-// built through hydrateThread (the same real hydration function the wire read
-// path uses) so every derived field (contextPressure, capabilities, …) is
-// honest, not hand-typed.
+// The session chrome surface: StatusRow / TasksPanelBody / DetailsPanelBody,
+// all real components that take a plain ThreadModel prop - no store seeding
+// needed, just a fixture model built through hydrateThread (the same real
+// hydration function the wire read path uses) so every derived field
+// (contextPressure, capabilities, …) is honest, not hand-typed.
 //
-// TasksPanel's trigger renders for free off model.tasks; opening its Sheet
-// fires a real threadsStore.getState().listTasks() RPC, which has nothing to
-// talk to here and resolves into that panel's own honest "couldn't load"
-// state - exactly what a disconnected client should show. Nothing here fakes
-// that response.
+// TasksPanelBody fires a real threadsStore.getState().listTasks() RPC on
+// mount, which has nothing to talk to here and resolves into that panel's own
+// honest "couldn't load" state - exactly what a disconnected client should
+// show. Nothing here fakes that response.
 
-import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
+import type { Thread } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
-import { DetailsPanel } from "../../panes/session/chrome/DetailsPanel";
+import { DetailsPanelBody } from "../../panes/session/chrome/DetailsPanel";
 import { StatusRow } from "../../panes/session/chrome/StatusRow";
-import { TasksPanel } from "../../panes/session/chrome/TasksPanel";
+import { TasksPanelBody } from "../../panes/session/chrome/TasksPanel";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
-
-const FULL_CAPABILITIES: ThreadCapabilities = {
-  send: true,
-  steer: true,
-  interrupt: true,
-  compact: true,
-  clear: true,
-  forkFromTurn: true,
-  shutdown: true,
-  changeModel: true,
-  changeVisionModel: true,
-  queue: true,
-  goal: true,
-  sharedNotes: true,
-  rename: true,
-};
+import { FULL_CAPABILITIES, fixtureThread } from "./thread-fixture";
 
 const ref = "dev-surface-chrome";
-const fixtureThread: Thread = {
-  id: "thr_dev_chrome",
-  sessionId: "sess_dev_chrome",
-  preview: "dev fixture",
-  ephemeral: false,
-  modelProvider: "anthropic/claude-sonnet-4-5",
-  createdAt: 1000,
-  updatedAt: 1000,
-  status: { type: "idle" },
-  cwd: "/home/dev/project",
-  cliVersion: "1.0.0",
-  source: "evener",
+const chromeThread: Thread = {
+  ...fixtureThread(ref, { id: "thr_dev_chrome", sessionId: "sess_dev_chrome" }),
   evener: {
     ref,
     capabilities: FULL_CAPABILITIES,
@@ -75,7 +49,7 @@ const fixtureThread: Thread = {
   },
 };
 
-const model = hydrateThread({ thread: fixtureThread }, ref, Date.now());
+const model = hydrateThread({ thread: chromeThread }, ref, Date.now());
 
 // The session's start-time flag remains readable while disconnected.
 const managerFixtures = [
@@ -84,33 +58,35 @@ const managerFixtures = [
   { name: "existing", projection: {} },
 ].map(({ name, projection }) => ({
   name,
-  model: hydrateThread({ thread: { ...fixtureThread, evener: { ...fixtureThread.evener, ...projection } } }, ref, 1000),
+  model: hydrateThread({ thread: { ...chromeThread, evener: { ...chromeThread.evener, ...projection } } }, ref, 1000),
 }));
 
 export default function ChromeSurfaceSection() {
   return (
-    <section>
-      <h2>Session chrome</h2>
-      <p className={styles.note}>
-        StatusRow / TasksPanel, fed a fixture ThreadModel built through the real hydrateThread(). The panel trigger
-        opens a real Sheet; its body fetch fails honestly with no live connection behind this gallery.
-      </p>
-      <ThemeFlip>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>status</p>
-          <StatusRow sessionRef={ref} model={model} now={Date.now()} />
+    <GallerySection
+      title="Session chrome"
+      note={
+        <p className={styles.note}>
+          StatusRow / TasksPanelBody / DetailsPanelBody, fed a fixture ThreadModel built through the real
+          hydrateThread(). Both panel bodies render directly without a Sheet trigger; the tasks body fetch fails
+          honestly with no live connection behind this gallery.
+        </p>
+      }
+    >
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>status</p>
+        <StatusRow sessionRef={ref} model={model} now={Date.now()} />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>tasks</p>
+        <TasksPanelBody sessionRef={ref} model={model} />
+      </div>
+      {managerFixtures.map((fixture) => (
+        <div key={fixture.name} className={styles.row} data-testid={`manager-fixture-${fixture.name}`}>
+          <p className={styles.rowLabel}>Manager {fixture.name}, disconnected</p>
+          <DetailsPanelBody model={fixture.model} now={1000} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>tasks</p>
-          <TasksPanel sessionRef={ref} model={model} />
-        </div>
-        {managerFixtures.map((fixture) => (
-          <div key={fixture.name} className={styles.row} data-testid={`manager-fixture-${fixture.name}`}>
-            <p className={styles.rowLabel}>Manager {fixture.name}, disconnected</p>
-            <DetailsPanel model={fixture.model} now={1000} />
-          </div>
-        ))}
-      </ThemeFlip>
-    </section>
+      ))}
+    </GallerySection>
   );
 }

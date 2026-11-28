@@ -1,41 +1,28 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../styles/surface.module.css";
 }
 
 .help {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
+  composes: helpUi from "../../../styles/help.module.css";
 }
 
 .list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: stack2 from "../../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: listReset from "../../../styles/surface.module.css";
 }
 
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: stack2 from "../../../styles/surface.module.css";
 }
 
 /* The deploy plan confirmation's rendered fields (S14). */
 .planFields {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: stack2 from "../../../styles/surface.module.css";
 }
 
 .planNotice {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
+  composes: helpUi from "../../../styles/help.module.css";
 }
 
 /* A row of small repair buttons inside a repair surface. */
@@ -49,9 +36,7 @@
 /* HostSheet (design-system §10): the host's state and its operation, then
  * its actions as one full-width column, Remove below a divider. */
 .sheetBody {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../styles/surface.module.css";
 }
 
 .chipRow {
@@ -62,15 +47,11 @@
 }
 
 .operation {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  composes: stack1 from "../../../styles/surface.module.css";
 }
 
 .sheetActions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  composes: stack1 from "../../../styles/surface.module.css";
 }
 
 .sheetDivider {

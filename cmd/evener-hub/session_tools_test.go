@@ -54,7 +54,7 @@ func (a *managerReadAdapter) Complete(_ context.Context, r llm.Request) (llm.Res
 		return activityRelayTool("job_watch", map[string]any{"operation": "create", "hub": map[string]any{"ref": a.ref, "events": []string{"status"}, "completion": true}, "intent": "Watch this session's recorded completion"}), nil
 	}
 	if a.watch {
-		return activityRelayTool("communicate", map[string]any{"message": "watch registered", "end_turn": true}), nil
+		return activityRelayTool("communicate", map[string]any{"message": "watch registered", "next": "send_and_end_turn"}), nil
 	}
 	switch a.step {
 	case 1:
@@ -62,7 +62,7 @@ func (a *managerReadAdapter) Complete(_ context.Context, r llm.Request) (llm.Res
 	case 2:
 		return activityRelayTool("job_status", map[string]any{"hub": map[string]any{"ref": a.ref}}), nil
 	default:
-		return activityRelayTool("communicate", map[string]any{"message": "read complete", "end_turn": true}), nil
+		return activityRelayTool("communicate", map[string]any{"message": "read complete", "next": "send_and_end_turn"}), nil
 	}
 }
 
@@ -500,7 +500,7 @@ func TestManagerAdmissionRealToolRead(t *testing.T) {
 		t.Fatalf("status follow-up=%+v", results[1].FollowUps)
 	}
 	for _, model := range []string{"gpt-5", "anthropic/claude-opus-4-6"} {
-		if err = session.SetModel(model); err != nil {
+		if err = session.SetModel("", model); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = session.ProcessInput(ctx, "capture switched request", nil); err != nil {

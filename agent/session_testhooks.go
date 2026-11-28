@@ -207,17 +207,6 @@ type testConfig struct {
 	// through armDelegateAttentionOnce, bypassing the fault — a refused arm
 	// whose paced retry later succeeds. Nil in production.
 	delegateAttentionArmFault func() error
-	// delegateAttentionHoldReleased, when set, observes each release of the
-	// automatic drives' holds: the site names the wake that ended them — a
-	// committed child delivery or a successful arm — with the ids that
-	// release dropped. A release that dropped nothing observes nothing.
-	// Nil in production.
-	delegateAttentionHoldReleased func(site delegateHoldReleaseSite, released []string)
-	// delegateAttentionBeforeReopenAppend observes the instant a reopen's
-	// durable append is about to land, after every teardown guard has run.
-	// Tests pause it there so a stop admitted into the guard-to-append window
-	// can be pinned. Nil in production.
-	delegateAttentionBeforeReopenAppend func()
 	// delegateAttentionBeforeGuardRelease observes an attention drive that
 	// launched no run, while it still holds the child's drive guard. Tests
 	// pause it there so another drive is refused on that guard. Nil in
@@ -251,6 +240,13 @@ type testConfig struct {
 	// outstanding. It receives the parking session, since child sessions
 	// inherit the hook. Nil in production.
 	jobTreeDrainParked func(*Session)
+	// jobTreeDrainBeforeOutstanding observes a session's job-tree drain after
+	// a pass has established it owes no notification turn, immediately before
+	// it counts outstanding work. A completion whose attention commits in
+	// that interval must not let the pass return quiescent. It receives the
+	// draining session, since child sessions inherit the hook. Nil in
+	// production.
+	jobTreeDrainBeforeOutstanding func(*Session)
 	// delegateFinalizationWaitCeiling overrides how long a send waits for a
 	// finished generation's finalize tail to release the delegate
 	// (delegateFinalizationWaitCeiling), so a test can exercise a tail that
@@ -397,21 +393,6 @@ type testConfig struct {
 	// Inherited by child configs like every testOnly field.
 	disableRestoredDelegateNotifyDrive bool
 
-	// needsResponseQuietPeriod overrides needsResponseQuietPeriodDefault for
-	// tests; zero rests awaiting at the settle itself. Nil keeps the
-	// production default.
-	needsResponseQuietPeriod *time.Duration
-
-	// needsResponseRestBeforeAnnounce, when set, runs in the quiet-period
-	// timer after the session rests awaiting and before STATUS_SETTLED is
-	// emitted, with restMu held, so a test can start a turn in that gap.
-	needsResponseRestBeforeAnnounce func()
-
-	// turnStartBeforeRestMu, when set, runs in processOneInput right before
-	// the turn start takes restMu, so a test knows the lock is the next thing
-	// the turn waits on.
-	turnStartBeforeRestMu func()
-
 	// idleTeardownConcurrency overrides the idle-release member teardown's
 	// concurrency bound (delegateTeardownConcurrencyDefault) for tests. Nil
 	// keeps the production default. Inherited by child configs like every
@@ -485,8 +466,8 @@ type testConfig struct {
 	// sandboxProber, when non-nil, supplies the host facts used to RE-RESOLVE a
 	// resumed delegate's persisted sandbox policy against its lane. Production
 	// leaves it nil and probes the live host (sandbox.RealProber) every session;
-	// tests inject a sandbox.FakeProber for fixed facts, or a prober that shares
-	// one real probe across the test process.
+	// tests inject a sandboxtest.FakeProber for fixed facts, or a prober that
+	// shares one real probe across the test process.
 	sandboxProber sandbox.Prober
 	// fileToolEnforceable replaces the runtime secure-open capability probe for
 	// deterministic delegate sandbox tests. Nil probes the live process.

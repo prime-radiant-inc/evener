@@ -1,7 +1,7 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, renderHook, screen } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { usePresence } from "./usePresence";
+import { usePresence, useShownWhileClosing } from "./usePresence";
 
 // jsdom implements no Web Animations, so each test decides what
 // Element.getAnimations reports for the layer: nothing (reduced motion, or no
@@ -140,4 +140,16 @@ test("reopening during the exit cancels the removal and returns the layer to ope
   expect(layer()).toBe(closing);
   expect(layer()?.getAttribute("data-motion")).toBe("open");
   expect(onExited).not.toHaveBeenCalled();
+});
+
+test("a closing layer keeps the value it held when it closed", () => {
+  const { result, rerender } = renderHook(
+    ({ open, value }: { open: boolean; value: string }) => useShownWhileClosing(open, value),
+    { initialProps: { open: true, value: "shown" } },
+  );
+  expect(result.current).toBe("shown");
+  rerender({ open: false, value: "cleared" });
+  expect(result.current).toBe("shown");
+  rerender({ open: true, value: "reopened" });
+  expect(result.current).toBe("reopened");
 });

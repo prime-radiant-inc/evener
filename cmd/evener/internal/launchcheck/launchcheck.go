@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
@@ -23,10 +24,6 @@ import (
 // launchCheckLoadClient is the injectable hook for tests. Production code
 // calls cmdutil.LoadClient; tests may replace this to inject a stub client.
 var launchCheckLoadClient = cmdutil.LoadClient
-
-// launchCheckListTimeout bounds one instance's model listing. It is per
-// instance, not per command, so a slow endpoint costs only its own budget.
-const launchCheckListTimeout = llm.LiveModelListTimeout
 
 // supportedLaunchFlags advertises the serve/run flags this binary accepts
 // that a launcher (the hub) passes on the command line. Keep in sync with
@@ -76,23 +73,29 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 		Version:           buildinfo.Version(),
 		Protocol:          appwire.ProtocolVersion,
 	}
+	loadClient := sync.OnceValues(func() (*llm.Client, error) {
+		return launchCheckLoadClient("")
+	})
 	if *modelsOut {
-		models, diagnostics, err := launchCheckModels()
+		client, err := loadClient()
 		if err != nil {
 			return err
 		}
-		resp.Models = models
-		resp.Diagnostics = diagnostics
+		resp.Models, resp.Diagnostics = launchCheckModelsWithClient(client)
 	}
 	if strings.TrimSpace(*model) != "" {
 		ref, err := cmdutil.ParseModelRef(*model)
 		if err != nil {
 			return err
 		}
-		if err := validateLaunchCheckProfile(ref); err != nil {
+		client, err := loadClient()
+		if err != nil {
 			return err
 		}
-		if err := validateLaunchCheckModel(ref); err != nil {
+		if err := validateLaunchCheckProfileWithClient(client, ref); err != nil {
+			return err
+		}
+		if err := validateLaunchCheckModelWithClient(client, ref); err != nil {
 			return err
 		}
 		resp.Provider = ref.Provider
@@ -111,16 +114,12 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// validateLaunchCheckProfile checks that the model ref resolves on the
-// registry — MINT-FREE: it resolves the row's facts, never the
-// credential (spec §10.1), because the check is a read the hub triggers
-// and the child's first request owns the mint. It stays network-free
-// the same way: no live /models lookup happens here.
-func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
-	client, err := launchCheckLoadClient("")
-	if err != nil {
-		return err
-	}
+// validateLaunchCheckProfileWithClient checks that the model ref resolves on
+// the registry — MINT-FREE: it resolves the row's facts, never the credential
+// (spec §10.1), because the check is a read the hub triggers and the child's
+// first request owns the mint. It stays network-free the same way: no live
+// /models lookup happens here.
+func validateLaunchCheckProfileWithClient(client *llm.Client, ref cmdutil.ModelRef) error {
 	pr := registry.ParseRef(ref.Qualified())
 	if pr.Model == "" {
 		return fmt.Errorf("%q: empty model reference", ref.Qualified())
@@ -137,18 +136,20 @@ func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
 	return nil
 }
 
-// launchCheckModels lists what every visible instance can launch. Each
-// instance is listed on its own, under its own timeout, so one unreachable
-// endpoint reports a diagnostic instead of hiding the rest or starving every
-// instance after it.
-func launchCheckModels() ([]appwire.ModelDescriptor, []appwire.ModelListDiagnostic, error) {
-	client, err := launchCheckLoadClient("")
-	if err != nil {
-		return nil, nil, err
-	}
-	out := []appwire.ModelDescriptor{}
-	diagnostics := []appwire.ModelListDiagnostic{}
-	for _, inst := range client.Registry().Instances() {
+type launchCheckInstanceResult struct {
+	models     []appwire.ModelDescriptor
+	diagnostic *appwire.ModelListDiagnostic
+}
+
+// launchCheckModelsWithClient lists what every visible instance can launch.
+// Each instance is listed concurrently under its own timeout so one slow or
+// unreachable endpoint cannot serialize or starve the rest, and results are
+// assembled in registry instance order.
+func launchCheckModelsWithClient(client *llm.Client) ([]appwire.ModelDescriptor, []appwire.ModelListDiagnostic) {
+	instances := client.Registry().Instances()
+	results := make([]launchCheckInstanceResult, len(instances))
+	var wg sync.WaitGroup
+	for i, inst := range instances {
 		if inst.Hidden {
 			continue
 		}
@@ -165,6 +166,7 @@ func launchCheckModels() ([]appwire.ModelDescriptor, []appwire.ModelListDiagnost
 			if err != nil {
 				continue
 			}
+			results[i].models = make([]appwire.ModelDescriptor, 0, len(rows))
 			for _, row := range rows {
 				if row.Disabled {
 					continue
@@ -173,23 +175,43 @@ func launchCheckModels() ([]appwire.ModelDescriptor, []appwire.ModelListDiagnost
 				if err != nil || res.Model.Hidden || llm.LiveSaysNoTools(res) {
 					continue
 				}
-				out = append(out, launchCheckModelRow(inst.Name, row.ID, res, false))
+				results[i].models = append(results[i].models, launchCheckModelRow(inst.Name, row.ID, res, false))
 			}
 			continue
 		}
-		listCtx, cancel := context.WithTimeout(context.Background(), launchCheckListTimeout)
-		listing, err := client.Models(listCtx, inst.Name)
-		cancel()
-		if err != nil {
-			diagnostics = append(diagnostics, launchCheckModelDiagnostic(inst.Name, err))
-			continue
-		}
-		for _, m := range listing.Models {
-			out = append(out, launchCheckModelRow(inst.Name, m.ModelID, m,
-				listing.Usable && defaultModel != "" && strings.TrimSpace(m.ModelID) == defaultModel))
+		wg.Go(func() {
+			listCtx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeout)
+			listing, err := client.Models(listCtx, inst.Name)
+			cancel()
+			if err != nil {
+				diag := launchCheckModelDiagnostic(inst.Name, err)
+				results[i].diagnostic = &diag
+				return
+			}
+			results[i].models = make([]appwire.ModelDescriptor, 0, len(listing.Models))
+			for _, m := range listing.Models {
+				results[i].models = append(results[i].models, launchCheckModelRow(inst.Name, m.ModelID, m,
+					listing.Usable && defaultModel != "" && strings.TrimSpace(m.ModelID) == defaultModel))
+			}
+		})
+	}
+	wg.Wait()
+	totalModels, totalDiags := 0, 0
+	for _, res := range results {
+		totalModels += len(res.models)
+		if res.diagnostic != nil {
+			totalDiags++
 		}
 	}
-	return out, diagnostics, nil
+	out := make([]appwire.ModelDescriptor, 0, totalModels)
+	diagnostics := make([]appwire.ModelListDiagnostic, 0, totalDiags)
+	for _, res := range results {
+		out = append(out, res.models...)
+		if res.diagnostic != nil {
+			diagnostics = append(diagnostics, *res.diagnostic)
+		}
+	}
+	return out, diagnostics
 }
 
 // launchCheckModelRow builds one contract row from a resolved record through
@@ -295,18 +317,13 @@ func launchCheckSensitiveEnvKey(key string) bool {
 		strings.Contains(key, "CREDENTIAL")
 }
 
-// validateLaunchCheckModel confirms the instance can serve the model: the
-// registry's own verdict first, then — only when the instance actually
+// validateLaunchCheckModelWithClient confirms the instance can serve the model:
+// the registry's own verdict first, then — only when the instance actually
 // answered with a live listing — membership in what it advertised. A
 // registry-only listing proves nothing about availability, so it passes.
-func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
-	ctx, cancel := context.WithTimeout(context.Background(), launchCheckListTimeout)
+func validateLaunchCheckModelWithClient(client *llm.Client, ref cmdutil.ModelRef) error {
+	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeout)
 	defer cancel()
-
-	client, err := launchCheckLoadClient("")
-	if err != nil {
-		return nil
-	}
 	if client.Registry().LaunchMintsCredentialCommand(ref.Provider) {
 		// The preflight never mints (spec §10.1): a command-credentialed
 		// launch's liveness is the child's first request to answer, so
@@ -342,6 +359,11 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 		}
 	}
 	listing, err := client.Models(ctx, ref.Provider)
+	if client.ListingProvesUnavailable(ref.Provider, listing) {
+		// The account answered and offers nothing Evener can dispatch: a
+		// registry row the roster omits is not this subscription's model.
+		return fmt.Errorf("model %s is not available from provider %s", ref.Qualified(), ref.Provider)
+	}
 	if err != nil || !listing.Usable {
 		// No live evidence either way: a registry refusal stands, and an
 		// accepted reference passes.

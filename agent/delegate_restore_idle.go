@@ -105,7 +105,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		Project:                 s.cfg.Project,
 		ResolveProfile:          s.resolveProfile,
 		AcquireSessionOwnership: s.cfg.AcquireSessionOwnership,
-		ModelFallbacks:          append([]string(nil), descriptor.Config.ModelFallbacks...),
 		LLMRetryPolicy:          s.cfg.LLMRetryPolicy,
 		LLMSleep:                s.cfg.LLMSleep,
 		clock:                   s.clock,

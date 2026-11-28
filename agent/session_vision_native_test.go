@@ -967,7 +967,13 @@ func TestPersistImage_NoSteeringWhenSessionModelSeesImagesNatively(t *testing.T)
 	// (embedded) registry the profile resolves on.
 	client := llm.NewClient()
 	client.Register(openai)
-	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")))
+	// A per-test git root bounds instruction-doc discovery: an ambient temp
+	// workspace inside an enclosing repository would otherwise load that
+	// repository's oversized AGENTS.md and emit the intentional truncation
+	// warning this test asserts none of.
+	workDir := t.TempDir()
+	initGitRepo(t, workDir)
+	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("gpt-5.2")), withDir(workDir))
 
 	var kinds []events.EventKind
 	done := make(chan struct{})

@@ -14,9 +14,10 @@ import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { appliedReceipt } from "../../../mutationReceiptTestUtils";
 import { ClientProvider } from "../../../shell/clientContext";
+import { connectIPhoneHost } from "../../../shell/iPhoneHost";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { MOBILE_QUERY, resetMobileViewportForTests } from "../../../shell/useIsMobile";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
@@ -1064,14 +1065,27 @@ test("ordinary Send does not take another control's focus on programmatic form s
 });
 
 test("ordinary Send preserves the textarea submission shortcut and next typing", async () => {
+  installMobileViewport();
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("EvenerNative/1");
+  const editing: boolean[] = [];
+  vi.stubGlobal("ReactNativeWebView", {
+    postMessage(json: string) {
+      const message = JSON.parse(json);
+      if (message.type === "editing") editing.push(message.active);
+    },
+  });
+  const disconnect = connectIPhoneHost(vi.fn());
+  if (disconnect) onTestFinished(disconnect);
   const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
   acceptFocusSubmission(fake, "turn/start");
   const user = userEvent.setup();
   const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
   await user.type(message, "sf");
+  expect(editing.at(-1)).toBe(true);
   await user.keyboard("{Control>}{Enter}{/Control}");
   await flushPendingTurnsProjectionForTests();
   expect(message.textContent).toBe("");
+  expect(editing.at(-1)).toBe(false);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   expect(document.activeElement).toBe(message);
   await user.keyboard("next draft");
@@ -2081,6 +2095,7 @@ test("while a strip-triggered drain is in flight, the composer's own classic ste
     receipt: appliedReceipt(params.clientMutationId, "thread_a"),
   }));
 
+  await user.type(textarea() as HTMLDivElement, "draft");
   await user.click(drainButton());
   await storage.commitStarted;
   expect(composerSteerButton().disabled).toBe(true);

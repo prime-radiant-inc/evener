@@ -6,7 +6,7 @@ import type userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { getToasts } from "../../widgets/toast/store";
-import { editorCursor } from "../session/testing/editor";
+import { editorCursor, selectEditorText } from "../session/testing/editor";
 import {
   installSpawnTestHooks,
   promptField,
@@ -399,7 +399,7 @@ test("a non-evener harness sends no slashCatalog call and typing /goal shows no 
   renderSpawn(fake);
   await settled();
 
-  await user.click(screen.getByText("Advanced options"));
+  await user.click(screen.getByText("Advanced"));
   await user.selectOptions(screen.getByLabelText("Harness"), "external");
 
   // From this commit on, no slashCatalog timer can be pending: the harness
@@ -499,4 +499,34 @@ test("clicking a spawn menu option commits it without ever blurring the prompt",
   // click's onSelect commits rather than racing the blur-close.
   expect(document.activeElement).toBe(promptField());
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("accepting built-in /goal before existing arguments keeps the slash menu closed so Ctrl+Enter submits", async () => {
+  const user = setupUser();
+  const fake = readyClient((f) => {
+    f.on("goal/set", () => ({ started: true }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await typeSlashQuery(user, fake, "/go existing goal");
+  selectEditorText(promptField(), "/go".length);
+  expect(slashOptions()[0]?.textContent).toContain("/goal");
+
+  await user.keyboard("{Tab}");
+
+  expect(promptField().textContent).toBe("/goal existing goal");
+  expect(editorCursor(promptField())).toBe("/goal".length);
+  expect(screen.queryByRole("listbox")).toBeNull();
+
+  await user.keyboard("{Control>}{Enter}{/Control}");
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  let goal: { params?: unknown } | undefined;
+  await waitFor(() => {
+    goal = fake.calls.find((c) => c.method === "goal/set");
+    expect(goal).toBeTruthy();
+  });
+  expect(goal?.params).toMatchObject({ ref: "local:abc123", objective: "existing goal" });
 });

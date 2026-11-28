@@ -27,7 +27,7 @@ func TestTaskTool_SingleInProgressUnderCombinedBatch(t *testing.T) {
 func TestTaskTool_AutoAdvanceFiresOnceWithSteering(t *testing.T) {
 	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "a", Prompt: "p"}, {Description: "b", Prompt: "p"}})
-	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatal(err)
 	}
 	steersBefore := len(h.steers)

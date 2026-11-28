@@ -57,9 +57,9 @@ var ErrLineTooLong = errors.New("transcript line too long")
 // classifies such a failure, not a signal callers act on: the writer settles
 // the outcome itself. A whole line left behind is a retained record — the
 // append returns nil (recorded) and the debt is surfaced as a warning — while a
-// partial line poisons the writer. Callers of Append/AppendDurable see
-// recorded-or-error and never reconcile; a caller that needs durability uses
-// AppendSynced.
+// partial line poisons the writer. Callers using DoorBuffered, DoorDeferred, or
+// DoorDurable see recorded-or-error and never reconcile; a caller that needs
+// confirmed durability uses DoorSynced.
 var ErrRollbackFailed = errors.New("rollback failed")
 
 // ErrWriterPoisoned marks a writer that refuses further appends. An append
@@ -79,12 +79,13 @@ var ErrWriterPoisoned = errors.New("transcript writer refuses further appends af
 // ErrWriterClosed marks a synced write to a closed writer. The ordinary doors
 // treat a closed (or nil) writer as a no-op that returns nil, because a session
 // with no state directory writes into a closed writer for its whole life; a
-// durability owner (AppendSynced) instead fails closed, so it never reads a
-// dropped write as durable.
+// durability owner (Record with DoorSynced) instead fails closed, so it never
+// reads a dropped write as durable.
 var ErrWriterClosed = errors.New("transcript writer is closed")
 
-// ErrRetainedUnsynced marks an AppendSynced whose whole record is in the file
-// but could be made durable by neither its own fsync nor the recovery barrier.
+// ErrRetainedUnsynced marks a DoorSynced Record call whose whole record is in
+// the file but could be made durable by neither its own fsync nor the recovery
+// barrier.
 // The record IS a record — a returning reader finds it — so the caller must
 // adopt it (record it in history) rather than re-append, which would duplicate
 // the line on restart; the next successful fsync settles its durability. Match
@@ -460,9 +461,9 @@ type Writer struct {
 	// was never set — the zero-value Writer — reports a zero Header from it.
 	header Header
 
-	// SyncInterval controls how often Append calls fsync.
-	// If 0, every Append fsyncs (backward-compatible default for tests).
-	// If >0, Append only fsyncs when this duration has elapsed since the last sync.
+	// SyncInterval controls how often DoorBuffered and DoorDeferred Record calls invoke fsync.
+	// If 0, every Record fsyncs (default for tests).
+	// If >0, DoorBuffered and DoorDeferred only fsync when this duration has elapsed since the last sync.
 	SyncInterval time.Duration
 
 	dirty    bool
@@ -473,8 +474,8 @@ type Writer struct {
 	// and nothing this writer could append after it would be readable. It is
 	// never cleared — no fsync makes half a line whole. A whole line that
 	// landed but did not sync is NOT this: it is a record, tracked as dirty
-	// debt the next fsync settles, and the writer stays usable. See the two
-	// append doors for the full contract.
+	// debt the next fsync settles, and the writer stays usable. See Record for
+	// the full contract.
 	poisoned bool
 
 	// retainedWarnings holds the diagnostics — wrapped errors carrying the sync
@@ -554,7 +555,7 @@ func (w *Writer) FailedToolCalls() (int, bool) {
 }
 
 // NewWriter creates a transcript file at path, writes the header as the first line,
-// and returns a writer that keeps the file handle open for subsequent Append calls.
+// and returns a writer that keeps the file handle open for subsequent Record calls.
 func NewWriter(path string, header Header) (*Writer, error) {
 	return newWriterFS(afero.NewOsFs(), path, header, true)
 }
@@ -570,7 +571,7 @@ func NewWriterWithFS(fs afero.Fs, path string, header Header) (*Writer, error) {
 
 // NewWriterNoSync creates a transcript file exactly like NewWriter, on the
 // real OS filesystem, but skips the header fsync. Every other durability
-// property (file exists at path, header bytes present, subsequent Append
+// property (file exists at path, header bytes present, subsequent Record
 // behavior) is identical — only the guarantee that the header survives a
 // crash before the first fsync is given up. For tests whose contract is not
 // crash durability; production always calls NewWriter.
@@ -651,96 +652,6 @@ func (w *Writer) Header() Header {
 	return w.header
 }
 
-// Append writes a turn as an Entry to the JSONL file.
-// Safe for concurrent use. No-op if the receiver is nil.
-//
-// The nil no-op exists so a session with no state directory can write without
-// every call site nil-checking, and that is the common case. Its cost is that
-// "I wrote this" and "there was nowhere to write it" are the same answer to the
-// caller — nil. A caller that reaches a writer which does not exist YET, rather
-// than one that will never exist, therefore loses the turn in silence, with no
-// error to report and nothing for a test to catch. That is exactly what
-// happened to SessionStart hook exits in kata qm9y; kata d4es is the hazard.
-//
-// Do not add nil-checks at call sites to compensate: they cannot tell the two
-// cases apart either. Evener's agent package instead routes every write through
-// Session.writeTranscript/writeTranscriptDurable, which hold turns until
-// Session.attachTranscript has settled whether a writer exists at all. Any new
-// consumer of this package that can write before it has opened its writer needs
-// the same gate; a bare Append there reports success and drops the turn.
-// THE CONTRACT (stated here once; other append doors reference it).
-//
-// A whole line that reached the file is a RECORD — every returning reader finds
-// it — even if the fsync that would make it durable failed. Append and
-// AppendDurable therefore return nil for a retained record: recorded-or-error
-// is their whole contract, and an ordinary producer's `if err != nil { not
-// recorded }` is correct by construction. A retained record is not yet durable;
-// the writer tracks that exactly as it tracks any buffered append — as `dirty`
-// debt the next successful fsync (any later AppendDurable, or
-// EstablishDurability) settles — so the writer stays usable, and the durable
-// door's sync failure is reported once through DrainWarnings rather than as an
-// error. The ONLY thing that stops the writer is a PARTIAL line whose rollback
-// could not take it back out: half a record is not a record, no fsync makes it
-// whole, and an append run onto it would be unreadable — so the writer is
-// poisoned permanently (ErrWriterPoisoned).
-//
-// A caller that needs a turn RECORDED AND DURABLE — the environment producer,
-// the delegate-attention side-writes — uses AppendSynced, which returns an
-// error unless the line is both.
-func (w *Writer) Append(turn schema.Turn) error {
-	_, err := w.Record(turn, RecordOptions{Door: DoorBuffered})
-	return err
-}
-
-// AppendDurable writes a turn and fsyncs it before returning; a whole line that
-// landed but could not be synced is recorded (returns nil) with the sync
-// failure queued for DrainWarnings. See the contract on Append. No-op if the
-// receiver is nil — see Append for why that makes a write into a not-yet-open
-// writer silently succeed.
-func (w *Writer) AppendDurable(turn schema.Turn) error {
-	_, err := w.Record(turn, RecordOptions{Door: DoorDurable})
-	return err
-}
-
-// AppendSynced records a turn and establishes its durability. It has three
-// outcomes, because a durability owner must tell them apart or it duplicates
-// records across a crash:
-//
-//   - nil: the record is durable (its own fsync, or the recovery barrier,
-//     succeeded). The owner commits.
-//   - *RetainedUnsyncedError (errors.Is ErrRetainedUnsynced): the WHOLE record
-//     is in the file — a returning reader finds it — but neither its fsync nor
-//     the barrier could make it durable. The owner must ADOPT it (record it in
-//     history, never re-append: re-appending duplicates the line on restart)
-//     and let the next successful fsync settle the debt. The diagnostic is
-//     queued for the session to surface.
-//   - any other error: nothing was recorded (a partial line, or a clean
-//     rollback). The owner keeps its obligation pending and may retry.
-//
-// It is the door for the durability owners that raise their own barrier;
-// ordinary producers use AppendDurable and never inspect durability. It raises
-// the recovery barrier ONLY when the append's own fsync failed (retained !=
-// nil); a clean durable append is not fsynced twice.
-func (w *Writer) AppendSynced(turn schema.Turn) error {
-	_, err := w.Record(turn, RecordOptions{Door: DoorSynced})
-	return err
-}
-
-// AppendBatch writes every turn as one write and one fsync, all-or-nothing:
-// either every line is in the file at contiguous sequence numbers, or a
-// rollback to the batch's start offset leaves none of them. A rolled-back batch
-// still consumes its sequence numbers (a reader in another process may have
-// seen its lines) but takes no entry ordinal. It returns the sequence number
-// the first turn took, or 0 when nothing was recorded. A batch whose whole
-// buffer landed but did not sync is a retained record, per the contract on
-// Append. No caller until A2's fold; kept here as the exported entry to the
-// one write primitive. No-op returning (0, nil) for a nil or closed writer,
-// matching Append.
-func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
-	records, _, err := w.appendBatch(turns, PlaceVerbatim, DoorDurable)
-	return firstRecord(records).Seq, err
-}
-
 // appendBatch is the locked entry to the sole write primitive. A single append
 // is a batch of one through it. The door decides three things:
 //   - whether a failed write rolls back: every door but the buffered one;
@@ -755,8 +666,8 @@ func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
 //     writes into one for its whole life; the synced door must never read a
 //     dropped write as durable, so a closed writer is ErrWriterClosed. The
 //     check is made UNDER THE LOCK, so Close cannot slip in between a caller's
-//     own closed check and the append — the race that let AppendSynced return
-//     nil (durable) for a write that recorded nothing.
+//     own closed check and the append — the race that let a DoorSynced write
+//     return nil (durable) for a write that recorded nothing.
 func (w *Writer) appendBatch(turns []schema.Turn, place Placement, door Door) (records []Record, retained, err error) {
 	if w == nil {
 		// A writer that never existed (a session with no state directory) is a
@@ -1143,7 +1054,7 @@ func (w *Writer) Close() error {
 		return nil
 	}
 
-	// Acquire mu so any in-flight Append finishes before we close.
+	// Acquire mu so any in-flight Record finishes before we close.
 	w.mu.Lock()
 	w.closed.Store(true)
 	w.mu.Unlock()

@@ -1,9 +1,10 @@
 import { MOBILE_QUERY } from "../../../shell/useIsMobile";
 
-export function installMobileViewport(query: string = MOBILE_QUERY): () => void {
+export function installMobileViewport(queries: string | string[] = MOBILE_QUERY): () => void {
+  const list = Array.isArray(queries) ? queries : [queries];
   const original = window.matchMedia;
   window.matchMedia = ((media: string) => ({
-    matches: media === query,
+    matches: list.includes(media),
     media,
     addEventListener() {},
     removeEventListener() {},

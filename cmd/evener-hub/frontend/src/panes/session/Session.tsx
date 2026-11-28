@@ -22,10 +22,12 @@ import { StatusBar } from "../../shell/statusbar/StatusBar";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { carryComposerSeatForPlacement, workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Button, EmptyState, InlineNotice, Loader, PaneScaffold, Skeleton } from "../../widgets";
-import { ConversationBody, type ConversationSeat } from "./ConversationBody";
+import { useThreadsStore } from "../../stores/threads";
+import { Button, InlineNotice, Loader, PaneScaffold, Skeleton } from "../../widgets";
+import { ConversationBody, ConversationDeletedFace, type ConversationSeat } from "./ConversationBody";
+import { SessionInspectionActions } from "./chrome/SessionInspectionActions";
 import { RepoLocation } from "./composer/RepoLocation";
+import { forceStopAndRefresh } from "./forceStop";
 import styles from "./session.module.css";
 import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
 import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
@@ -68,19 +70,9 @@ function SessionLoading({ sessionRef, repairing }: { sessionRef: string; repairi
 function SessionForceStopRecovery({ sessionRef }: { sessionRef: string }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const stop = async () => {
+  const stop = () => {
     setError(null);
-    try {
-      await threadsStore.getState().forceStop(sessionRef);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      throw err;
-    }
-    try {
-      await threadsStore.getState().refreshThread(sessionRef);
-    } catch (err) {
-      setError(`Session stopped; couldn't refresh its view: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    return forceStopAndRefresh(sessionRef, setError);
   };
   return (
     <>
@@ -137,12 +129,11 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
 
   const footerCwd = !deletedRef && model ? model.cwd : null;
   const edgeFooter = useMemo(() => {
-    // The phone layout keeps one bottom surface, the composer: its activity
-    // counts render on a line below the card instead, and the
-    // working-directory line stays a desktop-line concern (a phone reads the
-    // working directory and branch through the session menu's Overview), so
-    // a landscape phone spends its height on content rather than chrome
-    // strips.
+    // The phone layout keeps one bottom surface, the composer: the activity
+    // counts live in the top bar's Overview sheet, and the working-directory
+    // line stays a desktop-line concern (a phone reads the working directory
+    // and branch through that sheet's session facts), so a landscape phone
+    // spends its height on content rather than chrome strips.
     if (isMobile) return undefined;
     const location = footerCwd === null ? null : <RepoLocation cwd={footerCwd} local={ref.startsWith("local:")} />;
     return <StatusBar sessionRef={ref} paneId={paneId} leading={location} />;
@@ -187,6 +178,14 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     [readView, composerSource, paneId, paneFocused, ref],
   );
 
+  const scaffold = {
+    paneId,
+    focused: paneFocused,
+    scaffoldMarker: `session:${ref}`,
+    title,
+    edgeFooter,
+  };
+
   return (
     <ConversationBody
       ref={ref}
@@ -197,18 +196,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         // is stale.
         if (state === "deleted") {
           return (
-            <PaneScaffold
-              paneId={paneId}
-              focused={paneFocused}
-              scaffoldMarker={`session:${ref}`}
-              title={title}
-              footer={footer}
-              edgeFooter={edgeFooter}
-            >
-              <EmptyState
-                title="This session was deleted"
+            <PaneScaffold {...scaffold} footer={footer}>
+              <ConversationDeletedFace
                 hint="Its transcript is gone. You can close this pane."
-                reason="deleted"
                 action={
                   <Button variant="quiet" onClick={handleCloseDeleted}>
                     Close
@@ -220,27 +210,18 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         }
         if (state === "loading") {
           return (
-            <PaneScaffold
-              paneId={paneId}
-              focused={paneFocused}
-              scaffoldMarker={`session:${ref}`}
-              title={title}
-              edgeFooter={edgeFooter}
-            >
+            <PaneScaffold {...scaffold}>
               <SessionLoading key={ref} sessionRef={ref} repairing={repairingRef} />
             </PaneScaffold>
           );
         }
         return (
           <PaneScaffold
-            paneId={paneId}
-            focused={paneFocused}
+            {...scaffold}
             focusSelector='[data-composer] [role="textbox"]'
-            scaffoldMarker={`session:${ref}`}
-            title={title}
             cadence={cadence}
+            actions={isMobile ? undefined : <SessionInspectionActions sessionRef={ref} paneId={paneId} />}
             footer={footer}
-            edgeFooter={edgeFooter}
           >
             {content}
           </PaneScaffold>

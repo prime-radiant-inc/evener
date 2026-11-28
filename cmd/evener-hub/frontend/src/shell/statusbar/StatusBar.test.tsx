@@ -4,7 +4,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
-import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import { LivenessLine } from "../../panes/session/transcript/flow/LivenessLine";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { activityClient, activityContext, activityJob, activitySummary } from "../../stores/sessionActivityTestUtils";
@@ -40,6 +39,9 @@ test("four footer categories keep their owning pane and About has no chip", asyn
   const chips = screen.getAllByRole("button");
   expect(chips.map((chip) => chip.dataset.activityTab)).toEqual(["agents", "jobs", "watches", "tasks"]);
   expect(chips.every((chip) => chip.dataset.sessionRef === ref)).toBe(true);
+  expect(chips.every((chip) => chip.dataset.paneId === "pane-secondary")).toBe(true);
+  expect(chips.every((chip) => chip.dataset.chrome === "pill" && chip.dataset.orientation === "row")).toBe(true);
+  expect(chips.every((chip) => chip.dataset.compact === undefined)).toBe(true);
   expect(chips.every((chip) => chip.getAttribute("aria-label")?.endsWith(" - open Overview"))).toBe(true);
   expect(screen.queryByRole("button", { name: /About/ })).toBeNull();
   for (const tab of ["agents", "jobs", "watches", "tasks"] as const) {
@@ -91,7 +93,7 @@ test.each(["button", "Escape"])("closing activity with %s restores its keyboard 
   const opener = await screen.findByRole("button", { name: /Jobs, 2 of 201 running/ });
   opener.focus();
   await user.keyboard("{Enter}");
-  const close = await screen.findByRole("button", { name: "Close Overview" });
+  const close = await screen.findByRole("button", { name: "Hide Overview" });
   close.focus();
   await user.keyboard(gesture === "button" ? "{Enter}" : "{Escape}");
   expect(activitySidebarStore.getState().open).toBe(false);
@@ -126,7 +128,7 @@ test("an open activity sidebar returns focus to the latest pane's replacement ch
   await user.click(await within(second.container).findByRole("button", { name: /Jobs, 2 of 201 running/ }));
 
   expect(focusedPaneWhenSidebarChanged).toBe("pane-second");
-  const close = await screen.findByRole("button", { name: "Close Overview" });
+  const close = await screen.findByRole("button", { name: "Hide Overview" });
   close.focus();
   second.unmount();
   const replacement = render(<StatusBar sessionRef="remote:second" paneId="pane-second" leading={null} />);
@@ -175,7 +177,7 @@ test("closing after a transient opener disappears returns to the selected activi
   );
   await user.click(screen.getByRole("button", { name: "Inspect job activity" }));
   trigger.unmount();
-  await user.click(await screen.findByRole("button", { name: "Close Overview" }));
+  await user.click(await screen.findByRole("button", { name: "Hide Overview" }));
   expect(document.activeElement).toBe(screen.getByRole("button", { name: /Jobs, 2 of 201 running/ }));
 });
 
@@ -287,7 +289,7 @@ test("unknown counts remain unknown and pending ancestry is explicit", async () 
     </MotionProvider>,
   );
   await waitFor(() => expect(screen.getByRole("button", { name: /Agents, counts unknown/ })).toBeTruthy());
-  expect(screen.getByRole("radio", { name: "Agents, counts unknown" }).textContent).toContain("—");
+  expect(screen.getByRole("tab", { name: "Agents, counts unknown" }).textContent).toContain("—");
   expect(screen.getByRole("button", { name: /Agents, counts unknown/ }).textContent).toContain("—");
   expect(screen.getAllByText("Finding session context…")).toHaveLength(1);
   expect(screen.queryByRole("button", { name: /Agents, 0 of/ })).toBeNull();
@@ -313,26 +315,6 @@ test("the Tasks chip counts cancelled tasks toward its settled count", async () 
   render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
   const chip = await screen.findByRole("button", { name: /Tasks, 3 of 5 settled/ });
   expect(chip.textContent).toContain("3/5");
-});
-
-// A phone footer keeps the path and the chips on one line, so each chip shows
-// its single active count there. The full active/total fraction stays in the
-// accessible name (and the Overview), which is where a screen reader and the
-// chip's tooltip still get it.
-test("a phone chip shows its single count and keeps the full fraction accessible", async ({ onTestFinished }) => {
-  onTestFinished(installMobileViewport());
-  const ref = "remote:phone";
-  const client = activityClient();
-  client.on("evener/thread/activity/read", ({ ref, scope }) => ({
-    ...activitySummary(ref, scope),
-    delegates: { known: true, total: 4, active: 3, failed: 0, completed: 1 },
-  }));
-  installFocusedScope(ref);
-  connectionStore.getState().connect(client);
-  render(<StatusBar sessionRef={ref} paneId="selected" leading={null} />);
-  const chip = await screen.findByRole("button", { name: /Agents, 3 of 4 active/ });
-  expect(chip.textContent).toContain("3");
-  expect(chip.textContent).not.toContain("3/4");
 });
 
 test("footer and tabs explain summary counts through paging and activity changes", async () => {
@@ -374,12 +356,12 @@ test("footer and tabs explain summary counts through paging and activity changes
     </MotionProvider>,
   );
   const footer = within(screen.getByTestId("statusbar"));
-  await screen.findByRole("radio", { name: "Jobs, 2 of 6 running" });
+  await screen.findByRole("tab", { name: "Jobs, 2 of 6 running" });
   const expectCounts = (running: number, retained: number) => {
     expect(
       footer.getByRole("button", { name: `Jobs, ${running} of ${retained} running - open Overview` }).textContent,
     ).toContain(`${running}/${retained}`);
-    expect(screen.getByRole("radio", { name: `Jobs, ${running} of ${retained} running` }).textContent).toContain(
+    expect(screen.getByRole("tab", { name: `Jobs, ${running} of ${retained} running` }).textContent).toContain(
       `${running}/${retained}`,
     );
   };
@@ -387,12 +369,12 @@ test("footer and tabs explain summary counts through paging and activity changes
   expect(footer.getByText("Jobs")).toBeTruthy();
   expect(footer.getByRole("button", { name: /Jobs, 2 of 6 running/ }).title).toBe("Jobs, 2 of 6 running");
   // The tab carries its label and its count as two separate elements.
-  const watchesTab = within(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" }));
+  const watchesTab = within(screen.getByRole("tab", { name: "Watches, 2 of 3 armed" }));
   expect(watchesTab.getByText("Watches")).not.toBe(watchesTab.getByText("2/3"));
   expect(footer.getByRole("button", { name: /Agents, 0 of 2 active/ }).textContent).toContain("0/2");
-  expect(screen.getByRole("radio", { name: "Agents, 0 of 2 active" })).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "Watches, 2 of 3 armed" })).toBeTruthy();
-  expect(screen.getByRole("radio", { name: "Tasks, 1 of 4 settled" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Agents, 0 of 2 active" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Watches, 2 of 3 armed" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Tasks, 1 of 4 settled" })).toBeTruthy();
   expect(screen.queryByText("Overview kind")).toBeNull();
   await act(async () => ActivityBoundaryObserver.intersect());
   expectCounts(2, 6);
@@ -410,7 +392,7 @@ test("footer and tabs explain summary counts through paging and activity changes
   active = 1;
   total = 7;
   act(() => client.emitNotification(activityChangedNotification({ ref, threadId: "owner" }, ["summary"])));
-  await screen.findByRole("radio", { name: "Jobs, 1 of 7 running" });
+  await screen.findByRole("tab", { name: "Jobs, 1 of 7 running" });
   expectCounts(1, 7);
 });
 
@@ -440,5 +422,5 @@ test("the chip, the sidebar and the liveness line count subagents at every depth
   const chip = await screen.findByRole("button", { name: /Agents, 3 of 4 active/ });
   await waitFor(() => expect(screen.getByTestId("liveness-line").textContent).toBe("Waiting on 3 subagents"));
   fireEvent.click(chip);
-  expect(await screen.findByRole("radio", { name: "Agents, 3 of 4 active" })).toBeTruthy();
+  expect(await screen.findByRole("tab", { name: "Agents, 3 of 4 active" })).toBeTruthy();
 });

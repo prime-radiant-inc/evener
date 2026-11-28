@@ -103,14 +103,6 @@ func (m *Manager) storePath(parts ...string) (string, error) {
 	return filepath.Join(append([]string{m.Root}, parts...)...), nil
 }
 
-// registryPath and marketplacesFile are the unchecked joins, for tests naming
-// a path to plant a file at. Production reads and writes go through
-// loadRegistry/saveRegistry and loadMarketplaces/saveMarketplaces, which
-// derive the same paths through storePath.
-func (m *Manager) registryPath() string { return filepath.Join(m.Root, registryFileName) }
-func (m *Manager) marketplacesFile() string {
-	return filepath.Join(m.Root, marketplacesFileName)
-}
 func (m *Manager) marketplacesDir() string { return filepath.Join(m.Root, marketplacesDirName) }
 func (m *Manager) cacheDir() string        { return filepath.Join(m.Root, cacheDirName) }
 func (m *Manager) lockPath() string        { return filepath.Join(m.Root, ".lock") }
@@ -135,10 +127,6 @@ func (m *Manager) bundledLockPath() string {
 
 func (m *Manager) marketplaceDir(name string) string {
 	return filepath.Join(m.marketplacesDir(), name)
-}
-
-func (m *Manager) pluginCacheDir(marketplace, plugin, sha string) string {
-	return filepath.Join(m.cacheDir(), marketplace, plugin, sha)
 }
 
 // validNameComponent rejects a marketplace/plugin name that is unsafe to use as

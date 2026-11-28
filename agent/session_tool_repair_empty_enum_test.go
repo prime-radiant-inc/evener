@@ -15,7 +15,10 @@ import (
 func TestPrepareToolCall_DelegateEmptyIsolationIsAbsent(t *testing.T) {
 	t.Parallel()
 	reg := tool.NewRegistry()
-	if err := reg.Register(regTool(tool.DefDelegate([]string{"default"}))); err != nil {
+	if err := reg.Register(regTool(tool.DefDelegateWithResultTool([]string{"default"}, tool.DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	}, tool.DefaultResultToolName))); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	dt := reg.Get("delegate")
@@ -47,7 +50,10 @@ func TestPrepareToolCall_DelegateEmptyIsolationIsAbsent(t *testing.T) {
 func TestPrepareToolCall_DelegateUnknownIsolationStillRejected(t *testing.T) {
 	t.Parallel()
 	reg := tool.NewRegistry()
-	if err := reg.Register(regTool(tool.DefDelegate([]string{"default"}))); err != nil {
+	if err := reg.Register(regTool(tool.DefDelegateWithResultTool([]string{"default"}, tool.DelegateSandboxSchema{
+		Available: true,
+		Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
+	}, tool.DefaultResultToolName))); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	call := llm.ToolCallData{ID: "d", Name: "delegate", Arguments: json.RawMessage(`{"prompt":"p","isolation":"none"}`)}

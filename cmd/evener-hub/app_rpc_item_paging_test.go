@@ -1333,14 +1333,14 @@ func serveDaemonTranscript(t *testing.T, daemon *daemonserver.Server, sessionID,
 	}
 	writer.SyncInterval = time.Hour
 	for _, text := range texts {
-		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(text))); err != nil {
+		if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User(text)), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := daemonserver.PrepareAppIdentity("local", sessionID, path)
+	prepared, err := daemonserver.PrepareAppIdentityForRef("local", sessionID, "local:"+sessionID, path)
 	if err != nil {
 		t.Fatal(err)
 	}

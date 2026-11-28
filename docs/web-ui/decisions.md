@@ -42,6 +42,22 @@ landing the unshipped warm glow-up palette.
   mobile variant), and `sidebar-one-ground-mobile` (drawer-hosted rail: page
   ground, no border, no shadow), and by `DuoSplit.test.tsx`'s surface
   contract in both schemes.
+## 2026-11-25 the New-session action is a primary floating button
+
+The New-session control moves from a top rail button to a bottom-right accent
+primary floating action button across desktop, tablet, and mobile (#7767).
+This supersedes the 2026-11-06 "The rail CTA is secondary" decision: a compact
+floating `+` control stays out of the reading chrome while giving starting a
+new session one consistent primary entry point on every surface.
+
+## 2026-11-22 the completed-turn end cap is removed
+
+Jesse asked to stop showing the settled-turn line "Done in <work time> · N
+tool calls". The end-cap and its two render sites are gone, so a completed
+turn no longer prints a standing duration or tool count. The opt-in turn
+separator still reports round timings, and a failed turn keeps its diagnostic
+end-cap.
+
 
 ## 2026-11-13 the accent becomes an indigo and the primary action wears it
 

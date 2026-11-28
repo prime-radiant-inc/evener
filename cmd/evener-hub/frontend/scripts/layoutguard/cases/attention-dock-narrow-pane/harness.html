@@ -24,11 +24,12 @@
 </style>
 </head>
 <body>
-<div class="pane" id="pane">
+<div class="pane" id="pane" data-pane-scaffold="session:local:frame" data-has-edge-footer="true">
   <!-- The dormant surface: conversation body's content column, no transcript,
        with the attention dock at its trailing bottom corner. Markup mirrors
        ConversationBody's attentionDock plus NextNeedsYou's own root/nextSlot. -->
-  <div class="contentColumn">
+  <div class="contentColumn" style="--floating-chrome-height: 60px; --dock-clearance: 16px">
+    <div class="transcriptEndInset"></div>
     <div class="attentionDock" data-testid="attention-dock">
       <div class="root" data-testid="next-needs-you">
         <div class="nextSlot">
@@ -57,7 +58,19 @@ function rectOf(element) {
 
 window.measure = () => {
   const label = document.querySelector("[data-label]");
+  const pane = document.getElementById("pane");
+  const end = document.querySelector(".transcriptEndInset");
+  const dock = document.querySelector('[data-testid="attention-dock"]');
+  const dockedEnd = end.getBoundingClientRect().height;
+  const dockedBottom = dock.getBoundingClientRect().bottom;
+  // A wide Home Screen window can have a narrow reader beside the system area.
+  // The mobile session has no edge footer and floats its composer over this reader.
+  pane.removeAttribute("data-has-edge-footer");
+  const floatingEnd = end.getBoundingClientRect().height;
+  const attentionLift = dockedBottom - dock.getBoundingClientRect().bottom;
+  pane.setAttribute("data-has-edge-footer", "true");
   return {
+    dockedEnd, floatingEnd, attentionLift,
     pane: rectOf(document.getElementById("pane")),
     dock: rectOf(document.querySelector('[data-testid="attention-dock"]')),
     control: rectOf(document.querySelector('[data-testid="next-needs-you"]')),

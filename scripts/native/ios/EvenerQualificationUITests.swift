@@ -4,8 +4,8 @@ import XCTest
 /// Each test drives the real Release app on the run-owned simulator against
 /// a real isolated hub whose provider answers every ordinary turn with the
 /// fixed qualification fixture. The UI runner passes the hub's origin, its
-/// fixture-only token, the run-owned workspace and the hub host's home
-/// through the test-run environment; the app never reads a host path, and
+/// fixture-only token and run-owned workspace through the test-run
+/// environment. The hub resolves the path supplied to its directory picker, and
 /// nothing here publishes.
 ///
 /// The tests share one app install, so the suite starts with the recovery
@@ -37,7 +37,7 @@ final class EvenerQualificationUITests: XCTestCase {
 	}
 
 	/// The complete recovery journey: onboarding by address and token, a real
-	/// session whose completed response renders natively, an unsent draft,
+	/// session whose completed response renders in the web workspace, an unsent draft,
 	/// reactivation and a cold launch that both keep the saved hub without
 	/// re-entering credentials, the exact draft surviving in the restored
 	/// conversation, and an authenticated follow-up through the real hub.
@@ -47,20 +47,20 @@ final class EvenerQualificationUITests: XCTestCase {
 		onboardIfNeeded(app)
 		startSession(app, prompt: "qualify the renderer")
 
-		let markdown = app.descendants(matching: .any).matching(identifier: "native-markdown").firstMatch
-		XCTAssertTrue(markdown.waitForExistence(timeout: tripwire), "the fixture response never rendered")
-		XCTAssertGreaterThan(markdown.frame.width, 0)
-		XCTAssertGreaterThan(markdown.frame.height, 0)
+		let web = app.webViews.firstMatch
+		XCTAssertTrue(web.waitForExistence(timeout: tripwire), "the workspace never opened")
+		XCTAssertGreaterThan(web.frame.width, 0)
+		XCTAssertGreaterThan(web.frame.height, 0)
 		for marker in ["QUALIFICATION_prose_a7", "QUALIFICATION_emphasis_b8", "QUALIFICATION_code_c9"] {
-			let rendered = app.descendants(matching: .any)
+			let rendered = web.descendants(matching: .any)
 				.matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch
-			XCTAssertTrue(rendered.waitForExistence(timeout: tripwire), "native rendering lost \(marker)")
+			XCTAssertTrue(rendered.waitForExistence(timeout: tripwire), "the workspace lost \(marker)")
 		}
 		attach(app, "fixture-response")
 
 		let composer = composerField(app)
 		tap(composer, "the composer never appeared")
-		typeWholeText(app, composer, Self.draft, "the draft never landed whole") { $0 == Self.draft }
+		typeWebText(Self.draft, into: composer)
 
 		// Reactivation keeps the hub: background, return, and the journey is
 		// still where it was.
@@ -73,22 +73,9 @@ final class EvenerQualificationUITests: XCTestCase {
 		// conversation carries the composer with the exact unsent draft.
 		app.terminate()
 		app.launch()
-		// The cold launch lands in the restored conversation, or — when the
-		// credentials did not survive — on the first-run pairing way. Waiting
-		// positively for either resolves as soon as one is on screen; a
-		// negative wait for the pairing way alone can only ever burn its
-		// whole window on the run that is supposed to pass. The verdict is
-		// still which surface the app reached: the pairing way is a failure.
-		let coldSurface = app.descendants(matching: .any)
-			.matching(NSPredicate(format: "identifier IN %@", ["composer-message", "add-hub:address"]))
-			.firstMatch
-		XCTAssertTrue(
-			coldSurface.waitForExistence(timeout: tripwire),
-			"cold launch reached neither the conversation nor the first-run pairing"
-		)
-		XCTAssertNotEqual(coldSurface.identifier, "add-hub:address", "cold launch asked for credentials again")
+		// The same web composer must reopen from the saved hub without onboarding.
 		let recovered = composerField(app)
-		// The composer mounts before its restored draft loads from SQLite, so
+		// The composer mounts before its restored draft loads from the web store, so
 		// the draft's arrival is its own bounded wait; a single read could
 		// race the restore and fail a draft that did survive.
 		let restoreDeadline = Date().addingTimeInterval(tripwire)
@@ -106,11 +93,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		// the loop's own observation: the transcript scrolls older matches
 		// out, so the count can fall again after the rise, and a second query
 		// can report the old count and fail a follow-up that did complete.
-		tap(recovered, "the composer never appeared")
-		typeWholeText(app, recovered, "qualify the readback", "the follow-up never landed whole") {
-			$0 == "qualify the readback"
-		}
-		let followUp = app.descendants(matching: .any)
+		let followUp = app.webViews.firstMatch.descendants(matching: .any)
 			.matching(NSPredicate(format: "label CONTAINS %@", "QUALIFICATION_code_c9"))
 		XCTAssertTrue(
 			followUp.firstMatch.waitForExistence(timeout: tripwire),
@@ -133,15 +116,7 @@ final class EvenerQualificationUITests: XCTestCase {
 		)
 		attach(app, "follow-up-response")
 
-		// Leave the install where the later journeys expect it: the app
-		// reopens its frontmost route on launch, so ending inside the
-		// conversation would reopen the conversation over the Board and
-		// hide the compose button from every later journey.
-		tap(app.navigationBars.buttons.firstMatch, "the conversation never offered a way back")
-		XCTAssertTrue(
-			app.buttons["new-session"].waitForExistence(timeout: tripwire),
-			"the board never reappeared after the conversation"
-		)
+		showSessions(app)
 	}
 
 	/// Scheme activation only: evener-native://share must bring the app to
@@ -172,86 +147,73 @@ final class EvenerQualificationUITests: XCTestCase {
 			app.wait(for: .runningForeground, timeout: tripwire),
 			"cold scheme activation left the app in the background"
 		)
-		// Whichever surface the app restores to proves the activation: the
-		// saved install's board or the first-run pairing way. Waiting for the
-		// pairing way first can only burn its whole window on the saved
-		// install the suite is in.
 		let surface = mainSurface(app)
-		XCTAssertTrue(
-			surface.waitForExistence(timeout: tripwire),
-			"ordinary controls did not survive scheme activation"
-		)
+		XCTAssertTrue(surface.waitForExistence(timeout: tripwire))
 		if surface.identifier == "add-hub:address" {
-			tap(surface, "the first-run address way disappeared before its tap")
-			XCTAssertTrue(
-				app.textFields["hub-address"].waitForExistence(timeout: tripwire),
-				"ordinary controls stopped working after scheme activation"
-			)
+			tap(surface, "the first-run address way disappeared")
+			XCTAssertTrue(app.textFields["hub-address"].waitForExistence(timeout: tripwire))
 		} else {
-			XCTAssertTrue(
-				app.buttons["new-session"].waitForExistence(timeout: tripwire),
-				"ordinary controls did not survive scheme activation"
-			)
+			showSessions(app)
+			tap(app.buttons["workspace-new-session"], "scheme activation lost the workspace controls")
+			XCTAssertTrue(app.webViews.descendants(matching: .any)["Prompt"].waitForExistence(timeout: tripwire))
 		}
 	}
 
-	/// A swipe inside an ordinary native sheet must leave its controls
-	/// usable: swipe the New session sheet's form rows, then press its
-	/// Cancel and see the sheet close back to the Board. The Board's own row
-	/// gestures have their own regression checks; this is the sheet's side of
-	/// the interplay.
-	func testSheetGestureKeepsControlsUsable() {
+	/// A swipe inside the saved Hubs sheet leaves its details, Back and Done usable.
+	func testSheetGestureKeepsControlsUsable() throws {
 		let app = XCUIApplication()
 		onboardIfNeeded(app)
-		let prompt = openNewSession(app)
-		// The gesture swipes the form's own labels, not a control (a swipe
-		// on a row can land as its press) and not the focused prompt (a swipe
-		// over a first-responder text view can turn into a text selection,
-		// and the selection holds the next tap). A nested label registers on
-		// both its outer and inner text, so the query takes its first match:
-		// a find that must be unique would refuse the doubled label.
-		let anchor = app.staticTexts["Where"].firstMatch
-		XCTAssertTrue(anchor.waitForExistence(timeout: tripwire), "the sheet's form never showed")
-		anchor.swipeUp()
-		anchor.swipeDown()
-
-		// Cancel, checked by its effect like every other step: the first
-		// press can be lost to a selection the swipe left behind, and a
-		// retained draft riding in the prompt makes Cancel ask before
-		// discarding — the journey answers Keep draft, which closes the
-		// sheet with the draft kept, and never presses into the asking
-		// alert.
-		let deadline = Date().addingTimeInterval(tripwire)
-		while prompt.waitForExistence(timeout: 2) && Date() < deadline {
-			let keep = app.buttons["Keep draft"].firstMatch
-			if keep.exists {
-				tap(keep, "the draft alert never offered keeping it")
-				continue
-			}
-			tap(app.buttons["Cancel"], "the sheet's Cancel vanished after swipes")
-			if keep.waitForExistence(timeout: 2) {
-				tap(keep, "the draft alert never offered keeping it")
-			}
-		}
-		XCTAssertTrue(
-			prompt.waitForNonExistence(timeout: tripwire),
-			"the sheet never closed after Cancel"
-		)
-		XCTAssertTrue(
-			app.buttons["new-session"].waitForExistence(timeout: tripwire),
-			"the board never returned after the sheet closed"
-		)
+		showSessions(app)
+		let hubs = app.buttons["Hubs on this iPhone"].firstMatch
+		tap(hubs, "the saved hubs sheet was unreachable")
+		let hubName = try XCTUnwrap(URL(string: hubOrigin)?.host)
+		let details = app.buttons["Details for \(hubName)"]
+		XCTAssertTrue(details.waitForExistence(timeout: tripwire))
+		let list = app.scrollViews.containing(.button, identifier: details.label).firstMatch
+		list.swipeUp()
+		list.swipeDown()
+		tap(details, "the saved hub's details were unreachable after scrolling")
+		let name = app.buttons["Name, \(hubName)"]
+		tap(name, "the saved hub's editor was unreachable")
+		XCTAssertEqual(app.textFields["Hub name"].value as? String, hubName)
+		tap(app.buttons["Cancel"], "the saved hub editor could not close")
+		tap(app.navigationBars[hubName].buttons.firstMatch, "the saved hub's Back button was unreachable")
+		XCTAssertTrue(details.waitForExistence(timeout: tripwire))
+		tap(app.buttons["Done"], "the saved hubs sheet could not close")
+		XCTAssertTrue(details.waitForNonExistence(timeout: tripwire))
+		XCTAssertTrue(hubs.waitForExistence(timeout: tripwire), "the workspace drawer never returned")
 	}
 
 	// MARK: - Journey steps
 
-	/// The app's own main controls, whichever surface it restored to: the
-	/// first-run address way or the board's compose button. Both carry stable
-	/// identifiers; the board also shows a second control labeled New session
-	/// when it is empty, so journeys never tap by that label.
+	/// WebKit can still be delivering keystrokes after XCTest finishes typing.
+	private func typeWebText(_ text: String, into field: XCUIElement) {
+		field.typeText(text)
+		let entered = expectation(for: NSPredicate(format: "value == %@", text), evaluatedWith: field)
+		wait(for: [entered], timeout: tripwire)
+	}
+
+	/// The initial route is either native onboarding or the paired hub's web view.
 	private func mainSurface(_ app: XCUIApplication) -> XCUIElement {
-		return app.buttons
-			.matching(NSPredicate(format: "identifier IN %@", ["add-hub:address", "new-session"])).firstMatch
+		app.descendants(matching: .any).matching(NSPredicate(
+			format: "identifier == %@ OR elementType == %d", "add-hub:address", XCUIElement.ElementType.webView.rawValue
+		)).firstMatch
+	}
+
+	/// A cold-opened session has a Sessions drawer. A session reached through another
+	/// screen has Back until that parent screen can show the drawer.
+	private func showSessions(_ app: XCUIApplication) {
+		let hubSettings = app.buttons["Hubs on this iPhone"].firstMatch
+		let opener = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Sessions")).firstMatch
+		let back = app.buttons["Back"].firstMatch
+		let ready = expectation(for: NSPredicate { _, _ in
+			hubSettings.isHittable || opener.isHittable || back.isHittable
+		}, evaluatedWith: nil)
+		wait(for: [ready], timeout: tripwire)
+		if hubSettings.isHittable { return }
+		if !opener.isHittable && back.isHittable { back.tap() }
+		if !hubSettings.isHittable { tap(opener, "the Sessions drawer was unreachable") }
+		XCTAssertTrue(hubSettings.waitForExistence(timeout: tripwire))
 	}
 
 	/// Launches the app and, on a fresh install, saves the fixture hub
@@ -290,7 +252,7 @@ final class EvenerQualificationUITests: XCTestCase {
 			// before judging whether Connect is on screen: the sheet hides
 			// the covered review from the query, so a check that reads
 			// Connect.exists first exits while the review is still there.
-			let board = app.buttons["new-session"]
+			let board = app.webViews.firstMatch
 			let shown = Date().addingTimeInterval(tripwire)
 			while Date() < shown && !board.waitForExistence(timeout: 4) {
 				answerSavePasswordSheet(app)
@@ -302,106 +264,46 @@ final class EvenerQualificationUITests: XCTestCase {
 				guard connect.waitForExistence(timeout: 4) else { break }
 				tap(connect, "the review step never appeared")
 			}
+			// The empty fixture opens Sessions itself on first pairing. Its opener
+			// disappears as the drawer arrives; wait for the drawer's actual action.
+			XCTAssertTrue(app.buttons["workspace-new-session"].waitForExistence(timeout: tripwire))
 		}
 		XCTAssertTrue(
-			app.buttons["new-session"].waitForExistence(timeout: tripwire),
-			"the board never appeared after onboarding"
+			app.webViews.firstMatch.waitForExistence(timeout: tripwire),
+			"the workspace never appeared after onboarding"
 		)
 	}
 
-	/// A real session in the run-owned workspace: open the New session sheet,
-	/// type the prompt, and choose the project through the ordinary picker —
-	/// a fresh hub lists no recent projects, so the workspace is reached by
-	/// browsing — then wait for Start to unlock and start.
+	/// Start a session in the fixture workspace using the hub's mobile launcher.
 	private func startSession(_ app: XCUIApplication, prompt promptText: String) {
-		let prompt = openNewSession(app)
-		tap(prompt, "the sheet's prompt never became tappable")
-		typeWholeText(app, prompt, promptText, "the session prompt never landed whole") { $0 == promptText }
-		let browse = app.buttons
-			.matching(NSPredicate(format: "label BEGINSWITH %@", "Browse folders")).firstMatch
-		// The sheet's picker sits where the prompt's keyboard can cover it.
-		dismissKeyboard(app, draggingOn: app.staticTexts["Where"].firstMatch)
-		// The project picker is its own screen behind the form's Project
-		// row; the browse way lives on that screen, named for the host. The
-		// row's press can land in the push's settling window, so it is
-		// checked by its own effect like every other step: the picker's own
-		// browse row.
-		let project = app.buttons
-			.matching(NSPredicate(format: "label BEGINSWITH %@", "Project")).firstMatch
-		let picked = Date().addingTimeInterval(tripwire)
-		while !browse.waitForExistence(timeout: 2) && Date() < picked {
-			tap(project, "the form never offered choosing a project")
-		}
-		tap(browse, "the project picker never offered browsing")
+		showSessions(app)
+		let web = app.webViews.firstMatch
+		tap(app.buttons["workspace-new-session"], "the Sessions drawer never offered a new session")
+		let controls = web.descendants(matching: .any)
+		let directory = controls.matching(NSPredicate(format: "label BEGINSWITH %@", "Working directory:")).firstMatch
+		tap(directory, "the launcher never offered the workspace picker")
+		let workspace = ProcessInfo.processInfo.environment["EVENER_QUALIFICATION_WORKSPACE"] ?? ""
+		XCTAssertTrue(workspace.hasPrefix("/"), "the runner must supply its isolated workspace")
+		let path = web.textFields["Path"].firstMatch
+		tap(path, "the directory picker has no path field")
+		typeWebText(workspace, into: path)
+		tap(web.buttons["Go"].firstMatch, "the directory picker could not navigate to the workspace")
+		tap(web.buttons["Use this folder"].firstMatch, "the directory picker could not select the workspace")
+		XCTAssertTrue(directory.label.hasSuffix(workspace), "the launcher did not select the fixture workspace")
 
-		// The browse starts in the hub host's home, where the run's
-		// workspace is linked in: the hub bounds completion at the
-		// caller's limit, so a workspace deep in the temp tree is not
-		// reachable through the browse once a parent's listing outgrows
-		// that bound, and the home's own listing stays small.
-		tap(
-			app.buttons["evener-qualification-workspace"],
-			"the hub host's home never offered the run's workspace"
-		)
-		tap(app.buttons["Use this folder"], "the browse never offered the workspace")
-
-		// The fixture hub has no default model, so the form's Hub default
-		// starts nothing: the hub refuses the start with "model is
-		// required". Choose the fixture's own model on the Model screen,
-		// where its row is titled by the model's display name ("Fake Test
-		// Model"), not its id. The form row's press can land in the push's
-		// settling window, so it is re-pressed only while the form still
-		// shows it; the model screen's own row is then waited for with the
-		// full bound, because the hub's model list arrives asynchronously.
-		// A slow press can also land on a different row, pushing another
-		// screen: with neither the form's Model row nor the Model screen's
-		// own "Hub default" header in front, the loop goes back and presses
-		// Model again instead of waiting for a list that screen cannot show.
-		let modelRow = app.buttons
-			.matching(NSPredicate(format: "label BEGINSWITH %@", "Model")).firstMatch
-		let fakeModel = app.buttons["Fake Test Model"]
-		let modelScreen = app.buttons["Hub default"]
-		// The New session sheet is a modal over the Board, whose own
-		// navigation bar stays in the tree. Scope the way back to the
-		// sheet's pushed-screen bars so a mis-press cannot tap the Board's
-		// bar through the modal.
-		let sheetBar = app.navigationBars
-			.matching(NSPredicate(format: "identifier IN %@", [
-				"Host", "Project", "Browse folders", "Plugins", "Access", "More options",
-			]))
-			.firstMatch
-		let modeled = Date().addingTimeInterval(tripwire)
-		while !fakeModel.waitForExistence(timeout: 2) && Date() < modeled {
-			if modelRow.exists {
-				tap(modelRow, "the form never offered choosing a model")
-			} else if !modelScreen.exists {
-				tap(sheetBar.buttons.firstMatch, "the wrong screen never offered a way back")
-			}
-		}
-		tap(fakeModel, "the model screen never offered the fixture's model")
-
-		let start = app.buttons["Start"]
-		XCTAssertTrue(start.waitForExistence(timeout: tripwire), "Start never appeared")
+		controls.matching(NSPredicate(format: "label CONTAINS[c] %@", "change model")).firstMatch.tap()
+		let model = controls.matching(
+			NSPredicate(format: "label CONTAINS[c] %@ OR label CONTAINS[c] %@", "fake-test-model", "Fake Test Model")
+		).firstMatch
+		tap(model, "the fixture model was unavailable")
+		let prompt = web.descendants(matching: .any)["Prompt"].firstMatch
+		tap(prompt, "the launcher prompt was unavailable")
+		typeWebText(promptText, into: prompt)
+		let start = web.buttons["Start"].firstMatch
 		waitForEnabled(start)
-		tap(start, "Start never appeared")
+		tap(start, "the launcher could not start the session")
 	}
 
-	/// Opens the New session sheet, tapping again when the first tap lands
-	/// inside the board's settling window: right after the board appears, the
-	/// compose button can carry a valid frame at one instant and an invalid
-	/// one at the next, and a tap synthesized in that window computes {-1, -1}
-	/// and goes nowhere. The journey checks its own effect, the sheet's
-	/// prompt, rather than pretending to predict the settled moment.
-	private func openNewSession(_ app: XCUIApplication) -> XCUIElement {
-		let prompt = app.descendants(matching: .any).matching(identifier: "session-prompt").firstMatch
-		let deadline = Date().addingTimeInterval(tripwire)
-		while !prompt.waitForExistence(timeout: 2) && Date() < deadline {
-			answerSavePasswordSheet(app)
-			tap(app.buttons["new-session"], "the board's compose button never appeared")
-		}
-		XCTAssertTrue(prompt.waitForExistence(timeout: 2), "the New session sheet never opened")
-		return prompt
-	}
 
 	/// Types into a field and checks the text arrived whole, clearing and
 	/// retyping when it did not. A busy app can drop synthesized keystrokes
@@ -524,10 +426,9 @@ final class EvenerQualificationUITests: XCTestCase {
 		wait(for: [unlocked], timeout: tripwire)
 	}
 
-	/// The conversation's composer, addressed by its stable identifier. The
-	/// multiline field surfaces as a text view.
+/// WebKit exposes the hub's multiline conversation composer as an editable field.
 	private func composerField(_ app: XCUIApplication) -> XCUIElement {
-		let field = app.textViews["composer-message"]
+		let field = app.webViews.descendants(matching: .any)["Message"].firstMatch
 		XCTAssertTrue(field.waitForExistence(timeout: tripwire), "the composer never appeared")
 		return field
 	}

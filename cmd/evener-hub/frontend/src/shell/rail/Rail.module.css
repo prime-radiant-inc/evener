@@ -33,45 +33,32 @@
   box-shadow: var(--shadow-rail);
 }
 
-/* On mobile the same Rail renders inside StackHost's TreeDrawer Sheet, which
- * already frames and borders the panel — fill its width instead of imposing
- * the desktop fixed width (a narrower, independently-bordered box floating
- * inside a wider one reads as a panel nested inside a panel). Same 899px
- * boundary as useIsMobile.ts: at-or-below it, the only Rail that exists is
- * the drawer-hosted one. */
-@media (max-width: 899px) {
-  .rail {
-    width: 100%;
-    border-right: none;
-    box-shadow: none;
+/* Below 900px either the drawer or the tablet board frames the Rail.
+ * Fill that width and leave the border and the cast to its host. */
+@media (max-width: 899px), (display-mode: standalone) {
+  :where(html:not(:has([data-desktop-workspace]))) {
+    .rail {
+      width: 100%;
+      border-right: none;
+      box-shadow: none;
+    }
   }
 }
 
-/* The sidebar owns its own chrome: a header zone stacking the brand row, the
- * needs-you chip (only when there is one) and the secondary "+ New session"
- * button - a column so none of it steals a full-width top bar's worth of the
- * workspace's vertical space. No rule under it: the header and the tree share
- * the rail's one surface, and the first section's eyebrow does the dividing. */
+/* The sidebar owns its own chrome: a header zone holding the brand row (and
+ * the mobile filter field) - a column so none of it steals a full-width top
+ * bar's worth of the workspace's vertical space. No rule under it: the header
+ * and the tree share the rail's one surface, and the first section's eyebrow
+ * does the dividing. */
 .header {
   flex: none;
   display: flex;
   flex-direction: column;
-  /* Two groups: the identity block (brand row, plus the needs-you chip when
-   * one exists) and the New-session action, one run apart. The gap stays wider
-   * than .identity's own, so the chip reads as part of the row above it. */
-  gap: var(--rhythm-item);
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-4) var(--space-2);
   /* Lets the brand row answer the rail's own width (the narrow rule under
    * .mark), not the window's. */
   container: railheader / inline-size;
-}
-
-/* The brand row and its chip read as one identity block, so a chip hugs the
- * row it belongs to instead of floating midway to the button. */
-.identity {
-  display: flex;
-  flex-direction: column;
-  gap: var(--rhythm-item);
 }
 
 /* One row: the mark and wordmark lead and the actions sit hard right. The
@@ -136,18 +123,20 @@
   flex: none;
   display: flex;
   align-items: center;
+  margin-left: auto;
 }
 
-/* Stretches the New-session Button to the rail's full width without touching
- * the widget's own computed className (Button owns its class list). */
-.newSession {
-  display: grid;
-}
-
-.needsYou {
+.fallbackHeader {
+  flex: none;
   display: flex;
-  max-width: 100%;
-  overflow: hidden;
+  justify-content: flex-end;
+  padding: var(--space-3) var(--space-2) var(--space-2) var(--space-4);
+}
+
+.filterRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .body {
@@ -155,6 +144,12 @@
   /* min-height: 0 is required for a flex child to actually be able to
    * scroll instead of stretching its column parent to fit its content. */
   min-height: 0;
+  /* Column flex so the sticky New-session row can claim free space below a
+   * short list with margin-top: auto instead of parking mid-list. Section
+   * children keep their intrinsic min-height: auto floor, so long lists still
+   * scroll cleanly beneath the pinned action and end above it at max scroll. */
+  display: flex;
+  flex-direction: column;
   /* This is also the box that absorbs the tree's width: `flex: none` plus
    * `min-width: 0` above means a row wider than the rail (a deep
    * subagent branch, a long title beside a long branch name) has to go
@@ -164,7 +159,7 @@
    * the horizontal axis already scrolls here (verified in Chrome: computed
    * overflow-x reads `auto` from this one declaration). */
   overflow-y: auto;
-  padding: var(--space-2) 0;
+  padding: var(--space-2) 0 calc(var(--space-2) + var(--dock-clearance));
 }
 
 /* Mobile's Sheet body is the single scroll owner for the drawer. In that
@@ -172,6 +167,10 @@
  * region; the default desktop rail keeps the rules above unchanged. */
 .parentScrollRail {
   height: auto;
+  /* Fill the host (the drawer's sheet body) so a short list leaves free space
+   * the New-session row glues into; long content grows past it because
+   * min-height does not cap. */
+  min-height: 100%;
 }
 
 .parentScrollBody {
@@ -180,6 +179,64 @@
    * dvh), so pad the last row - the Archived sessions disclosure - clear of
    * the home indicator, keeping the base .body padding. */
   padding-bottom: calc(var(--space-2) + var(--dock-clearance));
+}
+
+/* The drawer's Sheet supplies the panel material beneath its one scrollport. */
+:global(body[data-iphone-glass]) .parentScrollRail {
+  background: transparent;
+}
+
+/* The session list's floating New-session action. Mounted as the scroll body's
+ * last child so `position: sticky` pins it to whichever box owns scrolling
+ * (the body itself on desktop and the tablet split board, or the drawer's
+ * Sheet body in parent-scroll mode). In-flow placement reserves its own row
+ * height below the last section at maximum scroll so the final session row is
+ * never covered, while `margin-top: auto` glues it to the bottom edge on short
+ * lists. The strip is pointer-transparent except where the button opts back in,
+ * so rows beneath remain hoverable and clickable across the rest of the width. */
+.newSessionRow {
+  position: sticky;
+  bottom: calc(var(--space-2) + var(--dock-clearance));
+  flex: none;
+  margin-top: auto;
+  z-index: var(--z-raised);
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 var(--space-2);
+  pointer-events: none;
+}
+
+.newSessionRow > * {
+  pointer-events: auto;
+}
+
+/* In the tablet split, the scrollport pays the same bottom inset as the
+ * composer's action row. A second sticky inset lifts Create above Send. */
+:global([data-board="visible"]) .body {
+  padding-bottom: calc(var(--dock-clearance) + var(--composer-action-inset));
+}
+
+:global([data-board="visible"]) .newSessionRow {
+  bottom: 0;
+}
+
+/* On wide iPad the status bar sits below Send. Reserve its measured baseline
+ * in the scrollport so the last session still clears the pinned Create row. */
+:global(body[data-docked-composer-action]) .body {
+  padding-bottom: calc(var(--docked-composer-action-center) - var(--tap-min) / 2);
+}
+
+:global(body[data-docked-composer-action]) .newSessionRow {
+  bottom: 0;
+}
+
+/* Full-width flex wrapper around archived overflow rows so IntersectionObserver
+ * measures the row's real box without altering Tree row alignment. */
+.archiveOverflowObserver {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
 }
 
 .section {

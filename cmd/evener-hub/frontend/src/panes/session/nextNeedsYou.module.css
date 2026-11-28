@@ -41,14 +41,6 @@
   font-size: var(--font-size-caption);
 }
 
-.nextDot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--attention);
-}
-
 .nextLabel {
   min-width: 0;
   overflow: hidden;
@@ -57,12 +49,6 @@
   -webkit-line-clamp: 2;
   white-space: normal;
   line-height: var(--line-height-ui);
-}
-
-.ellipsis {
-  display: block;
-  font-size: var(--font-size-body);
-  line-height: 1;
 }
 
 .list {

@@ -1,4 +1,5 @@
 import { act } from "react-test-renderer";
+import * as Native from "react-native";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { markers } from "./markerTestUtils";
 import { pressable, render, renderHook, renderedText, unmountMountedTrees } from "./renderNative.testkit";
@@ -57,16 +58,26 @@ it("lets a newer toast replace an older one without the older timer clearing it"
 	expect(hook.result.current.toast?.text).toBe("Note saved");
 });
 
-it("runs the action and dismisses when its button is pressed", () => {
+it.each([1, 2])("keeps the action reachable at text scale %s and dismisses when pressed", (fontScale) => {
+	const viewport = vi
+		.spyOn(Native, "useWindowDimensions")
+		.mockReturnValue({ width: 390, height: 844, scale: 3, fontScale });
 	const run = vi.fn();
 	const dismiss = vi.fn();
-	const tree = render(
-		<Toast toast={{ id: 1, text: "Session archived", action: { label: "Undo", run } }} dismiss={dismiss} />,
-	);
-	expect(renderedText(tree)).toContain("Session archived");
-	act(() => pressable(tree, "Undo")?.props.onPress());
-	expect(run).toHaveBeenCalledOnce();
-	expect(dismiss).toHaveBeenCalledOnce();
+	try {
+		const tree = render(
+			<Toast toast={{ id: 1, text: "Session archived", action: { label: "Undo", run } }} dismiss={dismiss} />,
+		);
+		const surface = tree.root.findByType(Native.View);
+		expect(surface.props.style.flexDirection).toBe(fontScale === 1 ? "row" : "column");
+		const [message] = tree.root.findAllByType(Native.Text);
+		expect(message?.props.numberOfLines).toBe(fontScale === 1 ? 2 : undefined);
+		act(() => pressable(tree, "Undo")?.props.onPress());
+		expect(run).toHaveBeenCalledOnce();
+		expect(dismiss).toHaveBeenCalledOnce();
+	} finally {
+		viewport.mockRestore();
+	}
 });
 
 it("renders nothing without a toast", () => {

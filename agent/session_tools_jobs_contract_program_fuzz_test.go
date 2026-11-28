@@ -130,8 +130,8 @@ func FuzzJobtoolsContractProgram(f *testing.F) {
 		watchShapes := []map[string]any{
 			{},
 			{"send": map[string]any{}},
-			{"send": map[string]any{"to": "dlg_contract", "message": r.str(), "include_excerpt": r.booln()}},
-			{"send": map[string]any{"message": "missing target"}},
+			{"send": map[string]any{"to": "dlg_contract"}},
+			{"send": map[string]any{"to": "   "}},
 			{"send": "invalid"},
 		}
 		for _, args := range watchShapes {
@@ -173,5 +173,5 @@ func jobtoolsSameWatchSend(a, b *watchSendArgs) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.To == b.To && a.Message == b.Message && a.IncludeExcerpt == b.IncludeExcerpt
+	return a.To == b.To
 }

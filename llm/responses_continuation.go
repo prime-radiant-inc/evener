@@ -40,6 +40,10 @@ const (
 	// ResponsesStoragePolicyCodexUnproven is a Codex endpoint whose storage behavior
 	// is not yet proven.
 	ResponsesStoragePolicyCodexUnproven = "codex-storage-unproven"
+	// ResponsesStoragePolicyCopilotDisabled is the Copilot subscription
+	// endpoint, whose continuation storage Evener does not rely on: requests
+	// carry full history.
+	ResponsesStoragePolicyCopilotDisabled = "copilot-storage-disabled"
 )
 
 // ResponsesEndpointFamily identifies which Responses-API endpoint a provider
@@ -51,6 +55,10 @@ const (
 	ResponsesEndpointFamilyOpenAIPublic ResponsesEndpointFamily = "openai_public"
 	// ResponsesEndpointFamilyOpenAICodex is the ChatGPT/Codex backend responses endpoint.
 	ResponsesEndpointFamilyOpenAICodex ResponsesEndpointFamily = "openai_codex"
+	// ResponsesEndpointFamilyGitHubCopilot is the Copilot subscription's
+	// responses endpoint. It never inherits the public OpenAI continuation
+	// contract: its storage and account scoping are unproven.
+	ResponsesEndpointFamilyGitHubCopilot ResponsesEndpointFamily = "github_copilot"
 )
 
 // ResponsesContinuationSupport describes whether an endpoint family supports
@@ -87,6 +95,12 @@ type ContinuationMetadata struct {
 	ContextMarker           string
 	StoragePolicyLabel      string
 	StorageScopeFingerprint string
+	// ContextBoundary names the context boundary (the latest checkpoint or
+	// summary turn) in force when the request was planned. A response planned
+	// before a compaction published a new boundary carries the old name, so a
+	// later request can refuse to continue from it and send full history
+	// instead (#6734).
+	ContextBoundary string
 }
 
 // AuthScopeIdentity identifies the authenticated scope (auth source plus hashed
@@ -220,7 +234,8 @@ func DefaultResponsesContinuationSupportRegistry() map[ResponsesEndpointFamily]R
 			StorageShapeProofID:   "2026-06-24-responses-continuation-phase-0b",
 			ProductionPathProofID: "2026-06-24-responses-continuation-phase-12a-public",
 		},
-		ResponsesEndpointFamilyOpenAICodex: disabledResponsesContinuationSupport(ResponsesEndpointFamilyOpenAICodex),
+		ResponsesEndpointFamilyOpenAICodex:   disabledResponsesContinuationSupport(ResponsesEndpointFamilyOpenAICodex),
+		ResponsesEndpointFamilyGitHubCopilot: disabledResponsesContinuationSupport(ResponsesEndpointFamilyGitHubCopilot),
 	}
 }
 

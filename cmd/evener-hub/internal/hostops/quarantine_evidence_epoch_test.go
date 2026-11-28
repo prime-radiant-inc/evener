@@ -29,7 +29,7 @@ const tombstoneOnlyNameStoreJSON = `{"version":1,"sequence":1,"allocatorHighWate
 func TestQuarantineKeepsANameWhoseOnlyEvidenceIsATombstone(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, tombstoneOnlyNameStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestQuarantineBoundsSyntheticNamesAndIDs(t *testing.T) {
 	t.Run("the longest bounded name gets a bounded synthetic id", func(t *testing.T) {
 		path := StorePath(t.TempDir())
 		writeRawStore(t, path, 0o600, mirrorStore(longest))
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open with a %d-byte mirrored name: %v", len(longest), err)
 		}
@@ -104,7 +104,7 @@ func TestQuarantineBoundsSyntheticNamesAndIDs(t *testing.T) {
 	t.Run("a name over the host bound refuses explicitly", func(t *testing.T) {
 		path := StorePath(t.TempDir())
 		writeRawStore(t, path, 0o600, mirrorStore(strings.Repeat("n", MaxHostNameBytes+1)))
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if store != nil {
 			t.Fatalf("Open accepted a name over the host bound")
 		}
@@ -131,7 +131,7 @@ func TestQuarantineEpochSidecarRefusesAnEmptyCounterAndNeverRegresses(t *testing
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with an empty epoch sidecar returned %v, want a refusal", store)
 		}
 	})
@@ -144,7 +144,7 @@ func TestQuarantineEpochSidecarRefusesAnEmptyCounterAndNeverRegresses(t *testing
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open with a zero epoch sidecar returned %v, want a refusal", store)
 		}
 	})
@@ -152,7 +152,7 @@ func TestQuarantineEpochSidecarRefusesAnEmptyCounterAndNeverRegresses(t *testing
 		dir := t.TempDir()
 		path := StorePath(dir)
 		writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		asidePath, _ := quarantineArtifact(t, filepath.Dir(path), ".quarantined-")
@@ -163,11 +163,11 @@ func TestQuarantineEpochSidecarRefusesAnEmptyCounterAndNeverRegresses(t *testing
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		clean, err := Open(path)
+		clean, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("clean boot: %v", err)
 		}
-		if got := clean.CursorEpoch().QuarantineEpoch; got != 1 {
+		if got := clean.quarantineEpoch(); got != 1 {
 			t.Fatalf("the clean boot reads epoch %d, want 1", got)
 		}
 		var sidecar struct {
@@ -190,11 +190,11 @@ func TestQuarantineEpochSidecarRefusesAnEmptyCounterAndNeverRegresses(t *testing
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		after, err := Open(path)
+		after, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("boot after cleanup: %v", err)
 		}
-		if got := after.CursorEpoch().QuarantineEpoch; got != 1 {
+		if got := after.quarantineEpoch(); got != 1 {
 			t.Fatalf("the epoch regressed to %d after the custody artifacts were removed", got)
 		}
 	})
@@ -234,7 +234,7 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		}
 		// A store written by this build, holding a record the quarantine custody
 		// does not know about.
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -245,7 +245,7 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		stamp := quarantineStamp(time.Now().UTC())
 		writeCustodySet(t, path, stamp)
 
-		reopened, err := Open(path)
+		reopened, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open under a stale intent with a clean store: %v", err)
 		}
@@ -269,14 +269,14 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		again, err := Open(path)
+		again, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("the second fresh open after the stale intent was cleared: %v", err)
 		}
 		if _, ok := again.Record(created.ID); !ok {
 			t.Fatalf("the second fresh open lost the clean store's record: %+v", again.Records())
 		}
-		if got := again.CursorEpoch().QuarantineEpoch; got != 1 {
+		if got := again.quarantineEpoch(); got != 1 {
 			t.Fatalf("the epoch after the clear = %d, want the persisted 1", got)
 		}
 		if again.Quarantine() != nil {
@@ -287,7 +287,7 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		dir := t.TempDir()
 		path := StorePath(dir)
 		writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("first Open: %v", err)
 		}
 		firstAside, _ := quarantineArtifact(t, filepath.Dir(path), ".quarantined-")
@@ -302,7 +302,7 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		reopened, err := Open(path)
+		reopened, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open with a stale intent over a newly corrupt store: %v", err)
 		}
@@ -320,7 +320,7 @@ func TestQuarantineNeverRenamesACleanStoreUnderAStaleIntent(t *testing.T) {
 		if !freshAside {
 			t.Fatalf("the newly corrupt file was moved aside under the stale intent: %v", entries)
 		}
-		if got := reopened.CursorEpoch().QuarantineEpoch; got != 2 {
+		if got := reopened.quarantineEpoch(); got != 2 {
 			t.Fatalf("the fresh quarantine's epoch = %d, want 2", got)
 		}
 	})
@@ -345,7 +345,7 @@ func TestQuarantineRefusesIncoherentCustodyMetadata(t *testing.T) {
 	dir := t.TempDir()
 	path := StorePath(dir)
 	writeRawStore(t, path, 0o600, quarantinedStoreWithRemoteFenceJSON)
-	if _, err := Open(path); err != nil {
+	if _, err := Open(path, RetentionPolicy{}); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	_, custodyBytes := quarantineArtifact(t, filepath.Dir(path), ".custody-")
@@ -378,7 +378,7 @@ func TestQuarantineRefusesFenceIDsThatAliasAnEarlierCustody(t *testing.T) {
 		dir := t.TempDir()
 		path := StorePath(dir)
 		writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-		if _, err := Open(path); err != nil {
+		if _, err := Open(path, RetentionPolicy{}); err != nil {
 			t.Fatalf("first Open: %v", err)
 		}
 		return dir, path
@@ -398,7 +398,7 @@ func TestQuarantineRefusesFenceIDsThatAliasAnEarlierCustody(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		if store, err := Open(path); err == nil {
+		if store, err := Open(path, RetentionPolicy{}); err == nil {
 			t.Fatalf("Open accepted a fence id aliasing an earlier custody's import: %+v", store.Records())
 		} else if !errors.Is(err, ErrStoreCorrupt) || !errors.Is(err, ErrQuarantineIncomplete) {
 			t.Fatalf("Open = %v, want an incomplete-custody refusal", err)
@@ -420,7 +420,7 @@ func TestQuarantineRefusesFenceIDsThatAliasAnEarlierCustody(t *testing.T) {
 		if err := forgetStore(path); err != nil {
 			t.Fatalf("forgetStore: %v", err)
 		}
-		store, err := Open(path)
+		store, err := Open(path, RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("Open on the same lineage's repeated fence: %v", err)
 		}
@@ -439,7 +439,7 @@ func TestQuarantineRefusesFenceIDsThatAliasAnEarlierCustody(t *testing.T) {
 func TestOperationsReadResolvesAHostGenerationOnAQuarantinedStore(t *testing.T) {
 	path := StorePath(t.TempDir())
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	store, err := Open(path)
+	store, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

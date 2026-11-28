@@ -1,24 +1,12 @@
-import {
-  type CSSProperties,
-  type ReactNode,
-  type PointerEvent as ReactPointerEvent,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useRef } from "react";
 import dialogStyles from "../dialog/dialog.module.css";
 import { OverlayPanel } from "../dialog/OverlayPanel";
-import { ownerWindowOf } from "../internal/documentRealm";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
+import { useSheetSwipe } from "./useSheetSwipe";
 
 export type SheetSide = "right" | "bottom" | "left";
 export type SheetSize = "standard" | "wide";
-
-export interface ExpandableConfig {
-  peekHeight: number;
-  fullScreenFirst?: boolean;
-}
 
 export interface SheetProps {
   side?: SheetSide;
@@ -26,14 +14,10 @@ export interface SheetProps {
   open: boolean;
   onClose: () => void;
   title: string;
+  /** Actions beside the title, before the sheet's Close control. */
+  headerActions?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
-  /** When set, the Sheet renders a drag handle and manages a "peek" | "full"
-   * geometry state (full on every open transition when fullScreenFirst). The
-   * handle both drags (pointermove threshold) and taps (toggles). Scoped
-   * header/body classes flow to OverlayPanel. Defaults to undefined; existing
-   * consumers that don't pass it render exactly as before. */
-  expandable?: ExpandableConfig;
   /** Optional extra class appended to the panel element after the side and
    * size classes. */
   panelClassName?: string;
@@ -57,19 +41,10 @@ const SIZE_CLASS: Record<SheetSize, string> = {
   wide: requireClass(styles.wide, "sheet.module.css", "wide"),
 };
 
-const HANDLE_CLASS = requireClass(styles.handle, "sheet.module.css", "handle");
 const HANDLE_BAR_CLASS = requireClass(styles.handleBar, "sheet.module.css", "handleBar");
-const EXPANDABLE_BOTTOM_CLASS = requireClass(styles.expandableBottom, "sheet.module.css", "expandableBottom");
-const EXPANDABLE_HEADER_CLASS = requireClass(styles.expandableHeader, "sheet.module.css", "expandableHeader");
-const EXPANDABLE_BODY_CLASS = requireClass(styles.expandableBody, "sheet.module.css", "expandableBody");
-
-function DragHandle({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) => void }) {
-  return (
-    <div className={HANDLE_CLASS} data-testid="sheet-handle" onPointerDown={onPointerDown}>
-      <div className={HANDLE_BAR_CLASS} />
-    </div>
-  );
-}
+const GRAB_HANDLE_CLASS = requireClass(styles.grabHandle, "sheet.module.css", "grabHandle");
+const BOTTOM_BODY_CLASS = requireClass(styles.bottomBody, "sheet.module.css", "bottomBody");
+const BOTTOM_HEADER_CLASS = requireClass(styles.bottomHeader, "sheet.module.css", "bottomHeader");
 
 /**
  * Slide-over panel anchored to the right edge, the left edge, or the
@@ -79,15 +54,9 @@ function DragHandle({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) =
  * motion differ: it slides in from its edge and back out to it
  * (sheet.module.css, the Slide recipe).
  *
- * When `expandable` is set, the Sheet additionally renders a drag handle
- * above the header and manages a "peek" | "full" geometry state, resetting
- * to "full" on every open false->true transition (when fullScreenFirst).
- * The handle drags between the two geometries (pointermove past a threshold
- * on its own window) and taps to toggle. The current geometry is surfaced on a
- * wrapper div inside the body as a `data-geometry` attribute for tests and
- * for CSS to key off. When `expandable` is not set, this is the plain
- * Sheet - no handle, no extra classes, fixed geometry - byte-for-byte the
- * pre-existing behavior.
+ * `side="bottom"` additionally supports swipe-down dismissal from the grab
+ * pill, header, or unscrolled body (and renders the coarse-pointer grab pill);
+ * left and right sheets do not swipe.
  */
 export function Sheet({
   side = "right",
@@ -95,114 +64,62 @@ export function Sheet({
   open,
   onClose,
   title,
+  headerActions,
   children,
   footer,
-  expandable,
   panelClassName,
   bodyClassName,
 }: SheetProps) {
-  const [geometry, setGeometry] = useState<"peek" | "full">(expandable?.fullScreenFirst ? "full" : "peek");
-  const dragStartYRef = useRef<number | null>(null);
-  const dragStartGeometryRef = useRef<"peek" | "full">("peek");
-  // One closure owns the active pointermove/pointerup pair, bound to the
-  // window that accepted the pointerdown. handlePointerUp and the unmount
-  // effect both call it, so a mid-drag close removes from the same window the
-  // listeners were added to.
-  const dragCleanupRef = useRef<(() => void) | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
 
-  // Reset geometry to full on every open transition (false->true). An effect
-  // keyed on `open` (and fullScreenFirst) is the only place that observes
-  // that transition; the render-time useState initializer only fires once,
-  // on mount, so without this a peek reached before close would survive a
-  // reopen.
-  useEffect(() => {
-    if (open && expandable?.fullScreenFirst) setGeometry("full");
-  }, [open, expandable?.fullScreenFirst]);
-
-  // Remove any active drag listeners on unmount so a mid-drag close can't
-  // leak pointermove/pointerup handlers on the window the drag started in.
-  useEffect(() => {
-    return () => {
-      dragCleanupRef.current?.();
-      dragCleanupRef.current = null;
-    };
-  }, []);
-  function handlePointerMove(e: PointerEvent) {
-    if (dragStartYRef.current === null) return;
-    const delta = e.clientY - dragStartYRef.current;
-    // Dragging down from full toward peek, or up from peek toward full.
-    if (dragStartGeometryRef.current === "full" && delta > 50) setGeometry("peek");
-    else if (dragStartGeometryRef.current === "peek" && delta < -50) setGeometry("full");
-  }
-
-  function handlePointerUp(e: PointerEvent) {
-    if (dragStartYRef.current === null) return;
-    const delta = e.clientY - dragStartYRef.current;
-    const wasDrag = Math.abs(delta) > 10;
-    dragStartYRef.current = null;
-    if (!wasDrag) {
-      // Tap toggles between the two geometries.
-      setGeometry((g) => (g === "peek" ? "full" : "peek"));
-    }
-    dragCleanupRef.current?.();
-    dragCleanupRef.current = null;
-  }
-
-  function startDrag(e: ReactPointerEvent) {
-    dragStartYRef.current = e.clientY;
-    dragStartGeometryRef.current = geometry;
-    // The drag surface's own window: a Sheet in a Dockview popout must hear
-    // that window's pointer events, never the opener's.
-    const win = ownerWindowOf(e.currentTarget);
-    // A second pointerdown before a pointerup replaces the pair; drop the old
-    // pair from its own window first.
-    dragCleanupRef.current?.();
-    dragCleanupRef.current = () => {
-      win.removeEventListener("pointermove", handlePointerMove);
-      win.removeEventListener("pointerup", handlePointerUp);
-    };
-    win.addEventListener("pointermove", handlePointerMove);
-    win.addEventListener("pointerup", handlePointerUp);
-  }
+  const { onHandlePointerDown, onHeaderPointerDown } = useSheetSwipe({
+    open,
+    side,
+    onClose,
+    panelRef,
+    bodyRef,
+    scrimRef,
+  });
 
   const composedPanelClassName = panelClassName
     ? `${SIDE_CLASS[side]} ${SIZE_CLASS[size]} ${panelClassName}`
     : `${SIDE_CLASS[side]} ${SIZE_CLASS[size]}`;
-  const composedExpandablePanelClassName = panelClassName ? `${SIDE_CLASS[side]} ${panelClassName}` : SIDE_CLASS[side];
-
-  if (!expandable) {
-    return (
-      <OverlayPanel
-        open={open}
-        onClose={onClose}
-        title={title}
-        footer={footer}
-        panelClassName={composedPanelClassName}
-        bodyClassName={bodyClassName}
-        motion="slide"
-      >
-        {children}
-      </OverlayPanel>
-    );
-  }
-
-  const heightStyle: CSSProperties =
-    geometry === "full" ? { height: "100vh" } : { height: `${expandable.peekHeight}px` };
+  const bottomBodyClassName = side === "bottom" ? BOTTOM_BODY_CLASS : undefined;
+  const bottomHeaderClassName = side === "bottom" ? BOTTOM_HEADER_CLASS : undefined;
+  const composedBodyClassName = [bottomBodyClassName, bodyClassName].filter(Boolean).join(" ");
+  const bottomHeaderProps = side === "bottom" ? { onPointerDown: onHeaderPointerDown } : undefined;
 
   return (
     <OverlayPanel
       open={open}
       onClose={onClose}
       title={title}
+      headerActions={headerActions}
       footer={footer}
-      handle={<DragHandle onPointerDown={startDrag} />}
-      headerClassName={EXPANDABLE_HEADER_CLASS}
-      bodyClassName={bodyClassName ? `${EXPANDABLE_BODY_CLASS} ${bodyClassName}` : EXPANDABLE_BODY_CLASS}
-      panelClassName={`${composedExpandablePanelClassName} ${EXPANDABLE_BOTTOM_CLASS}`}
-      style={heightStyle}
+      panelClassName={composedPanelClassName}
+      handle={
+        side === "bottom" ? (
+          <div
+            className={GRAB_HANDLE_CLASS}
+            data-testid="sheet-grab-pill"
+            aria-hidden
+            onPointerDown={onHandlePointerDown}
+          >
+            <div className={HANDLE_BAR_CLASS} />
+          </div>
+        ) : undefined
+      }
+      headerClassName={bottomHeaderClassName}
+      bodyClassName={composedBodyClassName}
       motion="slide"
+      panelRef={panelRef}
+      bodyRef={bodyRef}
+      scrimRef={scrimRef}
+      headerProps={bottomHeaderProps}
     >
-      <div data-geometry={geometry}>{children}</div>
+      {children}
     </OverlayPanel>
   );
 }

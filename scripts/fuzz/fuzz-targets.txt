@@ -84,7 +84,9 @@ native:llm:./providers/anthropic:FuzzAnthropicStreamStructured
 native:llm:./providers/google:FuzzGeminiStreamMetamorphic
 native:llm:./providers/google:FuzzGeminiStreamStructured
 native:llm:./providers/chatcompletions:FuzzChatCompletionsBuildBody
+native:llm:./providers/chatcompletions:FuzzChatCompletionsListModels
 native:llm:./providers/chatcompletions:FuzzChatCompletionsStreamMetamorphic
+native:llm:./providers/internal/requestutil:FuzzListedReasoningDecode
 native:llm:./internal/imagerepair:FuzzICC
 native:llm:./internal/imagerepair:FuzzOrientation
 native:llm:./internal/imagerepair:FuzzRepairJPEG
@@ -159,6 +161,7 @@ native:agent:./internal/goal:FuzzGoalLifecycleProgram
 native:agent:./internal/installid:FuzzLoadOrCreateInstallationIDWithFS
 native:agent:./internal/globpattern:FuzzExpand
 native:agent:./internal/runetrim:FuzzRuneTrim
+native:agent:./internal/pdfslice:FuzzParsePageRange
 native:agent:./internal/liveeval:FuzzLiveEvalPaths
 native:agent:./internal/tool/repair:FuzzRepairJSON
 native:agent:./internal/tool/repair:FuzzRepairArgs
@@ -212,6 +215,7 @@ native:llm:./providers/internal/openaichat:FuzzParseChatUsage
 native:auth:./openai:FuzzParseIDTokenClaims
 native:auth:./openai:FuzzResolveRuntimeCredentials
 native:auth:./openai:FuzzTokenEndpointResponse
+native:auth:./githubcopilot:FuzzGitHubResponseDecoding
 native:invariant:.:FuzzInvariantHold
 native:envvars:.:FuzzEnvvarsSurface
 native:fuzz:./edgeseeds:FuzzSeedRegeneration

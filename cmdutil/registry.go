@@ -80,12 +80,13 @@ func LoadRegistry(opts ...registry.Option) (*registry.Registry, *credentials.Sto
 	return r, store, nil
 }
 
-// NewRegistryClient builds the client every binary uses and wires the two
+// NewRegistryClient builds the client every binary uses and wires the
 // process-wide seams from one state root and one build version (spec §9.5):
-// the Codex authenticator reads OAuth records under the registry's state
-// root and announces the build in its User-Agent.
+// the record-backed OAuth authenticators read records under the registry's
+// state root, and the build is announced in their User-Agents.
 func NewRegistryClient(r *registry.Registry, stateDir string) *llm.Client {
 	tokenauth.DefaultCodex.StateDir = r.StateRoot()
+	tokenauth.DefaultCopilot.StateDir = r.StateRoot()
 	tokenauth.ClientVersion = buildinfo.Version()
 	return llm.NewClient(llm.WithRegistry(r), llm.WithClientStateDir(stateDir))
 }

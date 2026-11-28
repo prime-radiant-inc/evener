@@ -2,19 +2,26 @@ import type { InstanceEntry } from "@evener/appwire-client";
 import { openInNewTab } from "../../../../shell/openInNewTab";
 import { credentialsStore } from "../../../../stores/credentials";
 
-/** CODEX_AUTH_SCHEME is the one transport auth scheme whose sign-in is the
- * OpenAI device-code flow (llm/registry/types.go's AuthOAuthOpenAICodex), and it
- * is the scheme the hub's own gate compares
- * (cmd/evener-hub/app_auth.go's requiresCodex -> instanceIsCodex: inst.Auth ==
- * registry.AuthOAuthOpenAICodex): the flow is OpenAI device authorization, not a
- * generic OAuth path. */
+/** CODEX_AUTH_SCHEME is the OpenAI Codex transport auth scheme
+ * (llm/registry/types.go's AuthOAuthOpenAICodex), which the hub's own gate
+ * compares (cmd/evener-hub/app_auth.go's instanceIsCodex). */
 export const CODEX_AUTH_SCHEME = "oauth-openai-codex";
+
+/** COPILOT_AUTH_SCHEME is the GitHub Copilot subscription transport auth
+ * scheme (llm/registry/types.go's AuthOAuthGitHubCopilot), which the hub's own
+ * gate compares (cmd/evener-hub/app_auth.go's instanceIsCopilot). */
+export const COPILOT_AUTH_SCHEME = "oauth-github-copilot";
+
+/** DEVICE_OAUTH_AUTH_SCHEMES is every transport auth scheme whose sign-in is a
+ * device-code flow the hub itself can run. It is pinned to the hub's own
+ * schemes by cmd/evener-hub/device_oauth_auth_schemes.txt. */
+export const DEVICE_OAUTH_AUTH_SCHEMES: readonly string[] = [CODEX_AUTH_SCHEME, COPILOT_AUTH_SCHEME];
 
 /** supportsHostDeviceSignIn reports whether `instance` can begin a device-code
  * sign-in on the hub that owns it ("Sign in on host", component 07d). It is the
  * HOST's own gate, not a client-side guess: the scheme an instance resolves to is
- * what the hub's auth handlers accept (see CODEX_AUTH_SCHEME), and every other
- * scheme's sign-in is a browser redirect the remote host has no browser to
+ * what the hub's auth handlers accept (see DEVICE_OAUTH_AUTH_SCHEMES), and every
+ * other scheme's sign-in is a browser redirect the remote host has no browser to
  * complete - so the action is offered exactly where the call can land, and never
  * where its only outcome would be the host's refusal.
  *
@@ -25,7 +32,7 @@ export const CODEX_AUTH_SCHEME = "oauth-openai-codex";
  * hub accepts, while an openai-codex-based instance overridden to another scheme
  * is one it refuses. */
 export function supportsHostDeviceSignIn(instance: InstanceEntry): boolean {
-  return instance.auth === CODEX_AUTH_SCHEME;
+  return DEVICE_OAUTH_AUTH_SCHEMES.includes(instance.auth);
 }
 
 export type OAuthEditor =

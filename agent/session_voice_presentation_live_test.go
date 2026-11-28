@@ -124,11 +124,11 @@ func TestVoicePresentationLiveReference(t *testing.T) {
 
 				// Seed prior conversation with the same record path used by normal
 				// Session turns. This is fixture context, not a mocked model choice.
-				seed := schema.NewTurn(schema.TurnUserInput, llm.User("Help me choose a synthetic build to inspect. No build is running and no action should execute. Report the next decision through communicate with end_turn=true and the output schema: decision=select with target_id for a choice, or decision=clarify with empty target_id, a question and candidate_ids. Keep question and candidate_ids empty for a selection. Put the user-facing reply in message. List the available builds first."))
+				seed := schema.NewTurn(schema.TurnUserInput, llm.User("Help me choose a synthetic build to inspect. No build is running and no action should execute. Report the next decision through communicate with next=\"send_and_end_turn\" and the output schema: decision=select with target_id for a choice, or decision=clarify with empty target_id, a question and candidate_ids. Keep question and candidate_ids empty for a selection. Put the user-facing reply in message. List the available builds first."))
 				sess.recordTurn(seed, seed)
 				canonical := schema.NewTurn(schema.TurnAssistant, llm.Assistant("Available builds:\n1. Atlas (fixture-atlas)\n2. Boreal (fixture-boreal)\nWhich one should I inspect?"))
 				recorded := sess.recordTurn(canonical, canonical)
-				items := apptranscript.ProjectTurn(recorded.Turn.TurnID, recorded.Seq, recorded.Turn, apptranscript.NewToolCallRegistry(), nil, nil)
+				items, _ := apptranscript.ProjectTurnParts(recorded.Turn.TurnID, recorded.Seq, recorded.Turn, apptranscript.NewToolCallRegistry(), nil, nil)
 				if !recorded.Recorded || len(items) != 1 || items[0].ID == "" {
 					t.Fatal("canonical source fixture was not recorded and projected")
 				}
@@ -189,7 +189,7 @@ func TestVoicePresentationLiveReference(t *testing.T) {
 					t.Fatalf("expected one real communicate decision, got %v", calls)
 				}
 				var result struct {
-					EndTurn bool   `json:"end_turn"`
+					Next    string `json:"next"`
 					Message string `json:"message"`
 					Output  struct {
 						Decision     string   `json:"decision"`
@@ -202,7 +202,7 @@ func TestVoicePresentationLiveReference(t *testing.T) {
 					t.Fatal(err)
 				}
 				t.Logf("voice_reference case=%s repetition=%d requested_model=%s response_model=%s requests=%d projection_checked=true decision=%s target_id=%q candidate_ids=%v question=%q message=%q", tc.name, repetition, model, response.Model, requests, result.Output.Decision, result.Output.TargetID, result.Output.CandidateIDs, result.Output.Question, result.Message)
-				if !result.EndTurn {
+				if result.Next != "" && result.Next != "send_and_end_turn" {
 					t.Error("decision did not end the turn")
 				}
 				if tc.want != "" {

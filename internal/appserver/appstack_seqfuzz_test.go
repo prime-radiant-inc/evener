@@ -173,14 +173,19 @@ func exerciseReceiveLoops(t rapidTB) {
 	c := s.NewConnection("recv")
 	closer := &stackCloser{}
 	normal := websocket.CloseError{Code: websocket.StatusNormalClosure}
-	runWebSocketReceiveLoop(context.Background(), closer, &stackTransport{
+	if err := runWebSocketReceiveLoop(context.Background(), closer, &stackTransport{
 		messages: []appwire.Message{appwire.NotificationMessage("ignored", nil)},
 		err:      normal,
-	}, c, newWebSocketReadGate())
+	}, c, newWebSocketReadGate()); err != nil {
+		t.Fatalf("normal receive loop error = %v", err)
+	}
 	if closer.closes != 0 {
 		t.Fatalf("normal receive close count = %d", closer.closes)
 	}
-	runWebSocketReceiveLoop(context.Background(), closer, &stackTransport{err: errors.New("recv")}, c, newWebSocketReadGate())
+	recvErr := errors.New("recv")
+	if err := runWebSocketReceiveLoop(context.Background(), closer, &stackTransport{err: recvErr}, c, newWebSocketReadGate()); !errors.Is(err, recvErr) {
+		t.Fatalf("abnormal receive loop error = %v, want %v", err, recvErr)
+	}
 	if closer.closes != 1 {
 		t.Fatalf("abnormal receive close count = %d", closer.closes)
 	}
@@ -192,7 +197,9 @@ func exerciseReceiveLoops(t rapidTB) {
 	c.setCancel(cancel)
 	transport := &ctxTransport{ctx: ctx}
 	transport.messages = []appwire.Message{appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodPing, nil)}
-	runWebSocketReceiveLoop(ctx, closer, transport, c, newWebSocketReadGate())
+	if err := runWebSocketReceiveLoop(ctx, closer, transport, c, newWebSocketReadGate()); err != nil {
+		t.Fatalf("closed-send receive loop error = %v", err)
+	}
 	if closer.closes != 1 || closer.immediate != 1 {
 		t.Fatalf("cancelled close counts = graceful %d, immediate %d", closer.closes, closer.immediate)
 	}

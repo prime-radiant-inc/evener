@@ -17,7 +17,7 @@ func TestQuarantineSignalNamesASurvivingCustodyAfterCleanup(t *testing.T) {
 	dir := t.TempDir()
 	path := StorePath(dir)
 	writeRawStore(t, path, 0o600, quarantinedStoreJSON)
-	first, err := Open(path)
+	first, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestQuarantineSignalNamesASurvivingCustodyAfterCleanup(t *testing.T) {
 		t.Fatalf("forgetStore: %v", err)
 	}
 
-	reopened, err := Open(path)
+	reopened, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open under the stale intent: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestQuarantineSignalNamesASurvivingCustodyAfterCleanup(t *testing.T) {
 	if _, err := os.Stat(signal.CustodyFile); err != nil {
 		t.Fatalf("the signal names a custody file that does not exist: %v", err)
 	}
-	if got := reopened.CursorEpoch().QuarantineEpoch; got != 2 {
+	if got := reopened.quarantineEpoch(); got != 2 {
 		t.Fatalf("the durable epoch = %d, want the stale intent's 2 (it never regresses)", got)
 	}
 }

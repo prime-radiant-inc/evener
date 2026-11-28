@@ -106,7 +106,7 @@ var ErrOldSchema = errors.New("providers.toml uses the pre-registry schema ([ins
 var (
 	protocols   = map[string]bool{ProtocolOpenAIChat: true, ProtocolOpenAIResponses: true, ProtocolAnthropic: true, ProtocolGoogle: true}
 	surfaces    = map[string]bool{SurfaceOpenAI: true, SurfaceAnthropic: true, SurfaceGoogle: true, SurfaceGeneric: true}
-	authSchemes = map[string]bool{AuthBearer: true, AuthOptionalBearer: true, AuthHeader: true, AuthNone: true, AuthGCPADC: true, AuthOAuthOpenAICodex: true}
+	authSchemes = map[string]bool{AuthBearer: true, AuthOptionalBearer: true, AuthHeader: true, AuthNone: true, AuthGCPADC: true, AuthOAuthOpenAICodex: true, AuthOAuthGitHubCopilot: true}
 	hostRules   = map[string]bool{HostRuleVertexLocation: true, HostRuleOllamaHost: true}
 
 	thinkingFormats       = map[string]bool{"openai": true, "openrouter": true, "zai": true, "deepseek": true, "together": true, "qwen": true, "qwen-chat-template": true, "chat-template": true, "string-thinking": true}

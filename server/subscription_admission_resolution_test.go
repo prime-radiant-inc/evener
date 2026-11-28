@@ -47,7 +47,7 @@ func TestLocalSubscriptionAdmissionDispositions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
 			t.Cleanup(srv.Close)
-			srv.SetAppIdentity("local", "th_1")
+			setAppIdentity(t, srv, "local", "th_1")
 			installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 			client := dialServerAppWire(t, srv)
 			err := client.Request(context.Background(), tc.method, tc.params, nil)
@@ -63,7 +63,7 @@ func TestLocalSubscriptionAdmissionDispositions(t *testing.T) {
 
 func TestLocalSubscriptionAdmissionUnsubscribe(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
 	client := dialServerAppWire(t, srv)
 	ctx := context.Background()
@@ -123,7 +123,7 @@ func TestLocalSubscriptionAdmissionIntent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := NewServer(ServerConfig{})
 			t.Cleanup(srv.Close)
-			srv.SetAppIdentity("local", "th_1")
+			setAppIdentity(t, srv, "local", "th_1")
 			msg := appwire.Message{Request: &appwire.Request{Method: tc.method, Params: json.RawMessage(tc.params)}}
 			if got := srv.resolveSubscriptionAdmission(msg).Intent; got != tc.want {
 				t.Fatalf("intent = %d, want %d", got, tc.want)

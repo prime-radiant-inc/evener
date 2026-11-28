@@ -170,7 +170,7 @@ test("renders nothing when there are no pending entries, queue rows, or durable 
 test("renders every steer-family entry as a provisional user message, in the shared order", async () => {
   const fake = connectFakeClient();
   await hydrate(fake, "ref_a");
-  await seedHeld("steer", "focus on the parser", { attempted: true });
+  await seedHeld("steer", "focus on **the parser** in `lexer.ts`", { attempted: true });
   await seedHeld("drain", "drain the queue", { attempted: true });
   render(
     <SessionNowContext.Provider value={NOW}>
@@ -179,7 +179,8 @@ test("renders every steer-family entry as a provisional user message, in the sha
   );
   const rows = screen.getAllByTestId("user-message-item");
   expect(rows).toHaveLength(2);
-  expect(rows[0]!.textContent).toContain("focus on the parser");
+  expect(rows[0]!.querySelector("strong")?.textContent).toBe("the parser");
+  expect(rows[0]!.querySelector("code")?.textContent).toBe("lexer.ts");
   expect(rows[1]!.textContent).toContain("drain the queue");
   // The provisional register: the caption rides the meta slot, and the
   // provisional styling marks the row as not-yet-delivered.

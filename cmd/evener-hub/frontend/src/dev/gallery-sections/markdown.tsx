@@ -1,5 +1,5 @@
 import { Markdown } from "../../widgets/markdown";
-import { ThemeFlip } from "../ThemeFlip";
+import { GallerySection } from "../GallerySection";
 import styles from "./markdown.module.css";
 
 const SAMPLE = `# Session summary
@@ -73,39 +73,55 @@ const MERMAID_WIDE = [
   "```",
 ].join("\n");
 
+const WIDE_TABLE = [
+  "| Variant | Pass | Input | Total | Cached | Output | Ratio | Latency |",
+  "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+  '| `descriptive-ethos-bullets` ("You are a collaborator.") | 9,541 (3/3) | 9,277 (-43.9%) | 13,868 (-15.6%) | 1,889 (-17.2%) | 685 (reas 409) | 0.799x (-20.1%) | 13.4 s / 93.2 s |',
+  "| `baseline-prompt` | 9,541 (3/3) | 16,536 (0.0%) | 16,431 (0.0%) | 2,281 (0.0%) | 712 (reas 420) | 1.000x (0.0%) | 16.8 s / 112.4 s |",
+].join("\n");
+
 export default function MarkdownGallerySection() {
   return (
-    <section>
-      <h2>Markdown</h2>
-      <ThemeFlip>
+    <GallerySection title="Markdown">
+      <div className={styles.frame}>
+        <Markdown source={SAMPLE} />
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Mermaid: prose, flowchart, prose</p>
         <div className={styles.frame}>
-          <Markdown source={SAMPLE} />
+          <Markdown source={MERMAID_BETWEEN_PROSE} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>Mermaid: prose, flowchart, prose</p>
-          <div className={styles.frame}>
-            <Markdown source={MERMAID_BETWEEN_PROSE} />
-          </div>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Mermaid: diagram then a heading</p>
+        <div className={styles.frame}>
+          <Markdown source={MERMAID_BEFORE_HEADING} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>Mermaid: diagram then a heading</p>
-          <div className={styles.frame}>
-            <Markdown source={MERMAID_BEFORE_HEADING} />
-          </div>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Mermaid: invalid source (error fallback)</p>
+        <div className={styles.frame}>
+          <Markdown source={MERMAID_INVALID} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>Mermaid: invalid source (error fallback)</p>
-          <div className={styles.frame}>
-            <Markdown source={MERMAID_INVALID} />
-          </div>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Mermaid: wide diagram</p>
+        <div className={styles.wide}>
+          <Markdown source={MERMAID_WIDE} />
         </div>
-        <div className={styles.row}>
-          <p className={styles.rowLabel}>Mermaid: wide diagram</p>
-          <div className={styles.wide}>
-            <Markdown source={MERMAID_WIDE} />
-          </div>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Wide table: narrow container (list reflow)</p>
+        <div className={styles.frame}>
+          <Markdown source={WIDE_TABLE} />
         </div>
-      </ThemeFlip>
-    </section>
+      </div>
+      <div className={styles.row}>
+        <p className={styles.rowLabel}>Wide table: wide container (tabular)</p>
+        <div className={styles.wide}>
+          <Markdown source={WIDE_TABLE} />
+        </div>
+      </div>
+    </GallerySection>
   );
 }

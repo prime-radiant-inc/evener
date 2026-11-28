@@ -45,8 +45,7 @@ type delegateSendResult struct {
 	// Worktree carries the isolation lane's path/branch/ahead/dirty state for
 	// an isolated delegate's terminal job (native worktree tools spec §9
 	// lifecycle step 3); nil for a non-isolated delegate.
-	Worktree          *delegateWorktreeReport `json:"worktree,omitempty"`
-	WaitIgnoredReason string                  `json:"wait_ignored_reason,omitempty"`
+	Worktree *delegateWorktreeReport `json:"worktree,omitempty"`
 	// EarlierResults are results of the same delegate the caller had not
 	// yet received, oldest first, carried ahead of this one by a wait that
 	// collected them (#3906).
@@ -98,7 +97,6 @@ func delegateSendResultFrom(res sendMessageResult, nameMap ...map[string]string)
 		LatestActivityAt:    res.LatestActivityAt,
 		CumulativeUsage:     res.CumulativeUsage,
 		Worktree:            res.Worktree,
-		WaitIgnoredReason:   res.WaitIgnoredReason,
 	}
 	if !res.RunningInBackground || res.TimedOut {
 		out.Output = &res.Output

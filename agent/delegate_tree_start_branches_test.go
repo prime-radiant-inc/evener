@@ -405,26 +405,6 @@ func TestReserveAndReleaseCapacityLocked(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// reservedAttentionID nil controller
-// ---------------------------------------------------------------------------
-
-func TestReservedAttentionIDNilController(t *testing.T) {
-	t.Parallel()
-	var c *delegateTreeController
-	if c.reservedAttentionID(nil) != "" {
-		t.Fatalf("expected empty for nil controller")
-	}
-}
-
-func TestReservedAttentionIDNilRuntime(t *testing.T) {
-	t.Parallel()
-	c := &delegateTreeController{}
-	if c.reservedAttentionID(nil) != "" {
-		t.Fatalf("expected empty for nil runtime")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // delegateCommittedStartFailureDisposition constants
 // ---------------------------------------------------------------------------
 

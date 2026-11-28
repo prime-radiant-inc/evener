@@ -49,7 +49,7 @@ func FuzzProjectTurn(f *testing.F) {
 			return // rejected input
 		}
 		toolNames := NewToolCallRegistry()
-		items := ProjectTurn("turn_1", 1, turn, toolNames, nil, nil)
+		items, _ := ProjectTurnParts("turn_1", 1, turn, toolNames, nil, nil)
 		for _, item := range items {
 			if _, err := json.Marshal(item); err != nil {
 				t.Fatalf("projected item failed to marshal: %v\n raw=%q\n item=%#v", err, raw, item)
@@ -62,7 +62,7 @@ func exerciseTranscriptSurface(t testing.TB) {
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing.jsonl")
 	ScanPrelude(missing, 1<<20)
-	ItemTurnsFromFile(missing, 1<<20, nil)
+	ItemTurnProjectionFromFile(missing, 1<<20, nil)
 
 	path := filepath.Join(dir, "session.jsonl")
 	data := []byte(
@@ -73,12 +73,12 @@ func exerciseTranscriptSurface(t testing.TB) {
 		t.Fatal(err)
 	}
 	ScanPrelude(path, 1<<20)
-	ItemTurnsFromFile(path, 1<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+	ItemTurnProjectionFromFile(path, 1<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "agentMessage", ID: "item", TurnID: turnID}}
 	})
-	ItemTurnsFromFile(path, 1<<20, func(schema.Turn, string, int) []appwire.ThreadItem { return nil })
+	ItemTurnProjectionFromFile(path, 1<<20, func(schema.Turn, string, int) []appwire.ThreadItem { return nil })
 
-	PreludeTurn(transcript.Header{})
+	PreludeTurn(transcript.Header{}, "")
 	_ = CompactionDescription("checkpoint")
 	ImagePlaceholder(0)
 	ImagePlaceholder(1)
@@ -96,8 +96,8 @@ func exerciseTranscriptSurface(t testing.TB) {
 	_ = webSearchResultLine("", "")
 	envvars.FirstNonEmpty(" ", "value")
 	envvars.FirstNonEmpty(" ")
-	ProjectTurn("turn_direct", 1, schema.Turn{}, nil, nil, nil)
-	ProjectTurn("turn_direct", 2, schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{
+	ProjectTurnParts("turn_direct", 1, schema.Turn{}, nil, nil, nil)
+	ProjectTurnParts("turn_direct", 2, schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{
 		Kind: llm.ContentToolResult,
 		ToolResult: &llm.ToolResultData{
 			ToolCallID: "call",

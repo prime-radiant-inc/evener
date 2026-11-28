@@ -83,3 +83,127 @@ measure is the
 real rail's hover-quiet fade-out after a dismissal - with no pointer on the
 row and no treeitem focus, that styling returns focus to `body` on its own,
 independently of `preventScroll`.
+
+## The phone tap floor reaches the rendered Settings controls (`checkSettingsGeometry()`'s filter and RadioGroup heights) - W1-F03/W1-F10
+
+The Settings geometry driver measures the nav filter field, then navigates to
+Appearance (`/settings/theme`) and measures every `role="radio"` option
+there, in both the 1400px and 390px viewports:
+
+- at 390px the filter field's and every option's height must be at least
+  44px;
+- at 1400px the filter field's height must stay 32px and every option's 28px.
+
+The phone floor arrives through `composes:` - `Input` composes its own
+`tapFloor` in `widgets/input/input.module.css`, and the radio option composes
+`styles/tapfloor.module.css` from `widgets/radiogroup/radiogroup.module.css`.
+The 390px desktop-height sibling would not distinguish a broken tap floor
+from a working one, hence the explicit desktop pins.
+
+**Mutation performed:** in `cmd/evener-hub/frontend/src/widgets/radiogroup/radiogroup.module.css`
+deleted the `.option` rule's `composes: tapFloor from "../../styles/tapfloor.module.css";`,
+then ran `node scripts/shellguard/settingsGeometry.mjs`.
+
+**Result before restore:** FAIL (the guard process exited 1), one new line
+per theme:
+
+```
+appearance 390px XL light: phone System radio option retains tap floor (28px)
+appearance 390px XL dark: phone System radio option retains tap floor (28px)
+```
+
+The same run's measurement lines show all eleven Appearance options at 28px
+in both themes, while the filter field stayed at 44px - it composes its own
+tap floor - so the failure is attributable to the removed RadioGroup
+composition alone, not to a lost media block or a collapsed pane. The
+assertion names the first offending option; every option had fallen to the
+28px desktop row.
+
+**Result after restore:** PASS, both viewports and themes, options 44px at
+390px and 28px at 1400px.
+
+**Verified:** 2026-11-24. **Expect:** fail.
+
+## Phone CommandPalette paints above the Sessions drawer (`measurePhoneSearchPalette()` / `assertPhoneSearchPalette()`) - #7763
+
+At `400x844` with mobile/touch emulation, `MobilePanel` ("Sessions") opens on
+the welcome route, Search (`[data-testid="rail-search"]`) is clicked to open
+`CommandPalette`, a toast is pushed to `ToastRegion`, and `Escape` dismisses the
+palette:
+
+- `document.elementFromPoint(200, 422)` and the palette combobox center must hit
+  `CommandPalette` (not `Sessions`);
+- an active error toast must still hit-test above `CommandPalette`;
+- pressing `Escape` must keep `Sessions` open and restore focus/hit-testing to
+  Search.
+
+**Mutation performed:** before moving `<CommandPalette />` after
+`<CheatsheetOverlay />` and `.content` in `cmd/evener-hub/frontend/src/shell/AppShell.tsx`
+(when `<CommandPalette />` rendered before `<StackHost />` at the same
+`--z-dialog` level), ran `node scripts/shellguard/run.mjs`.
+
+**Result before fix:** FAIL (exited 1) with both hit-tests hitting the
+`Sessions` drawer instead of `CommandPalette`:
+
+```
+shellguard FAIL: phone Command palette center hit-test was occluded: {"tag":"SPAN","ariaLabel":null,"labelledTitle":null,"inPalette":false,"inSessions":true,"isInput":false,"inToast":false}
+shellguard FAIL: phone Command palette input is not hit-testable/focused: {"tag":"SPAN","ariaLabel":null,"labelledTitle":null,"inPalette":false,"inSessions":true,"isInput":false,"inToast":false,"focused":true}
+```
+
+**Result after fix:** PASS, exit 0 across `npm run shellguard`.
+
+**Verified:** 2026-11-25. **Expect:** fail.
+
+## The tablet divider drags press the live separator, not a rect captured earlier (`measureTabletSplit()`'s `dragDivider`, the `minimum drag` / `maximum drag` assertions) - #7912
+
+The Board's resize separator is an 8px strip at the board's right edge, and a
+drag has to land a pointer press inside it. The drags used to press the center
+of a rect captured in an earlier CDP round trip (the settled-divider gate, or
+the previous snapshot's `resizeHandle`). When the Board is still moving when
+the press lands - the #7912 trusted-event reproduction caught the opening
+spring at translateX -33.9px - the strip is no longer at the pressed
+coordinate, the separator never receives `pointerdown`, the drag never arms,
+and the Board stays at its starting 280px width. The drag's
+"width published before pointerup" gate compared the board width to
+`aria-valuenow`, which is vacuously true when the drag never armed (280 === 280),
+so the guard released, snapshotted the un-armed board, and the assertion reported
+the stale width JSON instead of the missed press.
+
+The fix under test samples the live, hittable handle center in the round trip
+immediately before each press, takes each drag's destination from that same
+sample (a number drags to a viewport coordinate; a function computes one from
+the sample, which is how the first drag moves 60px right of the live strip),
+waits for the board's rendered width to move off the baseline captured with
+that sample and match the published aria-valuenow - the advertised limits stay
+asserted in assertTabletSplit, so the gate only distinguishes a published
+resize from a missed press - and retries the whole press with a fresh sample
+(throwing with each attempt's live board state) when the width never moves.
+
+**Mutation performed:** in
+`cmd/evener-hub/frontend/scripts/shellguard/run.mjs` injected, around the two
+768px drags, the mover class the #7912 reproduction observed:
+`document.querySelector('[data-testid="board-column"]').style.transform =
+'translateX(-40px)'` applied after the settled-divider gate and removed between
+the two drags, then ran `node scripts/shellguard/run.mjs`.
+
+**Result before fix:** FAIL, exit 1, exactly the two lines the merge-group CI
+run 46053280559 (job `web-browser / skill`) reported:
+
+```
+shellguard FAIL: tablet divider minimum drag did not reach the advertised limit: {"range":{"min":256,"max":376,"now":280},"width":280}
+shellguard FAIL: tablet divider maximum drag did not reach the advertised limit: {"range":{"min":256,"max":376,"now":280},"width":280}
+```
+
+Both drags pressed coordinates captured before the transform moved the strip
+40px left; the press landed on the pane and on the board content, the separator
+never captured the pointer, and both drags snapshot the starting 280px width.
+Every other assertion passed, including the Home/End key steps, matching the CI
+failure, which lost only the two drag lines.
+
+**Result after fix:** PASS, exit 0, same injected mover: each drag sampled the
+translated strip's live center, armed, and reached 256px / 376px. Without the
+mover the guard passes unchanged, so the assertions still verify real drag
+behavior, not the retry.
+
+**Verified:** 2026-11-27. **Expect:** fail (with the pre-fix dragDivider; the
+fixed dragDivider must keep passing the same mover).

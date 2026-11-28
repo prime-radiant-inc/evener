@@ -1,5 +1,45 @@
 .singleScrollPanel {
   overflow: hidden;
+  /* The drawer is portaled outside the shell's keyboard padding. */
+  max-height: calc(100dvh - var(--keyboard-inset, 0px));
+}
+
+.singleScrollPanel.system {
+  --overlay-header-actions-display: none;
+}
+
+/* The drawer owns the entire Home Screen while open. Keep its rows inside
+ * the safe reading width and give its actions the free edge below the clock. */
+.singleScrollPanel:is(.left, .right) {
+  --overlay-actions-placement: edge;
+  left: 0;
+  width: 100vw;
+  padding-left: var(--home-safe-left, 0px);
+  padding-right: var(--home-safe-right, 0px);
+  background-clip: content-box;
+}
+
+.left {
+  --overlay-actions-left: calc(var(--home-safe-left) / 2);
+  --overlay-actions-offset: -50%;
+}
+
+.right {
+  --overlay-actions-right: calc(var(--home-safe-right) / 2);
+  --overlay-actions-offset: 50%;
+}
+
+/* An inner display can fit the drawer controls beside the list even when
+ * the chosen text size leaves too little room for a persistent Board. */
+@media (min-width: 600px) and (min-height: 600px) {
+  .singleScrollPanel.inside {
+    --drawer-action-strip: var(--space-9);
+    --overlay-actions-placement: edge;
+    --overlay-actions-right: calc(var(--drawer-action-strip) / 2);
+    --overlay-actions-offset: 50%;
+    padding-right: var(--drawer-action-strip);
+    padding-top: env(safe-area-inset-top, 0px);
+  }
 }
 
 /* The rail fills the drawer flush: the sheet body's own inset made the rail
@@ -7,4 +47,10 @@
  * already drops the rail's width and border for the same reason). */
 .flushBody {
   padding: 0;
+  /* Stretch the drawer body to the full sheet height (keeping min-height: 0 so
+   * long lists still scroll here) so the rail's min-height: 100% fills the
+   * drawer and glues the floating New-session action to the bottom edge on
+   * short lists. */
+  flex: 1 1 auto;
+  min-height: 0;
 }

@@ -4,6 +4,8 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/text.module.css",
+    "styles/dockedEdge.module.css",
     "styles/surface.module.css",
     "shell/activitybar/activitybar.module.css"
   ],

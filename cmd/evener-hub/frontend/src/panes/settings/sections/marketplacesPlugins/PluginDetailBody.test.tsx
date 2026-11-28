@@ -1,5 +1,6 @@
 import type { MarketplaceEntry, PluginComponents, PluginEntry } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { HUB_WRITE_BUSY, HubWriteBusyError } from "@evener/appwire-client/state/extensions";
 import { deferRequest } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -167,6 +168,36 @@ test("a failed enable toggle toasts 'Toggle enable failed'", async () => {
   await waitFor(() =>
     expect(getToasts().some((t) => t.kind === "error" && t.text === "Toggle enable failed: boom")).toBe(true),
   );
+});
+
+test("a failed write reports its error; a write the hub gate refuses reports the refusal", async () => {
+  const user = userEvent.setup();
+  const failureSentinel = "toggle-write-failure-sentinel";
+  const failing = connectReadyFakeClient();
+  extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
+  failing.on("evener/plugin/disable", () => {
+    throw new Error(failureSentinel);
+  });
+  const first = render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
+  await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
+  // The write's own detail is what the ordinary failure reports.
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "error" && t.text.includes(failureSentinel))).toBe(true),
+  );
+  first.unmount();
+  resetToastStoreForTests();
+
+  const refusing = connectReadyFakeClient();
+  extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
+  refusing.on("evener/plugin/disable", () => {
+    throw new HubWriteBusyError();
+  });
+  render(<PluginDetailBody target={TARGET} onCollapse={() => {}} />);
+  await user.click(screen.getByRole("switch", { name: "Enabled by default" }));
+  // A refusal is not a failure of the write the user asked for, so it shows
+  // the gate's shared copy rather than a labelled failure.
+  await waitFor(() => expect(getToasts().some((t) => t.kind === "error")).toBe(true));
+  expect(getToasts().find((t) => t.kind === "error")?.text).toBe(HUB_WRITE_BUSY);
 });
 
 test("the Enabled switch is disabled while its RPC is in flight, and re-enables after", async () => {
@@ -374,6 +405,25 @@ test("the Hide details action calls onCollapse", async () => {
   render(<PluginDetailBody target={TARGET} onCollapse={onCollapse} />);
   await user.click(screen.getByRole("button", { name: "Hide details" }));
   expect(onCollapse).toHaveBeenCalled();
+});
+
+test("Escape inside the plugin details collapses them and marks the key handled", async () => {
+  const user = userEvent.setup();
+  connectReadyFakeClient();
+  extensionsStore.setState({ plugins: [LINTER], marketplaces: [ACME] });
+  const onCollapse = vi.fn();
+  render(<PluginDetailBody target={TARGET} onCollapse={onCollapse} />);
+  const parentKeys: boolean[] = [];
+  const listener = (event: KeyboardEvent): void => {
+    if (event.key === "Escape") parentKeys.push(event.defaultPrevented);
+  };
+  document.addEventListener("keydown", listener);
+  screen.getByRole("switch", { name: "Auto-upgrade" }).focus();
+  await user.keyboard("{Escape}");
+  document.removeEventListener("keydown", listener);
+
+  expect(onCollapse).toHaveBeenCalledOnce();
+  expect(parentKeys).toEqual([true]);
 });
 
 test("lazily browses the marketplace and shows the catalog description when loaded", async () => {

@@ -304,6 +304,33 @@ func adoptTerminalPhases(streamed []any, streamedRaw []json.RawMessage, terminal
 	return streamed, streamedRaw
 }
 
+// fillSparseTerminalCalls lets a settled call that omits its name or arguments
+// inherit them from the stream state for that same call. The settled call's own
+// non-empty name or arguments stays authoritative. A call with no issued ID
+// resolves through its item ID; a shared, ambiguous item ID resolves to no
+// state, so one call's stream state never bleeds into another.
+func (acc *responsesOutputAccumulator) fillSparseTerminalCalls(r *llm.Response) {
+	for i := range r.Message.Content {
+		call := r.Message.Content[i].ToolCall
+		if call == nil {
+			continue
+		}
+		st := acc.toolStates[call.ID]
+		if call.ID == "" {
+			st = acc.toolStates[call.ItemID]
+		}
+		if st == nil {
+			continue
+		}
+		if call.Name == "" {
+			call.Name = st.name
+		}
+		if len(call.Arguments) == 0 && st.args.Len() > 0 {
+			call.Arguments, call.ArgumentsSpelling = llm.NormalizeToolArguments(st.args.Bytes())
+		}
+	}
+}
+
 // settleResponsesTerminalOutput decides the settled message content and finish reason for a
 // Responses-API terminal payload. The terminal is authoritative: its text, refusal or finished call
 // wins. When it settles no answer of its own, the stream's output_item.done events are recovered in
@@ -351,6 +378,7 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, acc 
 		if settledItems == 0 {
 			return
 		}
+		acc.fillSparseTerminalCalls(r)
 		// The stream accumulator holds only settled items.
 		count := len(terminalOutput)
 		for _, rawItem := range terminalOutput {

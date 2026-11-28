@@ -305,35 +305,25 @@ func TestValidateProjectID(t *testing.T) {
 	}
 }
 
-func TestProjectIDReturnsResolvedIDAndPropagatesResolutionFailure(t *testing.T) {
+func TestResolveProjectReturnsValidIDAndZeroProjectOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	resolved, err := ResolveProject(dir)
 	if err != nil {
 		t.Fatalf("ResolveProject(%q): %v", dir, err)
 	}
-	got, err := ProjectID(dir)
-	if err != nil {
-		t.Fatalf("ProjectID(%q): %v", dir, err)
-	}
-	// ProjectID exists to hand back only the ID half of ResolveProject, so the
-	// contract worth pinning is that it agrees with the resolver rather than
-	// deriving an identifier of its own.
-	if got != resolved.ID {
-		t.Fatalf("ProjectID = %q, ResolveProject.ID = %q", got, resolved.ID)
-	}
-	if err := ValidateProjectID(got); err != nil {
-		t.Fatalf("ProjectID returned %q, which ValidateProjectID rejects: %v", got, err)
+	if err := ValidateProjectID(resolved.ID); err != nil {
+		t.Fatalf("ResolveProject returned %q, which ValidateProjectID rejects: %v", resolved.ID, err)
 	}
 
-	// A resolution failure must surface, not be flattened into an empty ID that
-	// a caller could mistake for a real project.
+	// A resolution failure must surface alongside a zero Project, not a partial
+	// ID or path that a caller could mistake for a real project.
 	missing := filepath.Join(dir, "no-such-directory")
-	id, err := ProjectID(missing)
+	project, err := ResolveProject(missing)
 	if err == nil {
-		t.Fatalf("ProjectID(%q) = %q, want an error for a path that does not exist", missing, id)
+		t.Fatalf("ResolveProject(%q) = %+v, want an error for a path that does not exist", missing, project)
 	}
-	if id != "" {
-		t.Fatalf("ProjectID returned %q alongside error %v, want empty", id, err)
+	if project != (Project{}) {
+		t.Fatalf("ResolveProject returned %+v alongside error %v, want zero Project", project, err)
 	}
 }
 

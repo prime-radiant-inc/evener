@@ -3880,7 +3880,7 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(schema.Turn{
+	if _, err := writer.Record(schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -3890,11 +3890,11 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 				Arguments: json.RawMessage(`{"command":"python plot.py"}`),
 			},
 		}}},
-	}); err != nil {
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	toolPNG := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 't', 'o', 'o', 'l'}
-	if err := writer.Append(schema.Turn{
+	if _, err := writer.Record(schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_plot", Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -3906,7 +3906,7 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 				ImageMediaType: "image/png",
 			},
 		}}},
-	}); err != nil {
+	}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {
@@ -4559,5 +4559,154 @@ func TestSessionOperationsRetiresRemoteCursorWhenControllerRetainsAgain(t *testi
 		Ref: "host-b:remote", FetchCursor: oldCursor,
 	}}); !errors.Is(err, appwire.TranscriptItemCursorStale()) {
 		t.Fatalf("fetch after controller re-retention = %v, want typed stale", err)
+	}
+}
+
+// Two-hub end-to-end regression test proving real transcriptindex sparse
+// within-entry positions (collapsed thinking parts followed by a tool call)
+// succeed across both initial thread/read and older thread/turns/list paging.
+func TestHubRPCRemoteSparseItemPositions(t *testing.T) {
+	textTurnEntries := func(turnID, prompt, reply string) []schema.Turn {
+		return []schema.Turn{
+			{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(prompt)},
+			{Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: turnID + "-r1", Kind: schema.TurnAssistant, Message: llm.Assistant(reply)},
+			{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+		}
+	}
+	sparseTurnEntries := func(turnID, prompt string) []schema.Turn {
+		return []schema.Turn{
+			{Format: schema.TurnFormatIdentity, TurnID: turnID, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(prompt)},
+			{
+				Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: turnID + "-r1", Kind: schema.TurnAssistant,
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "first thought"}},
+						{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "second thought"}},
+						{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+							ID: "call_sparse_" + turnID, Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`),
+						}},
+					},
+				},
+			},
+			{
+				Format: schema.TurnFormatIdentity, TurnID: turnID, RoundID: turnID + "-r1", Kind: schema.TurnToolResults,
+				Message: llm.Message{
+					Role: llm.RoleTool, ToolCallID: "call_sparse_" + turnID,
+					Content: []llm.ContentPart{{
+						Kind:       llm.ContentToolResult,
+						ToolResult: &llm.ToolResultData{ToolCallID: "call_sparse_" + turnID, Name: "shell", Content: "/tmp/work"},
+					}},
+				},
+			},
+			{Format: schema.TurnFormatIdentity, TurnID: turnID, Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}},
+		}
+	}
+	buildEntries := func(sparseOnInitial bool) []schema.Turn {
+		var entries []schema.Turn
+		if sparseOnInitial {
+			entries = append(entries, textTurnEntries("turn-1", "older prompt", "older reply")...)
+			entries = append(entries, textTurnEntries("turn-2", "middle prompt", "middle reply")...)
+			return append(entries, sparseTurnEntries("turn-3", "latest prompt")...)
+		}
+		entries = append(entries, sparseTurnEntries("turn-1", "older prompt")...)
+		entries = append(entries, textTurnEntries("turn-2", "middle prompt", "middle reply")...)
+		return append(entries, textTurnEntries("turn-3", "latest prompt", "latest reply")...)
+	}
+	assertSparsePair := func(t *testing.T, turns []appwire.Turn, turnID string, entry uint64) {
+		t.Helper()
+		var found []appwire.ThreadItem
+		for _, turn := range turns {
+			if turn.ID == turnID {
+				found = append(found, turn.Items...)
+			}
+		}
+		var items []appwire.ThreadItem
+		for _, item := range found {
+			if item.Position != nil && item.Position.Entry == entry {
+				items = append(items, item)
+			}
+		}
+		if len(items) != 2 {
+			t.Fatalf("turn %s entry %d items = %+v, want folded reasoning + tool call", turnID, entry, items)
+		}
+		if items[0].Type != "reasoning" || items[0].Position.Item != 0 || items[0].Text != "first thought\n\nsecond thought" {
+			t.Fatalf("first sparse item = %+v, want folded reasoning at Item 0", items[0])
+		}
+		if items[1].Type != "commandExecution" || items[1].Position.Item != 2 || items[1].ToolName != "shell" || items[1].Output != "/tmp/work" {
+			t.Fatalf("second sparse item = %+v, want commandExecution at Item 2", items[1])
+		}
+	}
+
+	for _, tc := range []struct {
+		name            string
+		sparseOnInitial bool
+		sparseTurnID    string
+		sparseEntry     uint64
+	}{
+		{name: "sparse_on_older_page", sparseOnInitial: false, sparseTurnID: "turn-1", sparseEntry: 2},
+		{name: "sparse_on_initial_read", sparseOnInitial: true, sparseTurnID: "turn-3", sparseEntry: 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgB, entry, _ := seedIndexedPastSession(t, buildEntries(tc.sparseOnInitial)...)
+
+			serverB := newHubAppServer(testWebConfig(t, cfgB), appsource.NewRegistry())
+			t.Cleanup(func() { _ = serverB.Shutdown(context.Background()) })
+			hubB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				serverB.ServeWebSocket(w, r.WithContext(withHostRoutingOrigin(r.Context(), hostRoutingOriginBridge)))
+			}))
+			t.Cleanup(hubB.Close)
+			remote := dialHubRPCInitialized(t, hubB)
+
+			sourcesA := appsource.NewRegistry()
+			sourcesA.Add(appsource.NewRemoteHubSource("host-b", nil, func(context.Context, string) (*appwire.Client, error) {
+				return remote, nil
+			}))
+			serverA := newHubAppServer(testWebConfig(t, hubcore.WebConfig{}), sourcesA)
+			t.Cleanup(func() { _ = serverA.Shutdown(context.Background()) })
+			hubA := httptest.NewServer(http.HandlerFunc(serverA.ServeWebSocket))
+			t.Cleanup(hubA.Close)
+			clientA := dialHubRPCInitialized(t, hubA)
+
+			ref := "host-b:" + entry.ID
+			initial, err := clientA.ThreadRead(t.Context(), appwire.ThreadReadParams{
+				Ref:          ref,
+				IncludeTurns: true,
+				ItemLimit:    3,
+			})
+			if err != nil {
+				t.Fatalf("initial ThreadRead: %v", err)
+			}
+			if initial.OlderCursor == "" {
+				t.Fatal("initial ThreadRead returned empty OlderCursor")
+			}
+			var allTurns []appwire.Turn
+			allTurns = append(allTurns, initial.Thread.Turns...)
+			if tc.sparseOnInitial {
+				assertSparsePair(t, initial.Thread.Turns, tc.sparseTurnID, tc.sparseEntry)
+			}
+
+			cursor := initial.OlderCursor
+			var secondPage []appwire.Turn
+			for pageNum := 2; cursor != ""; pageNum++ {
+				page, err := clientA.ThreadTurnsList(t.Context(), appwire.ThreadTurnsListParams{
+					Ref:       ref,
+					Cursor:    cursor,
+					ItemLimit: 3,
+				})
+				if err != nil {
+					t.Fatalf("older page %d ThreadTurnsList: %v", pageNum, err)
+				}
+				if pageNum == 2 {
+					secondPage = page.Data
+				}
+				allTurns = append(allTurns, page.Data...)
+				cursor = page.NextCursor
+			}
+			if !tc.sparseOnInitial {
+				assertSparsePair(t, secondPage, tc.sparseTurnID, tc.sparseEntry)
+			}
+			assertSparsePair(t, allTurns, tc.sparseTurnID, tc.sparseEntry)
+		})
 	}
 }

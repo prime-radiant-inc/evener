@@ -11,13 +11,13 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import Spawn from "../panes/spawn/Spawn";
+import { chromeStore } from "../shell/chromeStore";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { PathField, Toast } from "../widgets";
 import { isElementVisible } from "./guardVisibility";
+import { harnessRoot } from "./mountHarness";
 import { storageHasSecret } from "./storageHasSecret";
-import "../styles/tokens.css";
-import "../styles/global.css";
 
 const fake = new FakeClient("ready");
 fake.on("evener/harnesses/list", () => ({
@@ -84,8 +84,7 @@ fake.on("evener/plugin/preview", () => ({
 }));
 fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
 
-const rootEl = document.getElementById("root");
-if (!rootEl) throw new Error("spawnguard.html is missing #root");
+const rootEl = harnessRoot("spawnguard");
 
 document.documentElement.style.height = "100%";
 document.body.style.height = "100%";
@@ -156,14 +155,49 @@ if (new URLSearchParams(window.location.search).has("onboarding")) {
   connectionStore.getState().connect(fake);
 }
 
-createRoot(rootEl).render(
-  <ClientProvider client={fake}>
-    <div id="spawnguard-pane" style={{ height: "100%" }}>
-      <Spawn params={{}} paneId="spawnguard" focused />
-    </div>
-    <Toast />
-  </ClientProvider>,
-);
+let pendingProviderResolver: (() => void) | null = null;
+if (new URLSearchParams(window.location.search).has("pendingProvider")) {
+  const url = new URL(window.location.href);
+  url.pathname = "/new";
+  url.searchParams.set("dir", directoryRoot);
+  window.history.replaceState(null, "", url);
+  const configured = {
+    instances: [
+      {
+        name: "openai",
+        providerId: "openai",
+        protocol: "openai-chat",
+        auth: "bearer",
+        implicit: false,
+        isDefault: true,
+        activeSource: "store",
+        hasStoredOAuth: false,
+        credentialRequired: true,
+      },
+    ],
+    availableProviders: [],
+  };
+  fake.on("evener/instance/list", () => {
+    return new Promise<typeof configured>((resolve) => {
+      pendingProviderResolver = () => resolve(configured);
+    });
+  });
+  fake.on("evener/launch/resolve", () => ({ effective: { model: "openai/gpt-5" }, layers: {}, provenance: {} }));
+  connectionStore.getState().connect(fake);
+}
+
+let root = createRoot(rootEl);
+function renderGuardSpawn(): void {
+  root.render(
+    <ClientProvider client={fake}>
+      <div id="spawnguard-pane" style={{ height: "100%" }}>
+        <Spawn params={{}} paneId="spawnguard" focused />
+      </div>
+      <Toast />
+    </ClientProvider>,
+  );
+}
+renderGuardSpawn();
 
 // An 8x4 two-colour PNG, inline - the same fixture image scripts/layoutguard/
 // cases/edhz-attachment-tile-single-image uses, for the same reason: staging
@@ -380,7 +414,6 @@ function measureSpawn() {
   const headings = Array.from(promptIntro?.querySelectorAll<HTMLElement>("h2") ?? []);
   const subtitles = Array.from(promptIntro?.querySelectorAll<HTMLElement>("p") ?? []);
   const heading = headings[0] ?? null;
-  const subtitle = subtitles[0] ?? null;
   const pluginSummary = document.querySelector<HTMLElement>('[data-testid="spawn-plugin-summary"]');
   const pluginRow = document.querySelector<HTMLElement>('[data-label="Plugins"]');
   const pluginSheet = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby] h2')?.parentElement
@@ -399,6 +432,7 @@ function measureSpawn() {
     promptIntro: visibility('[data-testid="spawn-prompt-intro"]'),
     desktopTitle: visibility('[data-testid="pane-title-desktop"]'),
     mobileTitle: visibility('[data-testid="pane-title-mobile"]'),
+    publishedTitle: chromeStore.getState().paneTitle,
     promptCard: measurePromptCard(),
     rows,
     attachments: measureAttachments(),
@@ -409,16 +443,7 @@ function measureSpawn() {
       headingVisible: heading ? isVisible(visibility("[data-testid='spawn-prompt-intro'] h2")) : false,
       headingIsDirectChild: heading?.parentElement === promptIntro,
       subtitleCount: subtitles.length,
-      subtitleTag: subtitle?.tagName.toLowerCase() ?? "missing",
-      subtitleHasContent: (subtitle?.textContent?.trim().length ?? 0) > 0,
-      subtitleVisible: subtitle ? isVisible(visibility("[data-testid='spawn-prompt-intro'] p")) : false,
-      subtitleIsDirectChild: subtitle?.parentElement === promptIntro,
-      headingBeforeSubtitle:
-        heading !== null &&
-        subtitle !== null &&
-        Boolean(heading.compareDocumentPosition(subtitle) & Node.DOCUMENT_POSITION_FOLLOWING),
       headingHiddenFromAT: heading?.getAttribute("aria-hidden") === "true",
-      subtitleHiddenFromAT: subtitle?.getAttribute("aria-hidden") === "true",
     },
     plugins: {
       summary: pluginSummary ? boxOf(pluginSummary) : null,
@@ -483,7 +508,7 @@ async function selectLongSpawnModel(): Promise<true> {
 }
 
 function openSpawnPlugins(): void {
-  const row = document.querySelector<HTMLButtonElement>('[data-label="Plugins"] button');
+  const row = document.querySelector<HTMLButtonElement>('button[data-label="Plugins"]');
   if (row && isElementVisible(row)) {
     row.click();
     return;
@@ -512,7 +537,7 @@ async function exerciseDirectoryPicker() {
   connectionStore.getState().connect(fake);
   const mobile = window.innerWidth <= 899;
   const trigger = await directoryElement<HTMLButtonElement>(
-    mobile ? '[data-label="Working directory"] button' : "#spawn-cwd",
+    mobile ? 'button[data-label="Working directory"]' : "#spawn-cwd",
   );
   trigger.focus();
   trigger.click();
@@ -597,12 +622,24 @@ declare global {
     openSpawnPlugins: typeof openSpawnPlugins;
     exerciseDirectoryPicker: typeof exerciseDirectoryPicker;
     exerciseDirectoryField: typeof exerciseDirectoryField;
+    exerciseFileFieldWash: typeof exerciseFileFieldWash;
+    resolvePendingProvider(): void;
+    remountPendingProvider(): void;
   }
 }
 
 window.measureSpawn = measureSpawn;
 window.settledSpawn = settled;
 window.stageSpawnAttachments = stageSpawnAttachments;
+window.resolvePendingProvider = () => {
+  pendingProviderResolver?.();
+  pendingProviderResolver = null;
+};
+window.remountPendingProvider = () => {
+  root.unmount();
+  root = createRoot(rootEl);
+  renderGuardSpawn();
+};
 window.selectLongSpawnModel = selectLongSpawnModel;
 window.openSpawnPlugins = openSpawnPlugins;
 
@@ -669,6 +706,76 @@ async function exerciseDirectoryField() {
 }
 
 window.exerciseDirectoryField = exerciseDirectoryField;
+
+// Virtual focus: the option named by aria-activedescendant must paint the
+// shared row wash while DOM focus stays in the path input. The CSS-source
+// tests cannot see whether the composed class reached the rendered option, so
+// the browser measures the option's own background against --hover-2.
+async function exerciseFileFieldWash() {
+  function Field() {
+    const [value, setValue] = useState(`${directoryRoot}/notes.md`);
+    return (
+      <form style={{ margin: 16, width: "calc(100% - 32px)", maxWidth: 340 }}>
+        <PathField
+          id="shared-file-field"
+          value={value}
+          onChange={setValue}
+          kind="file"
+          complete={async (prefix, includeFiles) =>
+            (await fake.request("evener/paths/complete", { prefix, includeFiles })).data
+          }
+          directory={{
+            validatePath: (path, kind) => fake.request("evener/path/validate", { path, kind }),
+            createDirectory: async (path) => {
+              await fake.request("evener/dirs/create", { path });
+            },
+          }}
+        />
+      </form>
+    );
+  }
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;inset:0;z-index:2;background:var(--surface-0)";
+  document.body.append(host);
+  const root = createRoot(host);
+  root.render(<Field />);
+  const failures: string[] = [];
+  const probe = document.createElement("div");
+  probe.style.background = "var(--hover-2)";
+  try {
+    const trigger = await directoryElement<HTMLButtonElement>("#shared-file-field");
+    trigger.click();
+    const input = await directoryElement<HTMLInputElement>('input[aria-label="Path"]');
+    await directoryElement<HTMLElement>('[role="option"]');
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    document.body.append(probe);
+    const wash = getComputedStyle(probe).backgroundColor;
+    const deadline = performance.now() + 3_000;
+    let activeId: string | null = null;
+    let background = "";
+    for (;;) {
+      activeId = input.getAttribute("aria-activedescendant");
+      const active = activeId === null ? null : document.getElementById(activeId);
+      background = active === null ? "" : getComputedStyle(active).backgroundColor;
+      if (background === wash || performance.now() > deadline) break;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    if (activeId === null) failures.push("File field: ArrowDown set no aria-activedescendant");
+    else if (background !== wash)
+      failures.push(
+        `File field: the active option renders ${background || "no background"}, not the shared wash ${wash}`,
+      );
+    if (document.activeElement !== input) failures.push("File field: virtual focus moved DOM focus off the path input");
+  } finally {
+    probe.remove();
+    root.unmount();
+    host.remove();
+  }
+  return failures;
+}
+
+window.exerciseFileFieldWash = exerciseFileFieldWash;
 
 async function onboardingButton(name: string, { last = false } = {}): Promise<HTMLButtonElement> {
   const deadline = performance.now() + 10_000;

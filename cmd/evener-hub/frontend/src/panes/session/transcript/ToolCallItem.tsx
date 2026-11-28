@@ -17,9 +17,18 @@ import {
   type TranscriptRenderContextValue,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
-import { type CadenceState, StatusDot } from "../../../widgets";
+import { CodeBlock, StatusDot } from "../../../widgets";
 import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useFindReveal } from "../find/findReveal";
+import {
+  displayedSummaryOf,
+  excerptAround,
+  FIND_EXCERPT_MAX_CHARS,
+  holdsNeedle,
+  toolCallTexts,
+} from "../find/toolCallHits";
+import { clipCodePoints } from "./clipCodePoints";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
@@ -28,10 +37,10 @@ import styles from "./toolcallitem.module.css";
 import { type ToolRendererDescriptor, toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
+  DELEGATE_STATUS,
   delegateStableState,
   removeSubagentRow,
   rowKeyForDelegateItem,
-  type SubagentRowKind,
   turnScopeKey,
   upsertSubagentRow,
 } from "./tools/subagentModuleStore";
@@ -43,20 +52,7 @@ const CLASS = {
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
 };
 
-const DELEGATE_INDICATOR_STATE: Record<SubagentRowKind, CadenceState> = {
-  running: "working",
-  done: "ended",
-  stopped: "ended",
-  failed: "failed",
-  unknown: "idle",
-};
-
 const DELEGATE_INTENT_PREVIEW_MAX = 120;
-
-function clipDelegateIntent(text: string, max: number): string {
-  const codePoints = Array.from(text);
-  return codePoints.length <= max ? text : `${codePoints.slice(0, max).join("")}…`;
-}
 
 function delegateIntentOf(item: ItemModel): string | undefined {
   const statedIntent = statedIntentOf(item);
@@ -65,7 +61,55 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   const args = parseArgs(item.argumentsJSON);
   // Transcripts recorded before the rename carry the brief under `task`.
   const brief = (str(args, "prompt") ?? str(args, "task"))?.replace(/\s+/g, " ").trim();
-  return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
+  return brief === undefined || brief === "" ? undefined : clipCodePoints(brief, DELEGATE_INTENT_PREVIEW_MAX);
+}
+
+/** The words a row's intent line shows: the delegate's own brief (which the
+ * projector never writes into `description`), else the stated intent - and the
+ * projected neutral summary only where the call stated one for it to stand in
+ * for. Find reads this same rule, so its hits are the text the row paints. */
+export function displayedIntentOf(item: ItemModel, projectedSummary?: string): string | undefined {
+  if (item.toolName === "delegate") return delegateIntentOf(item);
+  const stated = statedIntentOf(item);
+  if (projectedSummary !== undefined && stated !== undefined) return projectedSummary;
+  return stated;
+}
+
+/** What Find is landed on in this row, when the row's own body folds or clips
+ * the matching words away: the stretch of body text holding them, so the
+ * words mount and can be painted. Nothing when they are already on the row's
+ * visible lines, and nothing when Find is not landed here. */
+function FindExcerpt({
+  item,
+  scope,
+  intent,
+  summary,
+  cwd,
+}: {
+  item: ItemModel;
+  scope: string;
+  /** The intent line as shown, always visible. */
+  intent: string;
+  /** The summary line as shown, empty while it is closed. */
+  summary: string;
+  /** The session's working directory, which the summary line reads at. */
+  cwd: string | undefined;
+}) {
+  const needle = useFindReveal(scope, item.id);
+  if (needle === "") return null;
+  const texts = toolCallTexts(item, { intent, cwd });
+  if (texts === null) return null;
+  if (holdsNeedle(intent, needle) || (summary !== "" && holdsNeedle(summary, needle))) return null;
+  for (const text of [...texts.body, texts.summary]) {
+    const excerpt = excerptAround(text, needle, FIND_EXCERPT_MAX_CHARS);
+    if (excerpt === null) continue;
+    return (
+      <div data-find-excerpt="">
+        <CodeBlock text={excerpt} copyText={text} copyLabel="Copy matched text" fold={false} />
+      </div>
+    );
+  }
+  return null;
 }
 
 // summaryWhenExpanded resolves through one seam: a fixed string passes
@@ -97,7 +141,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const delegateState = isDelegate ? delegateStableState(item, live, sessionRef, thread, entities) : undefined;
   const delegateStatus =
     isDelegate && delegateState !== undefined && delegateState.kind !== "unknown" ? (
-      <StatusDot state={DELEGATE_INDICATOR_STATE[delegateState.kind]} />
+      <StatusDot state={DELEGATE_STATUS[delegateState.kind].cadence} />
     ) : undefined;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
@@ -212,12 +256,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // intent-less tool call, including read_file rows that clearly read a file.
   const descriptorSummary = descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
   const useProjectedSummary = projectedSummary !== undefined && descriptorSummary.trim() === "";
-  let intent = item.description;
-  if (isDelegate) {
-    intent = delegateIntentOf(item);
-  } else if (projectedSummary !== undefined && statedIntent !== undefined) {
-    intent = projectedSummary;
-  }
+  const intent = displayedIntentOf(item, projectedSummary);
   // kata xw3t: the URL, if any, embedded in this row's own summary text -
   // web_fetch's only descriptor with one today. Read directly off the item
   // (not the thread model): unlike summarySuffix, nothing about which URL a
@@ -305,7 +344,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // two-level path open an EMPTY one (the regression: a delegate took the
   // two-level path with an empty summary and moved the body chevron onto a
   // stray empty line).
-  const rowSummaryText = isDelegate ? "" : summary;
+  const rowSummaryText = displayedSummaryOf(item, summary);
   const hasSummaryText = rowSummaryText.trim() !== "";
 
   // Two-level disclosure: the summary line has its own open/closed state,
@@ -345,7 +384,12 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // disclosure that would open to nothing.
   if (bodyless) {
     return (
-      <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
+      <div
+        data-item-id={item.id}
+        className={CLASS.call}
+        data-testid="tool-call-item"
+        data-tool-name={item.toolName ?? ""}
+      >
         <ToolRow
           summary={rowSummaryText}
           summaryLink={summaryLink}
@@ -361,6 +405,13 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           trailingAfter={trailingAfter}
         />
         {statusLine}
+        <FindExcerpt
+          item={item}
+          scope={disclosureScope}
+          intent={intent ?? ""}
+          summary={summaryOpen ? rowSummaryText : ""}
+          cwd={cwd}
+        />
       </div>
     );
   }
@@ -375,6 +426,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
     // is fully controlled from disclosureStore, so a plain div wrapper is all
     // the structure that remains.
     <div
+      data-item-id={item.id}
       className={CLASS.call}
       data-testid="tool-call-item"
       data-tool-name={item.toolName ?? ""}
@@ -417,6 +469,13 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         bodyId={bodyId}
       />
       {statusLine}
+      <FindExcerpt
+        item={item}
+        scope={disclosureScope}
+        intent={intent ?? ""}
+        summary={summaryOpen ? rowSummaryText : ""}
+        cwd={cwd}
+      />
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next

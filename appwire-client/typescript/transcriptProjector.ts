@@ -9,6 +9,7 @@ import {
 } from "./itemFailure";
 import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { isQuietYield } from "./quietYield";
 import { isParentSteer } from "./steeringLabels";
 import { ERROR_EVENT_KIND } from "./systemEventCopy";
 import {
@@ -338,6 +339,9 @@ function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vect
   // A human's Allow or Deny is a decision they made, like a question's
   // answer: its history row shows at every level.
   if (eventKind === APPROVAL_DECISION_EVENT_KIND) return "item";
+  // A quiet communicate({}) yield leaves a muted one-liner at every display
+  // detail level, independent of Advanced.systemEvents (Jesse, 2026-11-23).
+  if (isQuietYield(item)) return "item";
 
   if (eventKind === HOOK_EVENT_KIND) {
     if (config.advanced.hookExits === "all") return "item";
@@ -386,6 +390,9 @@ function decisionFor(
 
   if (item.type === "reasoning") {
     if (vector.reasoning) return "item";
+    // Thinking begins at Intent. Chat shows no live, settled, or critical
+    // reasoning row; the turn's own failure presentation remains independent.
+    if (hidesThinkingTraces(config.content)) return "hidden";
     // With reasoning off, a live current thought becomes a compact trace
     // row: a collapsed, reader-unfoldable disclosure whose closed label is
     // the pulsing "Thinking…" placeholder grammar. Only an in-progress turn
@@ -393,11 +400,10 @@ function decisionFor(
     // any more.
     if (isLiveCurrentReasoning(item, turn)) return "thinking";
     if (hasFailureStatus(item) || isTerminalTurn(turn)) return "critical";
-    // A settled healthy thought stays as a compact trace row at every level
-    // but the chat preset, which stays conversation-only (see
-    // hidesThinkingTraces). The renderer derives live vs settled itself; a
-    // stale inProgress item on a completed turn renders settled.
-    return hidesThinkingTraces(config.content) ? "hidden" : "thinking";
+    // A settled healthy thought stays as a compact trace row. The renderer
+    // derives live vs settled itself; a stale inProgress item on a completed
+    // turn renders settled.
+    return "thinking";
   }
 
   if (item.type === "systemMessage") return systemDecision(item, config, vector);
@@ -430,6 +436,9 @@ function eligibleDisclosure(item: ItemModel): boolean {
   // Full's open-everything baseline; only an explicit reader choice opens it.
   // Keeping it out of the baseline inventory is that posture's other half.
   if (isMemoryContextNotice(item)) return false;
+  // Demoted quiet-yield commentary stays collapsed until the reader opens it,
+  // even at the Full preset.
+  if (item.type === "systemMessage" && isQuietYield(item)) return false;
   // A visible system item may be a scaffold or a grouped diagnostic row. Keep
   // its source id available to the disclosure layer; grouping happens after
   // this projection and therefore sees only surviving rows.
@@ -483,6 +492,11 @@ function terminalFallbackEntry(
   // informational-notice trade above keeps its narrower shape, trading only
   // where the error end cap renders.
   if (isDaemonSteer(sourceItem) && hidesDaemonSteering(config.content)) {
+    return undefined;
+  }
+  // Chat's hidden reasoning never returns as a terminal fallback. The source
+  // turn still owns and renders any genuine turn failure.
+  if (redactsReasoning(sourceItem, vector) && hidesThinkingTraces(config.content)) {
     return undefined;
   }
   // A hidden snapshot cannot explain a failure and must not defeat filtering.

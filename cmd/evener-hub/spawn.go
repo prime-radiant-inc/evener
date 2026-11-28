@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/identifier"
@@ -40,6 +41,20 @@ const evenerLaunchCheckWaitDelay = time.Second
 // daemonLaunchOutputLimit bounds how much of a failed launch's daemon log is
 // quoted back to the operator as the reason it would not start.
 const daemonLaunchOutputLimit = 64 * 1024
+
+// preExecSpawnError marks a Spawn error that happened before cmd.Start()
+// succeeded, proving no child process was started.
+type preExecSpawnError struct{ err error }
+
+func (e preExecSpawnError) Error() string { return e.err.Error() }
+func (e preExecSpawnError) Unwrap() error { return e.err }
+
+func wrapPreExecSpawnError(err error) error {
+	if _, already := errors.AsType[preExecSpawnError](err); already {
+		return err
+	}
+	return preExecSpawnError{err: err}
+}
 
 var (
 	spawnMkdirAll                   = os.MkdirAll
@@ -163,7 +178,68 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 	return listEvenerLaunchModelContractFn(ctx, h.EvenerBinary, env)
 }
 
-func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+// projectEndpointEnvExclusions names the environment inputs that resolve a
+// configured provider's endpoint, so the checkout-controlled project layer
+// cannot redirect a launch. When the project layer sets no env vars, nothing
+// can be stripped and the scan is skipped. Otherwise the names come from the
+// configuration the child actually reads — using the runtime catalog cache so
+// cache-only bases resolve the same way the hub and child do — without letting
+// the project layer redirect XDG_STATE_HOME or HOME. A syntactically unreadable
+// file fails the launch rather than falling back to the hub's registry.
+func (h *HubSpawner) projectEndpointEnvExclusions(providersConfigPath string, noUserLayer bool, resolved launchconfig.Resolved) ([]string, error) {
+	if len(resolved.Layers[launchconfig.LayerProject].Env) == 0 {
+		return nil, nil
+	}
+	if value, ok := resolved.Effective.Env[envvars.EVENERProvidersConfig.Name]; ok {
+		providersConfigPath = value
+		noUserLayer = value == ""
+	}
+	trustedEnv := trustedLaunchEnvLookup(resolved)
+	if noUserLayer {
+		reg, err := registry.Load(registry.WithNoUserLayer(), registry.WithOffline(true), registry.WithEnv(trustedEnv))
+		if err != nil {
+			return nil, fmt.Errorf("load built-in provider endpoints: %w", err)
+		}
+		return reg.EndpointEnvNames(), nil
+	}
+	if providersConfigPath != "" {
+		reg, err := registry.Load(registry.WithConfigPath(providersConfigPath), registry.WithOffline(true), registry.WithEnv(trustedEnv))
+		if err != nil {
+			return nil, fmt.Errorf("load child provider configuration: %w", err)
+		}
+		return reg.EndpointEnvNames(), nil
+	}
+	if h.Registry == nil {
+		return nil, nil
+	}
+	reg := h.Registry.Get()
+	if reg == nil {
+		return nil, nil
+	}
+	return reg.EndpointEnvNames(), nil
+}
+
+// trustedLaunchEnvLookup resolves environment variables from trusted launch
+// layers (per-launch, trusted repo, global) and the hub process environment,
+// excluding the checkout-controlled project layer.
+func trustedLaunchEnvLookup(resolved launchconfig.Resolved) func(string) (string, bool) {
+	return func(key string) (string, bool) {
+		for _, layer := range []launchconfig.LayerName{launchconfig.LayerLaunch, launchconfig.LayerRepo, launchconfig.LayerGlobal} {
+			if v, ok := resolved.Layers[layer].Env[key]; ok {
+				return v, true
+			}
+		}
+		return os.LookupEnv(key)
+	}
+}
+
+func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (_ rendezvous.Entry, spawnErr error) {
+	preExec := true
+	defer func() {
+		if preExec && spawnErr != nil {
+			spawnErr = wrapPreExecSpawnError(spawnErr)
+		}
+	}()
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -203,23 +279,34 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		return rendezvous.Entry{}, err
 	}
 	defer childConfig.cleanupUnowned()
+	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
 	parentEnv := os.Environ()
 	req.Env = childConfig.environment(launchconfig.EnvInputs{
-		Resolved:            req.Resolved,
-		ParentEnv:           parentEnv,
-		RunDir:              h.RunDir,
-		StateDir:            req.StateDir,
-		HubToken:            h.HubToken,
-		ProvidersConfigPath: childConfig.path,
-		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     h.CredentialsPath,
+		Resolved:             req.Resolved,
+		ParentEnv:            parentEnv,
+		RunDir:               h.RunDir,
+		StateDir:             req.StateDir,
+		HubToken:             h.HubToken,
+		ProvidersConfigPath:  childConfig.path,
+		NoUserLayer:          childConfig.noUserLayer,
+		CredentialsPath:      h.CredentialsPath,
+		ProjectEnvExclusions: projectEnvExclusions,
 	})
 	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
 	}
+	if cheapProvider, cheapModel, ok := cmdutil.CrossProviderFastCheapRef(req.Resolved.Effective.FastCheapModel, req.Provider); ok {
+		if err := validateProviderCredentials(cheapProvider, cheapModel, h.Registry); err != nil {
+			return rendezvous.Entry{}, err
+		}
+	}
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
+	preExec = false
 	return spawnDaemonWithProviderConfig(ctx, h.EvenerBinary, h.RunDir, req, timeout, os.Stderr, childConfig)
 }
 
@@ -259,16 +346,21 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		return rendezvous.Entry{}, err
 	}
 	defer childConfig.cleanupUnowned()
+	projectEnvExclusions, err := h.projectEndpointEnvExclusions(childConfig.path, childConfig.noUserLayer, req.Resolved)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
 	parentEnv := os.Environ()
 	req.Env = childConfig.environment(launchconfig.EnvInputs{
-		Resolved:            req.Resolved,
-		ParentEnv:           parentEnv,
-		RunDir:              h.RunDir,
-		StateDir:            req.StateDir,
-		HubToken:            h.HubToken,
-		ProvidersConfigPath: childConfig.path,
-		NoUserLayer:         childConfig.noUserLayer,
-		CredentialsPath:     h.CredentialsPath,
+		Resolved:             req.Resolved,
+		ParentEnv:            parentEnv,
+		RunDir:               h.RunDir,
+		StateDir:             req.StateDir,
+		HubToken:             h.HubToken,
+		ProvidersConfigPath:  childConfig.path,
+		NoUserLayer:          childConfig.noUserLayer,
+		CredentialsPath:      h.CredentialsPath,
+		ProjectEnvExclusions: projectEnvExclusions,
 	})
 	if req.Provider != "" {
 		// The resume request carries the model the session persisted
@@ -455,6 +547,12 @@ func buildResumeArgs(req hubcore.ResumeRequest) []string {
 // Caller does NOT manage the subprocess lifecycle: the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
 func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
+	preExec := true
+	defer func() {
+		if preExec && launchErr != nil {
+			launchErr = wrapPreExecSpawnError(launchErr)
+		}
+	}()
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
@@ -480,6 +578,7 @@ func spawnDaemonWithProviderConfig(ctx context.Context, evenerBinary string, run
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	preExec = false
 	cleanupProvider := providerConfig.transferToChild()
 	// The child holds its own descriptor from here on.
 	dlog.close()
@@ -603,6 +702,16 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 }
 
 func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer, providerConfig *childProviderConfig) (entry rendezvous.Entry, launchErr error) {
+	claim := req.PendingLaunch
+	if claim != nil {
+		// Whichever path owns the child when this returns settles the claim:
+		// this launch, or a detached supervisor that took it over.
+		defer func() {
+			if !claim.Detached() {
+				claim.Settle(entry, launchErr)
+			}
+		}()
+	}
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
@@ -685,8 +794,24 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 	}
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
+	if claim != nil {
+		// Shutdown cancels the claim so this wait returns and reaps the child
+		// instead of leaving the launcher parked for the rest of the budget.
+		stop := context.AfterFunc(claim.Context(), cancel)
+		defer stop()
+	}
 	entry, err = waitForRendezvousOrExit(waitCtx, runDir, child.pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
+		if claim != nil && req.Caller != nil && errors.Is(err, errRendezvousCanceled) && req.Caller.Err() != nil && claim.Context().Err() == nil {
+			// The caller walked away while its child was still restoring. Keep
+			// the healthy child and its log: the claim hands both to a detached
+			// supervisor, and a retry joins them instead of restarting the
+			// restore from zero.
+			claim.HandOff()
+			_ = finishLaunch(false, nil)
+			go superviseDetachedResume(claim, runDir, child, exited, reaped, dlog, hubLog, startedAt)
+			return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("resume", errResumeStillStarting), errResumeStillStarting, "")
+		}
 		err = errors.Join(err, finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
 		failure := launchFailureError(launchFailurePrefix("resume", err), err, tail)
@@ -703,6 +828,29 @@ func resumeDaemonWithProviderConfig(ctx context.Context, evenerBinary, runDir st
 	_ = finishLaunch(false, nil)
 	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
 	return entry, nil
+}
+
+// superviseDetachedResume owns the restoring child whose caller stopped
+// waiting. It runs without that caller's context: the claim's budget bounds the
+// restore, a rendezvous publication ends it, and a child exit, the budget, or
+// hub shutdown reaps the child. Settling the claim is what clears it from the
+// resume locks and unblocks callers waiting to join.
+func superviseDetachedResume(claim *hubcore.PendingLaunch, runDir string, child resumeChild, exited <-chan error, reaped <-chan struct{}, dlog *daemonLog, hubLog io.Writer, startedAt time.Time) {
+	entry, err := waitForRendezvousOrExit(claim.Context(), runDir, child.pid, exited, WithStartedAfter(startedAt))
+	if err == nil {
+		if promoteErr := dlog.promote(); promoteErr != nil {
+			err = fmt.Errorf("promote daemon log: %w", promoteErr)
+		} else {
+			_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
+		}
+	}
+	if err != nil {
+		err = errors.Join(err, reapResumeChild(child, reaped, nil))
+		dlog.removeIfUncommitted()
+		claim.Settle(rendezvous.Entry{}, err)
+		return
+	}
+	claim.Settle(entry, nil)
 }
 
 type tailBuffer struct {
@@ -753,6 +901,13 @@ var errRendezvousCanceled = errors.New("request canceled before rendezvous")
 // registered, which ends the wait at once.
 var errExitedBeforeRendezvous = errors.New("process exited before rendezvous")
 
+// errResumeStillStarting is the fourth rendezvous outcome: the caller stopped
+// waiting while its child was still alive and restoring. Unlike a cancel, the
+// child was NOT reaped and the operator's next move is to retry and join it —
+// the pending-launch claim keeps a retry from spawning a second child. The text
+// keeps "rendezvous" so it stays inside diagnostic.HubFailureKeywords.
+var errResumeStillStarting = errors.New("daemon still restoring before rendezvous")
+
 // rendezvousWaitError says which way a done rendezvous-wait context ended.
 // ctx.Err() separates the two outright, so nothing has to be inferred from
 // timing: Canceled is the caller walking away, DeadlineExceeded is time
@@ -775,6 +930,8 @@ func launchFailurePrefix(action string, err error) string {
 	switch {
 	case errors.Is(err, errRendezvousTimeout):
 		return action + " timed out"
+	case errors.Is(err, errResumeStillStarting):
+		return action + " still starting"
 	case errors.Is(err, errRendezvousCanceled):
 		return action + " canceled"
 	default:
@@ -879,6 +1036,9 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		return nil
 	}
 	r := reg.Get()
+	if err := r.ProviderError(name); err != nil {
+		return wireRefusal(appwire.HubLaunchError, err)
+	}
 	// The launch's model arrives as launchconfig materialized it:
 	// provider-qualified (cmdutil.ModelRef.Qualified()). Strip this
 	// instance's own prefix once, for the refusal message and the judgment
@@ -949,6 +1109,11 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		if scheme == registry.AuthOAuthOpenAICodex {
 			return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyCodexLogin})
 		}
+		// The Copilot transport reads no key either: its credential is the
+		// device-flow record, so point at that flow.
+		if scheme == registry.AuthOAuthGitHubCopilot {
+			return launchRefusal(&launchCredentialError{target: name, scheme: scheme, remedy: remedyCopilotLogin})
+		}
 		// gcp-adc reads no key either, and it can be unconfigured two ways
 		// (spec §5.1). Hidden means the base URL did not resolve — the
 		// registry says which variables this environment still owes it and
@@ -976,6 +1141,8 @@ const (
 	remedyInstanceCredential launchRemedy = iota + 1
 	// remedyCodexLogin: sign the Codex instance in.
 	remedyCodexLogin
+	// remedyCopilotLogin: sign the Copilot instance in.
+	remedyCopilotLogin
 	// remedyConfigureProvider: the provider's base URL does not resolve, so
 	// set the variables it still needs or fix the ones it has.
 	remedyConfigureProvider
@@ -1012,6 +1179,8 @@ func (e *launchCredentialError) Error() string {
 	switch e.remedy {
 	case remedyCodexLogin:
 		return fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", e.target, e.target)
+	case remedyCopilotLogin:
+		return fmt.Sprintf("provider credentials missing for %s: run `evener github-copilot login --instance %s`", e.target, e.target)
 	case remedyConfigureProvider:
 		reasons := append([]string(nil), e.problems...)
 		if len(e.unset) > 0 {

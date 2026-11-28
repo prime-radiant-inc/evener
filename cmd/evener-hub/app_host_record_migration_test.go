@@ -31,7 +31,7 @@ import (
 // manager boots with the store attached.
 func bootOverStore(t *testing.T, configPath, stateRoot string) (*hubHostManager, *hostops.Store) {
 	t.Helper()
-	store, err := hostops.Open(hostops.StorePath(stateRoot))
+	store, err := hostops.Open(hostops.StorePath(stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestStartupRetriesATransientStoreOpenFailure(t *testing.T) {
 	hostOpsOpenRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
 	t.Cleanup(func() { hostOpsOpenRetryDelays = previous })
 
-	opened, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	opened, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestStartupRetriesATransientStoreOpenFailure(t *testing.T) {
 func legacyRemovalCrash(t *testing.T, step crashStep) *pipelineFixture {
 	t.Helper()
 	var token hostops.Token
-	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("m4", 2), pipelineEntry("keep", 3)}, func(store *hostops.Store) {
+	fixture := newPipelineStagingFixture(t, []hostreg.Host{pipelineEntry("m4", 2), pipelineEntry("keep", 3)}, func(store *hostops.Store) {
 		token = pipelineToken(t, store, "m4", 2)
 	})
 	m := fixture.legacyManager(t)
@@ -444,16 +444,15 @@ func legacyRemovalCrash(t *testing.T, step crashStep) *pipelineFixture {
 	switch step {
 	case cutStaged:
 		fixture.appendTOML(t, "[pending_store_sync.m4]\ngeneration = 2\ntoken_values = [\""+token.Value+"\"]\n")
+		fixture.seedCompensations(t)
 	case cutFlipped:
 		stash := hubTOMLStashPath(fixture.configPath, "legacy-removal-key")
 		if err := os.WriteFile(stash, preRemoval, 0o600); err != nil {
 			t.Fatalf("write the stash: %v", err)
 		}
-		if err := fixture.store.ArmCompensation(hostops.Compensation{
+		fixture.seedCompensations(t, seededCompensation{
 			Host: "m4", Phase: hostops.CompensationArmed, Rows: []hostops.Token{token}, Stash: stash, Generation: 2,
-		}); err != nil {
-			t.Fatalf("ArmCompensation: %v", err)
-		}
+		})
 	}
 	return fixture
 }
@@ -548,7 +547,7 @@ func TestHostsKeepServingWhenTheStoreHoldsRecordsThisBuildCannotRead(t *testing.
 		t.Fatalf("seed hub.toml: %v", err)
 	}
 	stateRoot := t.TempDir()
-	store, err := hostops.Open(hostops.StorePath(stateRoot))
+	store, err := hostops.Open(hostops.StorePath(stateRoot), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -656,7 +655,7 @@ func TestUnreadableHubTOMLAtBootDoesNotMoveEmptyRecordsIntoTheStore(t *testing.T
 	configPath, records := legacyHub(t)
 	original := fileBytes(t, configPath)
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -746,7 +745,7 @@ func TestAReadFailureAfterTheLegacyBootStartedStillKeepsTheRecordsInHubTOML(t *t
 	configPath, records := legacyHub(t)
 	original := fileBytes(t, configPath)
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -791,7 +790,7 @@ func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
 		t.Fatalf("occupy the copy path: %v", err)
 	}
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -833,11 +832,8 @@ func TestMigrationWaitsForADurableCopyOfTheOriginalHubTOML(t *testing.T) {
 // writes such a boundary's counters into hub.toml can fail to land, and the
 // import must not forget a generation and presence epoch the mirror holds.
 func TestMigrationKeepsTheCountersOfANameOnlyTheMirrorRemembers(t *testing.T) {
-	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
 	boundary := hostops.Boundary{Generation: 9, IncarnationID: "inc-ghost", PresenceEpoch: 5}
-	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"ghost": boundary}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
-	}
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{pipelineEntry("keep", 3)}, map[string]hostops.Boundary{"ghost": boundary}, nil)
 	m := fixture.legacyManager(t)
 
 	m.migrateLegacyRecords(fixture.store)
@@ -880,15 +876,14 @@ func TestMigrationRaisesAGenerationBelowTheMirrorsForARemovedName(t *testing.T) 
 	}
 	held := records.Tombstones[removed]
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	spent := held.Generation + 4
+	storePath := hostops.StorePath(t.TempDir())
+	writeRawHostOpsBoundaries(t, storePath, map[string]hostops.Boundary{
+		removed: {Generation: spent, IncarnationID: held.IncarnationID, PresenceEpoch: held.PresenceEpoch},
+	})
+	store, err := hostops.Open(storePath, hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
-	}
-	spent := held.Generation + 4
-	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
-		removed: {Generation: spent, IncarnationID: held.IncarnationID, PresenceEpoch: held.PresenceEpoch},
-	}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
 	}
 	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), store)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
@@ -916,15 +911,14 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 	removed := firstKey(records.Tombstones)
 	held := records.Tombstones[removed]
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	spentEpoch := held.PresenceEpoch + 3
+	storePath := hostops.StorePath(t.TempDir())
+	writeRawHostOpsBoundaries(t, storePath, map[string]hostops.Boundary{
+		removed: {Generation: held.Generation, IncarnationID: held.IncarnationID, PresenceEpoch: spentEpoch},
+	})
+	store, err := hostops.Open(storePath, hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
-	}
-	spentEpoch := held.PresenceEpoch + 3
-	if err := store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{
-		removed: {Generation: held.Generation, IncarnationID: held.IncarnationID, PresenceEpoch: spentEpoch},
-	}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
 	}
 	doc := hostBootDocument(cfg.Config, legacyRecordsOf(t, configPath), nil)
 	hosts, err := hostreg.NewSeeded(doc.Hosts, doc.Records.highWaterMarks())
@@ -949,14 +943,11 @@ func TestMigrationRaisesAPresenceEpochTheMirrorHoldsEvenAtTheSameGeneration(t *t
 // it, so seeding cannot raise it, and the import must not replace the mirror's
 // higher counters with the entry's own.
 func TestMigrationRaisesARestoredHostTheRegistryNeverHeldToTheMirrorsCounters(t *testing.T) {
-	fixture := newPipelineFixture(t, []hostreg.Host{pipelineEntry("keep", 3)}, nil)
-	m := fixture.legacyManager(t)
 	sibling := hostreg.Host{Name: "sibling", SSH: "sibling.example", Generation: 2, IncarnationID: "inc-sibling", PresenceEpoch: 1}
-	m.cfg.store.set(append(m.cfg.store.snapshot(), sibling))
 	boundary := hostops.Boundary{Generation: 6, IncarnationID: sibling.IncarnationID, PresenceEpoch: 4}
-	if err := fixture.store.MirrorHostState(hostops.HostMirror{Boundaries: map[string]hostops.Boundary{"sibling": boundary}}); err != nil {
-		t.Fatalf("MirrorHostState: %v", err)
-	}
+	fixture := newPipelineFixtureWithBoundaries(t, []hostreg.Host{pipelineEntry("keep", 3)}, map[string]hostops.Boundary{"sibling": boundary}, nil)
+	m := fixture.legacyManager(t)
+	m.cfg.store.set(append(m.cfg.store.snapshot(), sibling))
 
 	m.migrateLegacyRecords(fixture.store)
 
@@ -976,7 +967,7 @@ func TestMigrationWaitsWhenTheOriginalCannotBeInspectedForTheCopy(t *testing.T) 
 	configPath, records := legacyHub(t)
 	original := fileBytes(t, configPath)
 	cfg := mustLoadConfig(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}
@@ -1090,7 +1081,7 @@ func TestNoSingleReadFailureAtALegacyBootLosesARecord(t *testing.T) {
 			t.Fatalf("append the intent: %v", err)
 		}
 		_ = body.Close()
-		store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+		store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 		if err != nil {
 			t.Fatalf("hostops.Open: %v", err)
 		}
@@ -1236,7 +1227,7 @@ func TestAnUnreadableRecordSectionKeepsTheReadableTeardownFences(t *testing.T) {
 func TestAStartupThatCouldNotReadTheRecordSectionsSettlesNothing(t *testing.T) {
 	configPath, _ := legacyHub(t)
 	original := fileBytes(t, configPath)
-	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()), hostops.RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("hostops.Open: %v", err)
 	}

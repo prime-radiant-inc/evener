@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -100,11 +101,16 @@ func publishEndpoint(web *WebServer, endpoint EndpointConfig, configIdentity, hu
 }
 
 // announceHub tells the operator where the hub is listening and how to sign in.
-func announceHub(stderr io.Writer, record hubendpoint.Record, runDir, hubStateRoot, authToken string) {
+func announceHub(
+	stderr io.Writer,
+	record hubendpoint.Record,
+	runDir, hubStateRoot, authToken string,
+	hostname func() (string, error),
+) {
 	log := componentlog.NewWriter("hub", stderr)
 	log.Info(fmt.Sprintf("evener-hub %s listening on %s (run_dir=%s)", Version, record.BoundAddr, runDir))
 	log.Info(fmt.Sprintf("configured listener: %s (%s)", record.RequestedListenAddr, record.ListenSource))
-	if origin, originErr := browserLoginOrigin(record, hubHostname); originErr == nil {
+	if origin, originErr := browserLoginOrigin(record, hostname); originErr == nil {
 		log.Info(fmt.Sprintf("Browser address: %s (local: %s)", origin, record.LocalURL))
 		if isTerminalWriter(stderr) {
 			link := hubedge.AuthURLFor(origin, authToken)
@@ -157,6 +163,12 @@ type hubRuntime struct {
 	hostRegistry     *hostreg.Registry
 	sshManager       *sshconn.Manager
 	opsStore         *hostops.Store
+	// attachedHostsStore remembers the registrations that reached attached
+	// state, and attachedHostsPersister serializes its writes off the SSH event
+	// path. A state file this boot could not open leaves the store nil, which
+	// makes the persister and startup reconnect no-ops.
+	attachedHostsStore     *hubcore.AttachedHostsStore
+	attachedHostsPersister *attachedHostsPersister
 	// opsUnavailable marks a hub whose operation store failed to open: it serves
 	// its hosts and refuses host changes until it is started with a store that
 	// opens. openOps opens the store (a test replaces it).
@@ -172,6 +184,8 @@ type hubRuntime struct {
 	transcriptDisplayStoreErr error
 	keybindingsStore          *hubcore.KeybindingsStore
 	keybindingsStoreErr       error
+	creationStore             *hubcore.CreationStore
+	creationStoreErr          error
 
 	providersConfigPath string
 	credentialsPath     string
@@ -487,6 +501,17 @@ func (r *hubRuntime) openDurableState() error {
 	if r.keybindingsStoreErr != nil {
 		r.logf("keybindings state: %v", r.keybindingsStoreErr)
 	}
+	r.creationStore, r.creationStoreErr = hubcore.NewCreationStore(r.hubStateRoot)
+	if r.creationStoreErr != nil {
+		r.logf("creation state: %v", r.creationStoreErr)
+	}
+	store, attachedErr := hubcore.NewAttachedHostsStore(r.hubStateRoot)
+	r.attachedHostsStore = store
+	if attachedErr != nil {
+		// A corrupt attached-host state file must not stop the hub: this boot
+		// serves without startup reconnect and leaves the file for repair.
+		r.logf("attached hosts state: %v", attachedErr)
+	}
 	// Resolve the registry root once for this hub process. Launch configuration
 	// may override XDG_CONFIG_HOME for a child, so the child must receive this
 	// concrete root rather than resolving its own default from that environment.
@@ -540,6 +565,7 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 	if newSSHManager == nil {
 		newSSHManager = sshconn.New
 	}
+	r.attachedHostsPersister = newAttachedHostsPersister(r.attachedHostsStore, r.logf)
 	r.sshManager = newSSHManager(r.hostRegistry, sshconn.Options{
 		SessionToolsHubID: r.sessionToolsHubID,
 		Logger:            r.logf,
@@ -550,7 +576,13 @@ func (r *hubRuntime) connectHosts() (func(), error) {
 		DeployHelp:        deploy.help,
 		OnEvent:           r.onSSHEvent,
 	})
-	closeSSH := func() { _ = r.sshManager.Close() }
+	// Close the manager first: every lifecycle event an in-flight attach still
+	// emits is enqueued before Close returns, and the persister's own Close
+	// then flushes them. Reversing the two would drop those final writes.
+	closeSSH := func() {
+		_ = r.sshManager.Close()
+		r.attachedHostsPersister.Close()
+	}
 
 	// Boot-prune the state-root write probe's crash orphans: evener/host/running
 	// writes (and removes) one probe file per probe under every durable state
@@ -614,18 +646,32 @@ func (r *hubRuntime) onSSHEvent(ev sshconn.Event) {
 	if r.hostManageEvents != nil {
 		r.hostManageEvents(ev)
 	}
+	if ev.Kind == sshconn.EventAttached && r.attachedHostsPersister != nil {
+		if r.hostIdentitiesDegraded() {
+			// This boot's identities were minted at load, so it cannot vouch for
+			// an incarnation: record the name only, and only if nothing durable
+			// is already there.
+			r.attachedHostsPersister.RecordDegraded(ev.Host)
+		} else {
+			r.attachedHostsPersister.Record(ev.Host, hubcore.AttachedHostRecord{
+				Generation:    ev.Generation,
+				IncarnationID: ev.IncarnationID,
+			})
+		}
+	}
 }
 
 // buildWeb constructs the web server over the opened stores and binds the hooks
 // that were waiting for it. The returned cleanup drains the AppWire RPC server
 // and then shuts the host operations down; it must run before connectHosts's
 // cleanup closes the SSH channels.
-func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServer, func()) {
+func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace, localHostName string) (*WebServer, func()) {
 	cfg := r.cfg
 	sshManager := r.sshManager
 	r.scratchReconcile = newScratchReconciler(r.past, r.archive, r.roster)
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   r.boundAddr,
+		LocalHostName:             localHostName,
 		AuthToken:                 r.authToken,
 		PublicURL:                 cfg.PublicURL,
 		HubStateRoot:              cfg.HubStateRoot,
@@ -636,6 +682,8 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		TranscriptDisplayStoreErr: r.transcriptDisplayStoreErr,
 		KeybindingsStore:          r.keybindingsStore,
 		KeybindingsStoreErr:       r.keybindingsStoreErr,
+		CreationStore:             r.creationStore,
+		CreationStoreErr:          r.creationStoreErr,
 		RunDir:                    r.runDir,
 		SpawnTimeout:              cfg.SpawnTimeout,
 		DaemonIdleTimeout:         cfg.DaemonIdleTimeout,
@@ -661,6 +709,7 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		NoUserLayer:               r.noUserLayer,
 		PokeAttention:             r.pokeAttention,
 		ScratchReconcile:          r.scratchReconcile.Kick,
+		ReapSessionJobs:           agent.ReapSessionBackgroundJobs,
 		Inputs:                    r.inputs,
 		RemoteThreadCache:         r.remoteCache,
 		RemoteHosts:               r.hostEntries,
@@ -673,6 +722,9 @@ func (r *hubRuntime) buildWeb(appwireTrace *appserver.WebSocketTrace) (*WebServe
 		RemoteHostOpsStore:          r.opsStore,
 		RemoteHostOpsUnavailable:    r.opsUnavailable,
 		RemoteHostRecordsUnreadable: r.recordsUnreadable,
+		// A host change that retires a registration drops its startup-reconnect
+		// record, so the next boot does not revive the identity it replaced.
+		ForgetAttachedHost: func(name string) { r.attachedHostsPersister.Remove(name) },
 		// This hub's own running identity and the two owner-adjustable
 		// deploy-pipeline knobs: the probe deadline the plan's gated probe
 		// uses, and the minimum free space evener/host/running's health
@@ -803,7 +855,7 @@ func (r *hubRuntime) wireNavigationInvalidation(web *WebServer) {
 	// list already failed changes nothing there. Without this the fleet view can
 	// keep reporting a host online after it dropped, or keep its rows metas-only
 	// after it reconnected.
-	r.sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) }
+	r.sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) }
 	r.pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	// A seen mark changes live rows' unseen flag; a mark committed by any
 	// writer, the RPC or a session deletion's scrub, invalidates navigation.
@@ -850,6 +902,11 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// aged into the archive and ones whose daemon exited while the hub was down.
 	goBackground(func() { r.scratchReconcile.Run(ctx) })
 	r.scratchReconcile.Kick()
+	// A daemon that died while the hub was down gets no session-gone
+	// announcement: the first publication after a hub start has no earlier
+	// listing to leave. Sweep the roster's crashed entries once for background
+	// job process groups that outlived their daemon (#4843).
+	goBackground(func() { reapCrashedSessionJobs(roster.List(), sessionStillLive(roster), web.cfg.ReapSessionJobs) })
 	// Start the resettable navigation scheduler only after the initial roster
 	// seed, so its first capture cannot publish a transient empty generation.
 	goBackground(func() { web.navigation.Start(ctx) })
@@ -901,6 +958,10 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	// read path (remoteThreadFetch) reads remoteCache.Snapshot() instead whenever
 	// RemoteThreadCache is configured.
 	goBackground(func() { refreshHubRemoteThreads(ctx, r.remotePoke, web) })
+	// Reconnect the hosts that were attached when this hub last stopped.
+	// web.hostManage loaded its records during buildWeb, so the remnant fence
+	// is bound before selection reads it.
+	startStartupHostReconnect(r, web)
 	// Live-model prefetch: fetch every instance's /models listing into the
 	// held registry once at startup, so the Providers sheet reads cached
 	// inventory instead of fetching on open. Once only: the hub never polls

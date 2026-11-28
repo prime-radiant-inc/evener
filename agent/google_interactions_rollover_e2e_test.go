@@ -1,0 +1,782 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
+)
+
+// scriptedInteractionResponse is one canned HTTP reply the scripted
+// /interactions endpoint hands out in order.
+type scriptedInteractionResponse struct {
+	status      int
+	contentType string
+	body        string
+}
+
+// scriptedInteractions is a real httptest-backed Google endpoint. It answers
+// the live model-listing probe with an empty list (so restore never leaves the
+// process) and serves POSTed /interactions requests from a queue, recording
+// every request body for later assertion.
+type scriptedInteractions struct {
+	t        *testing.T
+	mu       sync.Mutex
+	queue    []scriptedInteractionResponse
+	requests [][]byte
+}
+
+func (s *scriptedInteractions) enqueueJSON(status int, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queue = append(s.queue, scriptedInteractionResponse{
+		status:      status,
+		contentType: "application/json",
+		body:        body,
+	})
+}
+
+func (s *scriptedInteractions) enqueueSSE(body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queue = append(s.queue, scriptedInteractionResponse{
+		status:      http.StatusOK,
+		contentType: "text/event-stream",
+		body:        body,
+	})
+}
+
+func (s *scriptedInteractions) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/models") {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"models":[]}`)
+		return
+	}
+
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.t.Errorf("read interactions request body: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	s.mu.Lock()
+	s.requests = append(s.requests, append([]byte(nil), raw...))
+	next := scriptedInteractionResponse{
+		status:      http.StatusInternalServerError,
+		contentType: "application/json",
+		body:        `{"error":{"code":500,"message":"scripted endpoint has no queued reply"}}`,
+	}
+	if len(s.queue) > 0 {
+		next = s.queue[0]
+		s.queue = s.queue[1:]
+	}
+	s.mu.Unlock()
+
+	w.Header().Set("Content-Type", next.contentType)
+	w.WriteHeader(next.status)
+	_, _ = io.WriteString(w, next.body)
+}
+
+func (s *scriptedInteractions) requestBodies() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]byte, len(s.requests))
+	copy(out, s.requests)
+	return out
+}
+
+func (s *scriptedInteractions) pending() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.queue)
+}
+
+// interactionsFunctionCallSSE scripts one completed interaction whose single
+// step is a function_call, matching the SSE shape the Google transport decodes.
+func interactionsFunctionCallSSE(model, interactionID, callID, name string, args map[string]any) string {
+	argsJSON, err := json.Marshal(args)
+	if err != nil {
+		panic("marshal interactions function_call arguments: " + err.Error())
+	}
+	return "event: interaction.created\n" +
+		`data: {"event_type":"interaction.created","interaction":{"id":"` + interactionID + `","model":"` + model + `","status":"in_progress"}}` + "\n\n" +
+		"event: step.start\n" +
+		`data: {"event_type":"step.start","index":0,"step":{"type":"function_call","id":"` + callID + `","name":"` + name + `","arguments":` + string(argsJSON) + `}}` + "\n\n" +
+		"event: step.stop\n" +
+		`data: {"event_type":"step.stop","index":0}` + "\n\n" +
+		"event: interaction.completed\n" +
+		`data: {"event_type":"interaction.completed","interaction":{"id":"` + interactionID + `","model":"` + model + `","status":"completed","steps":[{"type":"function_call","id":"` + callID + `","name":"` + name + `","arguments":` + string(argsJSON) + `}],"usage":{"total_input_tokens":20,"total_output_tokens":5,"total_tokens":25}}}` + "\n\n" +
+		"event: done\ndata: [DONE]\n\n"
+}
+
+// interactionsModelOutputSSE scripts one completed interaction carrying a
+// single text model_output step.
+func interactionsModelOutputSSE(model, interactionID string) string {
+	return "event: interaction.created\n" +
+		`data: {"event_type":"interaction.created","interaction":{"id":"` + interactionID + `","model":"` + model + `","status":"in_progress"}}` + "\n\n" +
+		"event: step.start\n" +
+		`data: {"event_type":"step.start","index":0,"step":{"type":"model_output"}}` + "\n\n" +
+		"event: step.delta\n" +
+		`data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"hel"}}` + "\n\n" +
+		"event: step.delta\n" +
+		`data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"lo"}}` + "\n\n" +
+		"event: step.stop\n" +
+		`data: {"event_type":"step.stop","index":0}` + "\n\n" +
+		"event: interaction.completed\n" +
+		`data: {"event_type":"interaction.completed","interaction":{"id":"` + interactionID + `","model":"` + model + `","status":"completed","usage":{"total_input_tokens":5,"total_output_tokens":2,"total_tokens":7}}}` + "\n\n" +
+		"event: done\ndata: [DONE]\n\n"
+}
+
+const googleSignature400 = `{"error":{"code":400,"message":"Function call is missing a thought_signature.","status":"INVALID_ARGUMENT"}}`
+
+const googleInteractionsJSON = `{"id":"int_ok","model":"gemini-3.8-flash","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"hello"}]}],"usage":{"total_input_tokens":5,"total_output_tokens":2,"total_tokens":7}}`
+
+// interactionsSteps decodes the outbound input[] steps of a captured request
+// body. The Interactions wire field is "input"; "steps" is the response side.
+func interactionsSteps(t *testing.T, body []byte) []any {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode interactions request: %v\nbody: %s", err, body)
+	}
+	steps, ok := decoded["input"].([]any)
+	if !ok {
+		t.Fatalf("interactions request has no input[] steps: %s", body)
+	}
+	return steps
+}
+
+func assertNoAdjacentUserInputs(t *testing.T, steps []any) {
+	t.Helper()
+	for i := 1; i < len(steps); i++ {
+		if stepType(steps[i-1]) == "user_input" && stepType(steps[i]) == "user_input" {
+			t.Fatalf("steps %d and %d are adjacent user_input steps: %s", i-1, i, mustJSON(t, steps))
+		}
+	}
+}
+
+func stepType(step any) string {
+	m, _ := step.(map[string]any)
+	s, _ := m["type"].(string)
+	return s
+}
+
+func TestSessionGoogleInteractions_DeepMultiTurnNotificationRolloverRegression(t *testing.T) {
+	dir := t.TempDir()
+	script := &scriptedInteractions{t: t}
+	script.enqueueSSE(interactionsFunctionCallSSE("gemini-4-carbon", "int_rollover", "call_comm", "communicate", map[string]any{
+		"message": "rollover settled",
+		"next":    "send_and_end_turn",
+		"output": map[string]any{
+			"message":   "",
+			"data":      map[string]any{},
+			"artifacts": []string{},
+		},
+	}))
+	srv := httptest.NewServer(script)
+	t.Cleanup(srv.Close)
+
+	client := registryClientAt(t, dir, map[string]registry.Provider{
+		"google": {
+			Base:   "google",
+			APIKey: "test",
+			Transport: registry.Transport{
+				BaseURL: srv.URL + "/v1beta",
+			},
+		},
+	}, []string{"google"})
+	profile := resolveClientProfile(t, client, "google/gemini-4-carbon")
+	res := profile.Resolved()
+
+	sess, err := NewSession(client, withTestSessionNamer(client, profile), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	// The launch-time environment context is not what this regression pins:
+	// suppress it so the outbound steps are exactly the seeded history plus the
+	// new user prompt. appendEnvironmentContext treats a nil collector as "no
+	// context to report".
+	sess.envCollector = nil
+
+	now := time.Now().UTC()
+	sess.history = append(sess.history,
+		schema.Turn{
+			Kind:      schema.TurnUserInput,
+			Message:   llm.User("original request"),
+			Timestamp: now.Add(-5 * time.Minute),
+		},
+		schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+					GoogleInteraction: true,
+					GoogleInstance:    profile.ID(),
+					GoogleModel:       res.WireID,
+					Signature:         "sig_rollover",
+					Summary:           []string{"why"},
+				}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID:                "call_probe",
+					Name:              "probe_tool",
+					Arguments:         json.RawMessage(`{}`),
+					GoogleInteraction: true,
+					GoogleInstance:    profile.ID(),
+					GoogleModel:       res.WireID,
+				}},
+			}},
+			Timestamp: now.Add(-4 * time.Minute),
+		},
+		schema.Turn{
+			Kind:         schema.TurnSteering,
+			Message:      llm.User("<job-notification>job finished</job-notification>"),
+			Timestamp:    now.Add(-3 * time.Minute),
+			SteeringKind: "job_notification",
+		},
+		schema.Turn{
+			Kind:         schema.TurnSteering,
+			Message:      llm.User("<delegate-notification>delegate finished</delegate-notification>"),
+			Timestamp:    now.Add(-3 * time.Minute),
+			SteeringKind: "delegate_notification",
+		},
+		schema.Turn{
+			Kind: schema.TurnToolResults,
+			Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+					ToolCallID: "call_probe",
+					Name:       "probe_tool",
+					Content:    "probe ok",
+				}},
+			}},
+			Timestamp: now.Add(-2 * time.Minute),
+		},
+		schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+					Text: "legacy reasoning",
+				}},
+				{Kind: llm.ContentText, Text: "intermediate answer"},
+			}},
+			Timestamp: now.Add(-time.Minute),
+		},
+	)
+
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-process httptest server with a scripted reply, no real network I/O; only fires on a genuine hang.
+	defer cancel()
+	got, err := sess.ProcessInput(ctx, "new user prompt", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got != "rollover settled" {
+		t.Fatalf("ProcessInput output = %q, want the communicate message", got)
+	}
+	if state := sess.State(); state != SessionIdle {
+		t.Fatalf("State after settlement = %q, want %q", state, SessionIdle)
+	}
+
+	sess.Close()
+	<-eventsDone
+
+	bodies := script.requestBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("interactions request count = %d, want 1", len(bodies))
+	}
+	var body map[string]any
+	if err := json.Unmarshal(bodies[0], &body); err != nil {
+		t.Fatalf("decode interactions request: %v", err)
+	}
+	if store, ok := body["store"].(bool); !ok || store {
+		t.Fatalf("request store = %#v, want explicit false: %s", body["store"], bodies[0])
+	}
+	if model, _ := body["model"].(string); model != "gemini-4-carbon" {
+		t.Fatalf("request model = %q, want gemini-4-carbon", model)
+	}
+
+	steps := interactionsSteps(t, bodies[0])
+	want := []any{
+		map[string]any{"type": "user_input", "content": []any{
+			map[string]any{"type": "text", "text": "original request"},
+		}},
+		map[string]any{"type": "thought", "signature": "sig_rollover", "summary": []any{
+			map[string]any{"type": "text", "text": "why"},
+		}},
+		map[string]any{"type": "function_call", "id": "call_probe", "name": "probe_tool", "arguments": map[string]any{}},
+		map[string]any{"type": "function_result", "call_id": "call_probe", "name": "probe_tool", "result": "probe ok"},
+		map[string]any{"type": "user_input", "content": []any{
+			map[string]any{"type": "text", "text": "<job-notification>job finished</job-notification>"},
+			map[string]any{"type": "text", "text": "<delegate-notification>delegate finished</delegate-notification>"},
+		}},
+		map[string]any{"type": "model_output", "content": []any{
+			map[string]any{"type": "text", "text": "intermediate answer"},
+		}},
+		map[string]any{"type": "user_input", "content": []any{
+			map[string]any{"type": "text", "text": "new user prompt"},
+		}},
+	}
+	if !reflect.DeepEqual(steps, want) {
+		t.Fatalf("outbound steps mismatch\n got: %s\nwant: %s", mustJSON(t, steps), mustJSON(t, want))
+	}
+	assertNoAdjacentUserInputs(t, steps)
+	if pending := script.pending(); pending != 0 {
+		t.Fatalf("scripted endpoint still has %d unserved replies", pending)
+	}
+}
+
+func TestSessionGoogleInteractions_PreCutoverSignedToolCallRestoreAndFallback(t *testing.T) {
+	dir := t.TempDir()
+	const (
+		sessionID = "restored-google-legacy-signed"
+		model     = "gemini-3.8-flash"
+	)
+
+	transcriptPath := schema.SessionTranscriptPath(dir, sessionID)
+	writer, err := transcript.NewWriter(transcriptPath, transcript.Header{
+		SessionID: sessionID,
+		ProfileID: "google",
+		Model:     model,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	now := time.Now().UTC()
+	legacyTurns := []schema.Turn{
+		{
+			Kind:      schema.TurnUserInput,
+			Message:   llm.User("legacy request"),
+			Timestamp: now.Add(-5 * time.Minute),
+		},
+		{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{
+					Query: "legacy query",
+					Raw:   json.RawMessage(`{"type":"server_tool_use"}`),
+				}},
+				{Kind: llm.ContentText, Text: "legacy grounded answer"},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID:        "call_search",
+					Name:      "web_search",
+					Arguments: json.RawMessage(`{"query":"legacy"}`),
+				}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+					ID:                "call_read",
+					Name:              "read_file",
+					Arguments:         json.RawMessage(`{"path":"a.txt"}`),
+					ThoughtSignature:  "legacy_sig",
+					GoogleInteraction: false,
+				}},
+			}},
+			Timestamp:        now.Add(-4 * time.Minute),
+			ResponseProvider: "google",
+			ResponseModel:    model,
+		},
+		{
+			Kind: schema.TurnToolResults,
+			Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+					ToolCallID: "call_search",
+					Name:       "web_search",
+					Content:    "search result",
+				}},
+				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+					ToolCallID: "call_read",
+					Name:       "read_file",
+					Content:    "file body",
+				}},
+			}},
+			Timestamp: now.Add(-3 * time.Minute),
+		},
+		{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "intermediate legacy answer"},
+			}},
+			Timestamp:        now.Add(-2 * time.Minute),
+			ResponseProvider: "google",
+			ResponseModel:    model,
+		},
+	}
+	for _, turn := range legacyTurns {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record legacy turn: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close transcript writer: %v", err)
+	}
+
+	meta := schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "google",
+		Model:     model,
+		Config:    (SessionConfig{StateDir: dir}).toSnapshot(),
+		CreatedAt: now.Add(-6 * time.Minute),
+		UpdatedAt: now.Add(-time.Minute),
+	}
+	if err := schema.SaveSessionMeta(dir, meta); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	before, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("read transcript before restore: %v", err)
+	}
+
+	script := &scriptedInteractions{t: t}
+	script.enqueueSSE(interactionsFunctionCallSSE(model, "int_restored", "call_comm", "communicate", map[string]any{
+		"message": "restored turn settled",
+		"next":    "send_and_end_turn",
+		"output": map[string]any{
+			"message":   "",
+			"data":      map[string]any{},
+			"artifacts": []string{},
+		},
+	}))
+	srv := httptest.NewServer(script)
+	t.Cleanup(srv.Close)
+
+	client := registryClientAt(t, dir, map[string]registry.Provider{
+		"google": {
+			Base:   "google",
+			APIKey: "test",
+			Transport: registry.Transport{
+				BaseURL: srv.URL + "/v1beta",
+			},
+		},
+	}, []string{"google"})
+	// The namer's background cheap-model call must not consume the scripted
+	// main-provider reply, so it goes to its own scripted provider.
+	profile := withTestSessionNamer(client, resolveClientProfile(t, client, "google/"+model))
+
+	restored, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+		StateDir: dir,
+		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	t.Cleanup(func() { restored.Close() })
+	restored.envCollector = nil
+	restoredTurns := append([]schema.Turn(nil), restored.history...)
+
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		for range restored.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-process httptest server with scripted replies, no real network I/O; only fires on a genuine hang.
+	defer cancel()
+
+	// Phase A: a post-upgrade turn replays the restored pre-cutover history.
+	got, err := restored.ProcessInput(ctx, "post-upgrade prompt", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput after restore: %v (requests=%d, pending=%d)", err, len(script.requestBodies()), script.pending())
+	}
+	if got != "restored turn settled" {
+		t.Fatalf("ProcessInput output = %q, want the communicate message", got)
+	}
+	if state := restored.State(); state != SessionIdle {
+		t.Fatalf("State after settlement = %q, want %q", state, SessionIdle)
+	}
+
+	restored.Close()
+	<-eventsDone
+
+	after, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("read transcript after restore: %v", err)
+	}
+	if !bytes.HasPrefix(after, before) || len(after) <= len(before) {
+		t.Fatalf("restored session transcript did not grow as an append-only extension:\nbefore (%d): %s\nafter (%d): %s", len(before), before, len(after), after)
+	}
+
+	bodies := script.requestBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("phase A interactions request count = %d, want 1", len(bodies))
+	}
+	if bytes.Contains(bodies[0], []byte("legacy_sig")) {
+		t.Fatalf("attempt 1 sent the pre-cutover signature: %s", bodies[0])
+	}
+	if bytes.Contains(bodies[0], []byte("server_tool_use")) || bytes.Contains(bodies[0], []byte("legacy grounded answer")) {
+		t.Fatalf("attempt 1 replayed historical Grounding: %s", bodies[0])
+	}
+	if bytes.Contains(bodies[0], []byte(`"legacy"`)) || bytes.Contains(bodies[0], []byte("search result")) {
+		t.Fatalf("attempt 1 replayed historical web_search payload: %s", bodies[0])
+	}
+
+	phaseASteps := interactionsSteps(t, bodies[0])
+	if len(phaseASteps) != 8 {
+		t.Fatalf("phase A steps count = %d, want 8: %s", len(phaseASteps), mustJSON(t, phaseASteps))
+	}
+	if !reflect.DeepEqual(phaseASteps[0], map[string]any{"type": "user_input", "content": []any{map[string]any{"type": "text", "text": "legacy request"}}}) {
+		t.Fatalf("phase A step[0] = %s", mustJSON(t, phaseASteps[0]))
+	}
+	step1, _ := phaseASteps[1].(map[string]any)
+	step1Content, _ := step1["content"].([]any)
+	var step1Part map[string]any
+	if len(step1Content) > 0 {
+		step1Part, _ = step1Content[0].(map[string]any)
+	}
+	step1Text, _ := step1Part["text"].(string)
+	if step1["type"] != "model_output" || len(step1Content) != 1 || step1Part["type"] != "text" || strings.TrimSpace(step1Text) == "" {
+		t.Fatalf("phase A step[1] expected non-empty omitted model_output text, got %s", mustJSON(t, phaseASteps[1]))
+	}
+	step2, _ := phaseASteps[2].(map[string]any)
+	step2Args, _ := step2["arguments"].(map[string]any)
+	if step2["type"] != "function_call" || step2["id"] != "call_search" || step2["name"] != "web_search" || len(step2Args) == 0 || step2Args["query"] != nil {
+		t.Fatalf("phase A step[2] expected paired web_search function_call with omitted args, got %s", mustJSON(t, phaseASteps[2]))
+	}
+	if !reflect.DeepEqual(phaseASteps[3], map[string]any{"type": "function_call", "id": "call_read", "name": "read_file", "arguments": map[string]any{"path": "a.txt"}}) {
+		t.Fatalf("phase A step[3] = %s", mustJSON(t, phaseASteps[3]))
+	}
+	step4, _ := phaseASteps[4].(map[string]any)
+	step4Res, _ := step4["result"].(string)
+	if step4["type"] != "function_result" || step4["call_id"] != "call_search" || step4["name"] != "web_search" || strings.TrimSpace(step4Res) == "" {
+		t.Fatalf("phase A step[4] expected paired web_search function_result with non-empty omitted content, got %s", mustJSON(t, phaseASteps[4]))
+	}
+	if !reflect.DeepEqual(phaseASteps[5], map[string]any{"type": "function_result", "call_id": "call_read", "name": "read_file", "result": "file body"}) {
+		t.Fatalf("phase A step[5] = %s", mustJSON(t, phaseASteps[5]))
+	}
+	if !reflect.DeepEqual(phaseASteps[6], map[string]any{"type": "model_output", "content": []any{map[string]any{"type": "text", "text": "intermediate legacy answer"}}}) {
+		t.Fatalf("phase A step[6] = %s", mustJSON(t, phaseASteps[6]))
+	}
+	if !reflect.DeepEqual(phaseASteps[7], map[string]any{"type": "user_input", "content": []any{map[string]any{"type": "text", "text": "post-upgrade prompt"}}}) {
+		t.Fatalf("phase A step[7] = %s", mustJSON(t, phaseASteps[7]))
+	}
+	assertNoAdjacentUserInputs(t, phaseASteps)
+
+	// Phase B and C drive the restored history through the protocol directly so
+	// the 400 fallback is the only thing under test.
+	scope := replayScope{
+		Instance:       profile.ID(),
+		Model:          profile.Model(),
+		WireID:         profile.Resolved().WireID,
+		Protocol:       profile.Protocol(),
+		InFlightFrom:   len(restoredTurns),
+		ResultToolName: restored.resultToolName(),
+		protocolOf:     restored.instanceProtocol,
+		canonicalModel: func(m string) string {
+			return restored.canonicalModelID(profile.ID(), m)
+		},
+	}
+	baseMessages := append(expandHistory(restoredTurns, scope), llm.User("next prompt"))
+
+	script.enqueueJSON(http.StatusBadRequest, googleSignature400)
+	script.enqueueJSON(http.StatusOK, googleInteractionsJSON)
+	completeReq := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: baseMessages}
+	resp, err := client.Complete(ctx, completeReq)
+	if err != nil {
+		t.Fatalf("Complete after signature 400: %v", err)
+	}
+	if resp.Text() != "hello" {
+		t.Fatalf("Complete text = %q, want hello", resp.Text())
+	}
+
+	bodies = script.requestBodies()
+	if len(bodies) != 3 {
+		t.Fatalf("request count after Complete = %d, want 3 (phase A plus one retry)", len(bodies))
+	}
+	firstAttempt := interactionsSteps(t, bodies[1])
+	if !stepsContainFunc(firstAttempt, "function_call", "read_file") {
+		t.Fatalf("first Complete attempt dropped the unsigned legacy tool call: %s", mustJSON(t, firstAttempt))
+	}
+	if bytes.Contains(bodies[1], []byte("legacy_sig")) {
+		t.Fatalf("first Complete attempt sent legacy_sig: %s", bodies[1])
+	}
+	retrySteps := interactionsSteps(t, bodies[2])
+	for _, step := range retrySteps {
+		switch stepType(step) {
+		case "function_call", "function_result":
+			t.Fatalf("fallback retry still sent structured tool steps: %s", mustJSON(t, retrySteps))
+		}
+	}
+	if !stepsContainTextPrefix(retrySteps, "model_output", "[historical tool call:") {
+		t.Fatalf("fallback retry did not render the legacy tool call as model_output text: %s", mustJSON(t, retrySteps))
+	}
+	if !stepsContainTextPrefix(retrySteps, "user_input", "[historical tool result:") {
+		t.Fatalf("fallback retry did not render the legacy tool result as user_input text: %s", mustJSON(t, retrySteps))
+	}
+
+	script.enqueueJSON(http.StatusBadRequest, googleSignature400)
+	script.enqueueSSE(interactionsModelOutputSSE(model, "int_sse_ok"))
+	stream, err := client.Stream(ctx, llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: baseMessages})
+	if err != nil {
+		t.Fatalf("Stream after signature 400: %v", err)
+	}
+	var (
+		streamStarts int
+		streamText   strings.Builder
+		streamErr    error
+	)
+	for event := range stream.Events() {
+		switch event.Type {
+		case llm.StreamEventStreamStart:
+			streamStarts++
+		case llm.StreamEventTextDelta:
+			streamText.WriteString(event.Delta)
+		case llm.StreamEventError:
+			streamErr = event.Err
+		}
+	}
+	if closeErr := stream.Close(); closeErr != nil {
+		t.Fatalf("close stream: %v", closeErr)
+	}
+	if streamErr != nil {
+		t.Fatalf("Stream surfaced the signature 400 instead of recovering: %v", streamErr)
+	}
+	if streamStarts != 1 {
+		t.Fatalf("StreamEventStreamStart count = %d, want exactly 1", streamStarts)
+	}
+	if streamText.String() != "hello" {
+		t.Fatalf("stream text = %q, want hello", streamText.String())
+	}
+
+	bodies = script.requestBodies()
+	if len(bodies) != 5 {
+		t.Fatalf("request count after Stream = %d, want 5", len(bodies))
+	}
+	streamRetrySteps := interactionsSteps(t, bodies[4])
+	if !stepsContainTextPrefix(streamRetrySteps, "model_output", "[historical tool call:") {
+		t.Fatalf("stream fallback retry did not render the legacy tool call as model_output text: %s", mustJSON(t, streamRetrySteps))
+	}
+	if pending := script.pending(); pending != 0 {
+		t.Fatalf("scripted endpoint still has %d unserved replies", pending)
+	}
+
+	// Post-2xx SSE errors pass straight through protocolhttp.Stream in 1 POST without a wrapper.
+	script.enqueueSSE("event: error\n" + `data: {"event_type":"error","error":{"code":"invalid_argument","message":"missing thought_signature"}}` + "\n\n")
+	post2xxStream, err := client.Stream(ctx, llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: baseMessages})
+	if err != nil {
+		t.Fatalf("Stream open for post-2xx SSE error: %v", err)
+	}
+	var post2xxErr error
+	for event := range post2xxStream.Events() {
+		if event.Type == llm.StreamEventError {
+			post2xxErr = event.Err
+		}
+	}
+	if closeErr := post2xxStream.Close(); closeErr != nil {
+		t.Fatalf("close post2xx stream: %v", closeErr)
+	}
+	if post2xxErr == nil {
+		t.Fatal("expected post-2xx SSE error to surface")
+	}
+	if bodies = script.requestBodies(); len(bodies) != 6 {
+		t.Fatalf("request count after post-2xx SSE error = %d, want 6 (1 POST without wrapper retry)", len(bodies))
+	}
+
+	t.Run("dormant Google delegate wakes with retired google-vertex-express fallback pruned", func(t *testing.T) {
+		rDel, err := registry.Load(
+			registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+			registry.WithStateRoot(t.TempDir()),
+			registry.WithEnv(func(k string) (string, bool) {
+				if k == "GEMINI_API_KEY" {
+					return "k-gem", true
+				}
+				return "", false
+			}),
+		)
+		if err != nil {
+			t.Fatalf("registry.Load: %v", err)
+		}
+		fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+			descriptor.ResolvedProfileID = "google"
+			descriptor.ResolvedModel = "gemini-3.8-flash"
+			descriptor.Config.ModelFallbacks = []string{"google-vertex-express/gemini-2.5-flash", "google/gemini-2.5-flash"}
+		})
+		cDel := llm.NewClient(llm.WithRegistry(rDel))
+		cDel.Register(fixture.adapter)
+		googleFake := newFakeAdapter("google", func(llm.Request) llm.Response {
+			return agenttest.CommunicateResponse(true, "dormant google delegate woke")
+		})
+		cDel.Register(googleFake)
+
+		rootDel, err := RestoreSessionFromMetaWithConfig(cDel, fixture.profile, execenv.NewLocalExecutionEnvironment(fixture.workspace), fixture.meta, RestoreSessionConfig{
+			StateDir:    fixture.stateDir,
+			ForceRealIO: true,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(rDel, ref)
+			},
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, sandboxProber: bwrapCapableProber(fixture.workspace)},
+		})
+		if err != nil {
+			t.Fatalf("restore root: %v", err)
+		}
+		defer rootDel.Close()
+
+		outcome := (delegateRuntime{owner: rootDel}).send(ctx, fixture.delegateID, "wake up", 10_000)
+		abortUnpersistedDelegateOutcome(t, outcome)
+		if outcome.result.Err != nil || outcome.result.Status != jobstore.StatusCompleted {
+			t.Fatalf("dormant Google delegate failed to wake: %+v", outcome.result)
+		}
+		children := rootDel.subagents.sessions()
+		if len(children) != 1 {
+			t.Fatalf("woken delegate children = %d, want 1", len(children))
+		}
+		if !reflect.DeepEqual(children[0].cfg.ModelFallbacks, []string{"google/gemini-2.5-flash"}) {
+			t.Fatalf("woken delegate ModelFallbacks = %v, want [google/gemini-2.5-flash]", children[0].cfg.ModelFallbacks)
+		}
+	})
+}
+
+func stepsContainFunc(steps []any, kind, name string) bool {
+	for _, step := range steps {
+		m, _ := step.(map[string]any)
+		if m["type"] == kind && m["name"] == name {
+			return true
+		}
+	}
+	return false
+}
+
+func stepsContainTextPrefix(steps []any, kind, prefix string) bool {
+	for _, step := range steps {
+		m, _ := step.(map[string]any)
+		if m["type"] != kind {
+			continue
+		}
+		content, _ := m["content"].([]any)
+		for _, itemAny := range content {
+			item, _ := itemAny.(map[string]any)
+			text, _ := item["text"].(string)
+			if strings.HasPrefix(text, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}

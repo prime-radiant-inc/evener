@@ -1,30 +1,44 @@
 import type { NavigationSessionSummary, Source } from "@evener/appwire-client";
 import { errorText, LOCAL_HOST } from "@evener/appwire-client";
 import { keyID, LIVE_BAND_ORDER } from "@evener/appwire-client/state/navigation";
-import { type CSSProperties, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  memo,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { isIMECompositionKeydown } from "../../keybindings/dispatcher";
 import {
   archivedListKey,
   loadMoreArchivedList,
   refreshArchivedList,
   useArchivedLists,
 } from "../../stores/archivedList";
-import { selectAttentionSummary, selectDisplaySources } from "../../stores/navigation/selectors";
+import { selectDisplaySources } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
-import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
+import { defaultSessionListStyle, type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
+import { sessionReadProgress, useSessionSeen } from "../../stores/readProgress";
 import { threadsStore } from "../../stores/threads";
 import {
   Button,
-  Chip,
+  CloseIcon,
   ConfirmDialog,
   DisclosureHeading,
   EmptyState,
   IconButton,
+  Input,
   Menu,
   Popover,
   RadioGroup,
   Skeleton,
-  StatusDot,
   ToolIcon,
   Tooltip,
   Tree,
@@ -36,10 +50,11 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
+import { iPhoneHost } from "../iPhoneHost";
 import { useDismissNavigationChrome } from "../navigationChrome";
 import { navigate } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
-import { useIsMobile } from "../useIsMobile";
+import { useIsMobile, useWebLayout } from "../useIsMobile";
 import { currentSessionRef, useWorkspaceStore, workspaceStore } from "../workspace";
 import {
   assignSessionPin,
@@ -53,11 +68,15 @@ import {
   unpinSession,
 } from "./actions";
 import { holdLiveBands, liveBandNodes, railLiveBands } from "./liveBands";
+import { comparePinSections } from "./PinSectionPicker";
 import styles from "./Rail.module.css";
+import { RailNavigationActions } from "./RailNavigationActions";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
-import { RailRow, type RailRowActions } from "./RailRow";
+import { RailFlatContext, RailRow, type RailRowActions } from "./RailRow";
 import { ARCHIVED_SECTION_KEY, LIVE_SECTION_KEY, PROJECTS_SECTION_KEY, TEST_RUNS_SECTION_KEY } from "./railExpansion";
-import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
+import { countSessionNodes, createRailFilterContext, filterRailNodes } from "./railFilter";
+import { useRailHeaderAction } from "./railHeaderAction";
+import { MoreIcon, PlusIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
@@ -92,6 +111,7 @@ import {
   withArchivedLists,
 } from "./railResources";
 import { isTopLevelSession } from "./sessionKind";
+import { useIPhoneCreateButton } from "./useIPhoneCreateButton";
 import { usePinSectionDialogs } from "./usePinSectionDialogs";
 import { useProjectRootLoads } from "./useProjectRootLoads";
 import { useRailReveal } from "./useRailReveal";
@@ -99,19 +119,19 @@ import { useRailReveal } from "./useRailReveal";
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
-  identity: requireClass(styles.identity, "Rail.module.css", "identity"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
   mark: requireClass(styles.mark, "Rail.module.css", "mark"),
   wordmark: requireClass(styles.wordmark, "Rail.module.css", "wordmark"),
   brandActions: requireClass(styles.brandActions, "Rail.module.css", "brandActions"),
-  needsYou: requireClass(styles.needsYou, "Rail.module.css", "needsYou"),
-  newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
+  filterRow: requireClass(styles.filterRow, "Rail.module.css", "filterRow"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
   parentScrollRail: requireClass(styles.parentScrollRail, "Rail.module.css", "parentScrollRail"),
   parentScrollBody: requireClass(styles.parentScrollBody, "Rail.module.css", "parentScrollBody"),
   section: requireClass(styles.section, "Rail.module.css", "section"),
   organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
   organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
+  newSessionRow: requireClass(styles.newSessionRow, "Rail.module.css", "newSessionRow"),
+  archiveOverflowObserver: requireClass(styles.archiveOverflowObserver, "Rail.module.css", "archiveOverflowObserver"),
 };
 
 interface RailSectionProps {
@@ -124,6 +144,43 @@ interface RailSectionProps {
   actions: RailRowActions;
   isRowSelected: (node: RailNode) => boolean | undefined;
   projectRetryCallback: (key: string) => () => void;
+}
+
+interface RailSectionShellProps extends Omit<RailSectionProps, "title"> {
+  label: string;
+  action?: ReactNode;
+  eyebrow?: boolean;
+}
+
+// The section frame shared by the rail's disclosure sections: the heading
+// (optionally an eyebrow, optionally carrying a menu action) and the tree it
+// folds.
+function RailSectionShell({
+  label,
+  action,
+  eyebrow,
+  nodes,
+  open,
+  onToggleOpen,
+  actions,
+  projectRetryCallback,
+  isRowSelected,
+  ...tree
+}: RailSectionShellProps) {
+  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
+  return (
+    <section className={CLASS.section}>
+      <DisclosureHeading
+        level={3}
+        label={label}
+        eyebrow={eyebrow}
+        action={action}
+        open={open}
+        onOpenChange={onToggleOpen}
+      />
+      {open && <RailTree nodes={nodes} renderRow={renderRow} isSelected={isRowSelected} {...tree} />}
+    </section>
+  );
 }
 
 // The rail's organize-by switcher: an icon-only quiet trigger opening the
@@ -200,17 +257,72 @@ function ProjectNavigationRailRow({
     />
   );
 }
+// Archived overflow rows load their next page automatically when scrolled into
+// view (200px margin), while non-archive overflow rows keep explicit demand
+// activation. Keying observation on the serialized page descriptor re-arms once
+// a loaded page advances the cursor/offset without looping on unchanged errors.
+function OverflowNavigationRailRow({
+  node,
+  info,
+  actions,
+}: Omit<NavigationRailRowProps, "projectRetryCallback"> & {
+  node: OverflowRailNode;
+}) {
+  const pagesArchive = node.pages.some((page) => page.tier === "archived" || page.catalog === "archived_projects");
+  const pageKey = pagesArchive ? JSON.stringify(node.pages) : "";
+  const activateRef = useRef(info.activate);
+  activateRef.current = info.activate;
+  const element = useRef<HTMLSpanElement>(null);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pageKey re-arms observation after a loaded page advances the descriptor so a row still in view loads the next page while one pushed off-screen waits for scroll
+  useEffect(() => {
+    if (!pagesArchive || typeof IntersectionObserver !== "function") return;
+    const target = element.current;
+    if (target === null) return;
+    let active = true;
+    let triggered = false;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!active) return;
+        const intersecting = entries.some((entry) => entry.isIntersecting);
+        if (intersecting && !triggered) {
+          triggered = true;
+          activateRef.current();
+        } else if (!intersecting) {
+          triggered = false;
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(target);
+    return () => {
+      active = false;
+      observer.disconnect();
+    };
+  }, [pagesArchive, pageKey]);
+
+  if (!pagesArchive) return <RailRow node={node} info={info} actions={actions} />;
+  return (
+    <span ref={element} className={CLASS.archiveOverflowObserver}>
+      <RailRow node={node} info={info} actions={actions} />
+    </span>
+  );
+}
 const NavigationRailRow = memo(function NavigationRailRow({
   node,
   info,
   actions,
   projectRetryCallback,
 }: NavigationRailRowProps) {
-  return node.kind === "project" ? (
-    <ProjectNavigationRailRow node={node} info={info} actions={actions} projectRetryCallback={projectRetryCallback} />
-  ) : (
-    <RailRow node={node} info={info} actions={actions} />
-  );
+  if (node.kind === "project") {
+    return (
+      <ProjectNavigationRailRow node={node} info={info} actions={actions} projectRetryCallback={projectRetryCallback} />
+    );
+  }
+  if (node.kind === "overflow") {
+    return <OverflowNavigationRailRow node={node} info={info} actions={actions} />;
+  }
+  return <RailRow node={node} info={info} actions={actions} />;
 });
 function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: string) => () => void) {
   return (node: RailNode, info: TreeRowInfo) => (
@@ -275,7 +387,8 @@ function projectsTierFor(
 // history navigation, so the tree keeps them tree-owned.
 function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   const isMobile = useIsMobile();
-  return <Tree {...props} releaseModifierKeys={!isMobile} />;
+  const flat = useContext(RailFlatContext);
+  return <Tree {...props} appearance={flat ? "flat" : undefined} releaseModifierKeys={!isMobile} />;
 }
 
 // The evener mark on the rail's accent tile: the same ToolIcon glyph the
@@ -288,123 +401,51 @@ function EvenerMark() {
   );
 }
 
-function RailSection({
-  title,
-  nodes,
-  open,
-  onToggleOpen,
-  onToggle,
-  onActivate,
-  actions,
-  isRowSelected,
-  projectRetryCallback,
-}: RailSectionProps) {
-  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
+function RailSection({ title, nodes, open, onToggleOpen, ...rest }: RailSectionProps) {
   if (nodes.length === 0) return null;
-  return (
-    <section className={CLASS.section}>
-      <DisclosureHeading level={3} label={title} eyebrow open={open} onOpenChange={onToggleOpen} />
-      {open && (
-        <RailTree
-          nodes={nodes}
-          onToggle={onToggle}
-          onActivate={onActivate}
-          renderRow={renderRow}
-          isSelected={isRowSelected}
-        />
-      )}
-    </section>
-  );
+  return <RailSectionShell label={title} eyebrow nodes={nodes} open={open} onToggleOpen={onToggleOpen} {...rest} />;
 }
 interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes"> {
   section: RailPinSection;
+  nodes?: RailNode[];
   onRename: () => void;
   onDelete: () => void;
   projectRetryCallback: (key: string) => () => void;
 }
-function PinnedRailSection({
-  section,
-  open,
-  onToggleOpen,
-  onRename,
-  onDelete,
-  onToggle,
-  onActivate,
-  actions,
-  isRowSelected,
-  projectRetryCallback,
-}: PinnedRailSectionProps) {
-  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
+function PinnedRailSection(props: PinnedRailSectionProps) {
+  const { section, nodes, open, onToggleOpen, onRename, onDelete, ...tree } = props;
   return (
-    <section className={CLASS.section}>
-      <DisclosureHeading
-        level={3}
-        label={section.name}
-        open={open}
-        onOpenChange={onToggleOpen}
-        action={
-          <Menu
-            variant="quiet"
-            icon="⋯"
-            label={`Actions for ${section.name}`}
-            items={[
-              { id: "rename", label: "Rename", onSelect: onRename },
-              { id: "delete", label: "Delete", onSelect: onDelete },
-            ]}
-          />
-        }
-      />
-      {open && (
-        <RailTree
-          nodes={[
-            ...sessionNodes(section.sessions ?? []),
-            ...pinSectionOverflowNode(
-              `pinsection:${section.id}`,
-              section.id,
-              section.remaining ?? 0,
-              section.offset ?? section.sessions.length,
-              section.limit ?? 50,
-            ),
+    <RailSectionShell
+      label={section.name}
+      action={
+        <Menu
+          variant="quiet"
+          icon={<MoreIcon />}
+          label={`Actions for ${section.name}`}
+          items={[
+            { id: "rename", label: "Rename", onSelect: onRename },
+            { id: "delete", label: "Delete", onSelect: onDelete },
           ]}
-          onToggle={onToggle}
-          onActivate={onActivate}
-          renderRow={renderRow}
-          isSelected={isRowSelected}
         />
-      )}
-    </section>
-  );
-}
-interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
-  count: number;
-  projectRetryCallback: (key: string) => () => void;
-}
-function ArchivedSection({
-  count,
-  open,
-  onToggleOpen,
-  nodes,
-  onToggle,
-  onActivate,
-  actions,
-  isRowSelected,
-  projectRetryCallback,
-}: ArchivedSectionProps) {
-  const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
-  const label = `Archived sessions (${count})`;
-  return (
-    <section className={CLASS.section}>
-      <DisclosureHeading level={3} label={label} eyebrow open={open} onOpenChange={onToggleOpen} />
-      {open && (
-        <RailTree
-          nodes={nodes}
-          onToggle={onToggle}
-          onActivate={onActivate}
-          renderRow={renderRow}
-          isSelected={isRowSelected}
-        />
-      )}
-    </section>
+      }
+      nodes={
+        open
+          ? (nodes ?? [
+              ...sessionNodes(section.sessions ?? []),
+              ...pinSectionOverflowNode(
+                `pinsection:${section.id}`,
+                section.id,
+                section.remaining ?? 0,
+                section.offset ?? section.sessions.length,
+                section.limit ?? 50,
+              ),
+            ])
+          : []
+      }
+      open={open}
+      onToggleOpen={onToggleOpen}
+      {...tree}
+    />
   );
 }
 
@@ -478,7 +519,6 @@ function NavigationRail({
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
   const expanded = useNavigationStore((state) => state.expanded);
-  const attention = useNavigationStore((state) => selectAttentionSummary(state));
   // The rail's organize-by setting. Host grouping turns on only when the
   // manifest has named a remote source, and the decision reads the DISPLAY
   // list (last-known): grouping is a layout fact, and the settled list
@@ -507,10 +547,26 @@ function NavigationRail({
   const dismissNavigationChrome = useDismissNavigationChrome();
   const isRowSelected = (node: RailNode): boolean | undefined =>
     node.kind === "session" ? node.session.ref === selectedSessionRef : undefined;
+  const isMobile = useIsMobile();
+  const [filterQuery, setFilterQuery] = useState("");
+  const [filterExpanded, setFilterExpanded] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const filterInputRef = useRef<HTMLInputElement>(null);
+  const updateFilterQuery = useCallback((next: string) => {
+    setFilterQuery(next);
+    setFilterExpanded(new Map());
+  }, []);
+  useEffect(() => {
+    if (!isMobile) updateFilterQuery("");
+  }, [isMobile, updateFilterQuery]);
+  const clearFilter = useCallback(() => {
+    updateFilterQuery("");
+    filterInputRef.current?.focus();
+  }, [updateFilterQuery]);
   const [deleteTarget, setDeleteTarget] = useState<RailProject | null>(null);
   const [pending, setPending] = useState<readonly PendingOp[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
+  const createButton = useIPhoneCreateButton(railRef);
   const overflowPagesInFlight = useRef(new Set<string>());
   const state = { ...navigationStore.getState(), resources: resourcesState, expanded };
   const archivedLists = useArchivedLists();
@@ -567,9 +623,16 @@ function NavigationRail({
       }
     }
   }, [resources, archivedLists]);
+  const seen = useSessionSeen();
+  // First run: adopt the newest update this browser has seen as the read
+  // epoch, so a fleet that predates it does not arrive all unread.
+  useEffect(() => {
+    if (resources.live.length > 0 || resources.needsYou.length > 0)
+      sessionReadProgress.adoptEpoch([...resources.live, ...resources.needsYou]);
+  }, [resources.live, resources.needsYou]);
   const currentLiveBands = useMemo(
-    () => railLiveBands(resources.live, resources.needsYou),
-    [resources.live, resources.needsYou],
+    () => railLiveBands(resources.live, resources.needsYou, seen.isSeen),
+    [resources.live, resources.needsYou, seen],
   );
   // A row that changes band is unmounted and mounted again under its new
   // fold, which would close a dialog opened from its menu and discard what
@@ -600,10 +663,31 @@ function NavigationRail({
     bodyRef,
   });
 
+  const filterCtx = useMemo(
+    () => (isMobile ? createRailFilterContext(filterQuery, displaySources, filterExpanded) : null),
+    [isMobile, filterQuery, displaySources, filterExpanded],
+  );
+  const filtering = filterCtx !== null;
+
+  function handleFilterKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (isIMECompositionKeydown(event.nativeEvent)) return;
+    if (event.key === "Escape" && filterQuery.length > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      updateFilterQuery("");
+    } else if (event.key === "ArrowDown") {
+      const target = bodyRef.current?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]');
+      if (!target) return;
+      event.preventDefault();
+      target.focus();
+    }
+  }
+
   function handleToggle(node: RailNode) {
     if (isPassiveRailNode(node)) return;
     const value = !node.expanded;
-    setRowExpanded(node.id, value);
+    if (filtering) setFilterExpanded((current) => new Map(current).set(node.id, value));
+    else setRowExpanded(node.id, value);
     if (!value && node.kind === "project") {
       // The in-flight guard is project-wide but one project renders several
       // nodes (host-first copies): clear it only when no other copy stays
@@ -611,7 +695,9 @@ function NavigationRail({
       // node.id is excluded because the memoized lookup still reads the
       // pre-toggle map, where this copy counts as expanded.
       const stillExpanded = projectLoadExpansionKeys(node.project, groupingMode).some(
-        (id) => id !== node.id && isExpanded(id, node.project.default_expanded ?? false),
+        (id) =>
+          id !== node.id &&
+          (filtering ? filterExpanded.get(id) === true : isExpanded(id, node.project.default_expanded ?? false)),
       );
       if (!stillExpanded) rootLoadsInFlight.current.delete(node.project.key);
     }
@@ -626,6 +712,10 @@ function NavigationRail({
     }
   }
   function toggleSection(key: string, defaultOpen: boolean) {
+    if (filtering) {
+      setFilterExpanded((current) => new Map(current).set(key, !(current.get(key) ?? true)));
+      return;
+    }
     setRowExpanded(key, !isExpanded(key, defaultOpen));
   }
   function openSession(session: RailSession) {
@@ -689,12 +779,18 @@ function NavigationRail({
       });
     }
   }
+  // One optimistic mutation's lifecycle: install the pending op, run the
+  // mutation, converge the rail on its result, then clear the op only once the
+  // rail can show the settled state. A failure that never converged keeps the
+  // op installed - the read model still holds the old state, so removing the
+  // guess would flip the row back with nothing else to show.
   const runAction = useCallback(
     async function runAction<T>(
       fn: () => Promise<T>,
       failure: string,
       optimistic?: PendingOp | ((result: T) => PendingOp),
       propagate = false,
+      onSuccess?: (result: T) => void,
     ) {
       let installed = typeof optimistic === "object" ? optimistic : undefined;
       let mutationCompleted = false;
@@ -709,6 +805,7 @@ function NavigationRail({
         }
         await convergeMutation(result);
         converged = true;
+        onSuccess?.(result);
       } catch (error) {
         toasts.push("error", `${failure}: ${errorText(error)}`);
         if (propagate) throw error;
@@ -809,26 +906,20 @@ function NavigationRail({
       },
       onDeleteSession: async (session) => {
         const optimistic: PendingOp = { kind: "hideSession", ref: session.ref };
-        let mutationCompleted = false;
-        let converged = false;
-        setPending((ops) => [...ops, optimistic]);
-        try {
-          const result = await deleteSession(client, session.ref);
-          mutationCompleted = true;
-          await convergeMutation(result);
-          converged = true;
-          closePanesForDeletedSessions(result.deleted);
-          if (result.skipped.length)
-            toasts.push(
-              "warning",
-              `Couldn't delete "${session.title}": ${result.skipped[0]?.reason ?? "still in use"}`,
-            );
-        } catch (error) {
-          toasts.push("error", `Couldn't delete "${session.title}": ${errorText(error)}`);
-          throw error;
-        } finally {
-          if (!mutationCompleted || converged) setPending((ops) => ops.filter((op) => op !== optimistic));
-        }
+        await runAction(
+          () => deleteSession(client, session.ref),
+          `Couldn't delete "${session.title}"`,
+          optimistic,
+          true,
+          (result) => {
+            closePanesForDeletedSessions(result.deleted);
+            if (result.skipped.length)
+              toasts.push(
+                "warning",
+                `Couldn't delete "${session.title}": ${result.skipped[0]?.reason ?? "still in use"}`,
+              );
+          },
+        );
       },
       onToggleFavoriteProject: (project) => {
         const value = !project.favorite;
@@ -893,31 +984,23 @@ function NavigationRail({
     if (!target) return;
     closeDeleteDialog();
     const optimistic: PendingOp = { kind: "hideProject", key: target.key };
-    let mutationCompleted = false;
-    let converged = false;
-    setPending((ops) => [...ops, optimistic]);
-    try {
-      const result = await deleteProject(target.key, target.working_dir ?? "", target.sources);
-      mutationCompleted = true;
-      await convergeMutation(result);
-      converged = true;
-      closePanesForDeletedSessions(result.deleted);
-      if (result.skipped.length)
-        toasts.push(
-          "warning",
-          `Deleted ${result.deleted.length} session(s); ${result.skipped.length} could not be removed`,
-        );
-    } catch (error) {
-      toasts.push("error", `Couldn't delete project: ${errorText(error)}`);
-    } finally {
-      if (!mutationCompleted || converged) setPending((ops) => ops.filter((op) => op !== optimistic));
-    }
+    await runAction(
+      () => deleteProject(target.key, target.working_dir ?? "", target.sources),
+      "Couldn't delete project",
+      optimistic,
+      false,
+      (result) => {
+        closePanesForDeletedSessions(result.deleted);
+        if (result.skipped.length)
+          toasts.push(
+            "warning",
+            `Deleted ${result.deleted.length} session(s); ${result.skipped.length} could not be removed`,
+          );
+      },
+    );
   }
 
-  const archivedOpen = isExpanded(ARCHIVED_SECTION_KEY, false);
-  const pinSections = [...resources.pinSections].sort(
-    (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id),
-  );
+  const pinSections = [...resources.pinSections].sort(comparePinSections);
   const unarchived = [...resources.projects, ...resources.testRuns];
   const archivedNodes: RailNode[] = [
     ...archivedProjectNodes(
@@ -1021,6 +1104,30 @@ function NavigationRail({
       resources.liveOverflow?.limit ?? 50,
     ),
   ];
+  const filterNodes = (nodes: RailNode[]) => (filterCtx ? filterRailNodes(nodes, filterCtx) : nodes);
+  const visibleLiveNodes = filterNodes(liveNodes);
+  const visiblePinSections = filterCtx
+    ? pinSections.flatMap((section) => {
+        const nodes = filterRailNodes(sessionNodes(section.sessions ?? []), filterCtx);
+        return nodes.length > 0 ? [{ section, nodes }] : [];
+      })
+    : pinSections.map((section) => ({ section, nodes: undefined as RailNode[] | undefined }));
+  const visibleProjectsNodes = filterNodes(projectsSectionNodes);
+  const visibleTestRunNodes = filterNodes(
+    withCatalogOverflow(
+      projectNodes(resources.testRuns, isExpanded, displaySources),
+      resources.catalogOverflow?.test_runs,
+      "catalog:test_runs",
+      "test_runs",
+    ),
+  );
+  const visibleArchivedNodes = filterNodes(archivedNodes);
+  const hasFilteredMatches =
+    !filtering ||
+    visiblePinSections.length > 0 ||
+    [visibleLiveNodes, visibleProjectsNodes, visibleTestRunNodes, visibleArchivedNodes].some((list) => list.length > 0);
+  const sectionOpen = (key: string, defaultOpen: boolean) =>
+    filtering ? (filterExpanded.get(key) ?? true) : isExpanded(key, defaultOpen);
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
     navigationMode === "unknown" || (navigationMode === "v3" && (!manifest || manifest.loading || resourceLoading));
@@ -1033,15 +1140,11 @@ function NavigationRail({
   // A row the bands are holding for its open dialog keeps the tree mounted
   // even when it was the last thing the sections supplied.
   const displayed = nonEmpty(resources) || LIVE_BAND_ORDER.some((band) => liveBands[band].length > 0);
-  // The chip counts only what a settled manifest says. A generation change
-  // keeps the previous manifest's data and marks it stale while the attention
-  // summary resets to null, so reading that data anyway kept the chip lit for a
-  // queue the store had already replaced — indefinitely, when the fresh read
-  // failed. The count is a claim that sessions are waiting, and an unsettled
-  // manifest has not said so yet.
-  const settled = !!manifest && !manifest.loading && !manifest.stale && !manifest.error;
-  const needsYou = attention?.needsYou ?? (settled ? (manifest.data?.attentionSummary.needsYou ?? 0) : 0);
-  const parentOwnsScroll = scrollOwner === "parent";
+  const headerAction = useRailHeaderAction();
+  // The split board supplies the header action and scrolls rows below it.
+  // Only the Sheet lends the entire rail to its parent scrollport.
+  const parentOwnsScroll = scrollOwner === "parent" && headerAction === null;
+  const showBrand = dismissNavigationChrome === null;
   return (
     <div
       className={parentOwnsScroll ? `${CLASS.rail} ${CLASS.parentScrollRail}` : CLASS.rail}
@@ -1053,59 +1156,62 @@ function NavigationRail({
       {width !== undefined && onWidthChange && (
         <RailResizeHandle width={width} onCommit={onWidthChange} railRef={railRef} />
       )}
-      <div className={CLASS.header}>
-        <div className={CLASS.identity}>
-          <div data-testid="rail-brand" className={CLASS.brand}>
-            <EvenerMark />
-            <span data-testid="rail-wordmark" className={CLASS.wordmark}>
-              evener
-            </span>
-            <div className={CLASS.brandActions}>
-              <IconButton
-                data-testid="rail-settings"
-                label="Settings"
-                icon={<GearIcon />}
-                variant="quiet"
-                size="md"
-                onClick={() => navigate("/settings")}
+      {(showBrand || isMobile) && (
+        <div className={CLASS.header} data-testid="rail-header">
+          {showBrand && (
+            <div data-testid="rail-brand" className={CLASS.brand}>
+              <EvenerMark />
+              {!iPhoneHost() && (
+                <span data-testid="rail-wordmark" className={CLASS.wordmark}>
+                  evener
+                </span>
+              )}
+              <div className={CLASS.brandActions}>
+                <RailNavigationActions />
+                {onHide ? (
+                  <IconButton
+                    data-rail-toggle=""
+                    label="Hide sidebar"
+                    icon={<SidebarIcon />}
+                    variant="quiet"
+                    size="md"
+                    onClick={onHide}
+                  />
+                ) : (
+                  headerAction
+                )}
+              </div>
+            </div>
+          )}
+          {isMobile && (
+            <div className={CLASS.filterRow}>
+              <Input
+                ref={filterInputRef}
+                type="text"
+                role="searchbox"
+                fill
+                value={filterQuery}
+                onChange={(event) => updateFilterQuery(event.target.value)}
+                onKeyDown={handleFilterKeyDown}
+                placeholder="Filter sessions…"
+                aria-label="Filter sessions"
+                autoComplete="off"
+                data-testid="rail-filter"
               />
-              <Tooltip label="Search sessions and commands">
+              {filterQuery.length > 0 && (
                 <IconButton
-                  data-testid="rail-search"
-                  data-search-trigger="true"
-                  label="Search"
-                  icon={<SearchIcon />}
+                  data-testid="rail-filter-clear"
+                  label="Clear filter"
+                  icon={<CloseIcon />}
                   variant="quiet"
-                  size="md"
-                />
-              </Tooltip>
-              {onHide && (
-                <IconButton
-                  data-rail-toggle=""
-                  label="Hide sidebar"
-                  icon={<SidebarIcon />}
-                  variant="quiet"
-                  size="md"
-                  onClick={onHide}
+                  size="sm"
+                  onClick={clearFilter}
                 />
               )}
             </div>
-          </div>
-          {needsYou > 0 && (
-            <span className={CLASS.needsYou} data-testid="rail-needs-you">
-              <Chip tone="attention" kind="needs-you">
-                <StatusDot state="needs-you" decorative />
-                {needsYou} needs you
-              </Chip>
-            </span>
           )}
         </div>
-        <div className={CLASS.newSession}>
-          <Button variant="secondary" onClick={() => navigate("/new")}>
-            + New session
-          </Button>
-        </div>
-      </div>
+      )}
       {/* The rail's clock (railNow.tsx): rows derive their relative stamps from
           it. It wraps the tree only - the header and the dialogs render no
           clock-derived value - so clock-derived chrome added later has to move
@@ -1125,14 +1231,29 @@ function NavigationRail({
             />
           )}
           {!loading && !displayed && !loadError && manifest && (
-            <EmptyState title="No sessions yet" hint="Start one with the button above." />
+            <EmptyState title="No sessions yet" hint="Start one with the button below." />
           )}
-          {displayed && (
+          {displayed && !hasFilteredMatches && (
+            <div role="status">
+              <EmptyState
+                size="compact"
+                reason="empty"
+                title="No matching sessions"
+                hint="Try another title, status, or project."
+                action={
+                  <Button variant="link" size="sm" onClick={clearFilter}>
+                    Clear filter
+                  </Button>
+                }
+              />
+            </div>
+          )}
+          {displayed && hasFilteredMatches && (
             <>
               <RailSection
                 title="Live"
-                nodes={liveNodes}
-                open={isExpanded(LIVE_SECTION_KEY, true)}
+                nodes={visibleLiveNodes}
+                open={sectionOpen(LIVE_SECTION_KEY, true)}
                 onToggleOpen={() => toggleSection(LIVE_SECTION_KEY, true)}
                 onToggle={handleToggle}
                 onActivate={handleActivate}
@@ -1140,11 +1261,12 @@ function NavigationRail({
                 isRowSelected={isRowSelected}
                 projectRetryCallback={projectRetryCallback}
               />
-              {pinSections.map((section) => (
+              {visiblePinSections.map(({ section, nodes }) => (
                 <PinnedRailSection
                   key={section.id}
                   section={section}
-                  open={isExpanded(pinSectionDisclosureID(section.id), true)}
+                  nodes={nodes}
+                  open={sectionOpen(pinSectionDisclosureID(section.id), true)}
                   onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
                   onRename={() => pinSectionDialogs.openRename(section)}
                   onDelete={() => void pinSectionDialogs.requestDelete(section)}
@@ -1155,15 +1277,15 @@ function NavigationRail({
                   projectRetryCallback={projectRetryCallback}
                 />
               ))}
-              {hostGrouping && (
+              {hostGrouping && !filtering && (
                 <div className={CLASS.organizeRow}>
                   <OrganizeByControl mode={grouping} onChange={setGrouping} />
                 </div>
               )}
               <RailSection
                 title={projectsTier.title}
-                nodes={projectsSectionNodes}
-                open={isExpanded(PROJECTS_SECTION_KEY, true)}
+                nodes={visibleProjectsNodes}
+                open={sectionOpen(PROJECTS_SECTION_KEY, true)}
                 onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
                 onToggle={handleToggle}
                 onActivate={handleActivate}
@@ -1173,13 +1295,8 @@ function NavigationRail({
               />
               <RailSection
                 title="Test runs"
-                nodes={withCatalogOverflow(
-                  projectNodes(resources.testRuns, isExpanded, displaySources),
-                  resources.catalogOverflow?.test_runs,
-                  "catalog:test_runs",
-                  "test_runs",
-                )}
-                open={isExpanded(TEST_RUNS_SECTION_KEY, true)}
+                nodes={visibleTestRunNodes}
+                open={sectionOpen(TEST_RUNS_SECTION_KEY, true)}
                 onToggleOpen={() => toggleSection(TEST_RUNS_SECTION_KEY, true)}
                 onToggle={handleToggle}
                 onActivate={handleActivate}
@@ -1187,12 +1304,13 @@ function NavigationRail({
                 isRowSelected={isRowSelected}
                 projectRetryCallback={projectRetryCallback}
               />
-              {archivedNodes.length > 0 && (
-                <ArchivedSection
-                  count={archivedCount(resources.archivedProjects, unarchived)}
-                  open={archivedOpen}
+              {visibleArchivedNodes.length > 0 && (
+                <RailSectionShell
+                  label={`Archived sessions (${filtering ? countSessionNodes(visibleArchivedNodes) : archivedCount(resources.archivedProjects, unarchived)})`}
+                  eyebrow
+                  open={sectionOpen(ARCHIVED_SECTION_KEY, false)}
                   onToggleOpen={() => toggleSection(ARCHIVED_SECTION_KEY, false)}
-                  nodes={archivedNodes}
+                  nodes={visibleArchivedNodes}
                   onToggle={handleToggle}
                   onActivate={handleActivate}
                   actions={rowActions}
@@ -1202,6 +1320,24 @@ function NavigationRail({
               )}
             </>
           )}
+          {/* The session list's floating New-session action. Last child of the
+              scroll body across desktop, tablet, and mobile so its sticky row
+              pins to whichever box owns scrolling while rows scroll beneath it
+              and clear it at maximum scroll. */}
+          <div className={CLASS.newSessionRow}>
+            <IconButton
+              variant="primary"
+              size="md"
+              data-testid="rail-new-session"
+              ref={createButton.ref}
+              aria-hidden={createButton.shown || undefined}
+              tabIndex={createButton.shown ? -1 : undefined}
+              style={createButton.shown ? { opacity: 0 } : undefined}
+              label="New session"
+              icon={<PlusIcon />}
+              onClick={() => navigate("/new")}
+            />
+          </div>
         </div>
       </RailTickProvider>
       {pinSectionDialogs.dialogs}
@@ -1220,5 +1356,12 @@ function NavigationRail({
 }
 
 export function Rail(props: RailProps = {}) {
-  return <NavigationRail {...props} />;
+  const layout = useWebLayout();
+  const style = usePrefsStore((state) => state.sessionListStyle[layout]);
+  const flat = (style === "auto" ? defaultSessionListStyle(layout) : style) === "flat";
+  return (
+    <RailFlatContext.Provider value={flat}>
+      <NavigationRail {...props} />
+    </RailFlatContext.Provider>
+  );
 }

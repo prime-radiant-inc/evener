@@ -373,10 +373,14 @@ func skillInvocationAllowed(route string, controls skill.InvocationControls, aut
 // cannot follow. Fresh activation and resumed delivery share it so the code and
 // message cannot drift between the two paths.
 func unavailableSkillActivationError(invocation skillInvocation, canonicalName string) error {
+	need := "tools"
+	if canonicalName == gardeningMemorySkillName {
+		need = "the memory save tools"
+	}
 	return &skillActivationError{
 		Invocation: invocation,
 		Code:       "policy_denied",
-		Err:        fmt.Errorf("skill %q needs the memory save tools this session does not have", canonicalName),
+		Err:        fmt.Errorf("skill %q needs %s this session does not have", canonicalName, need),
 	}
 }
 
@@ -413,6 +417,11 @@ func (s *Session) prepareSkillActivations(ctx context.Context, invocations []ski
 			}
 			descriptor = resolved
 		}
+		// A genuine activation that resolves the name reports the catalog choice
+		// before any source read or control check can refuse it: the collision is
+		// about which copy the catalog selected, not about whether this route may
+		// use it.
+		s.warnFirstSkillCollision(invocation, descriptor)
 		// A skill this session cannot follow is refused before its source is
 		// read, on every route, whatever the source controls say.
 		if !s.skillAvailableToSession(descriptor.CatalogName) {
@@ -447,6 +456,52 @@ func (s *Session) prepareSkillActivations(ctx context.Context, invocations []ski
 		batch.Items = append(batch.Items, preparedSkillActivation{Invocation: invocation, Loaded: loaded, Rendered: rendered})
 	}
 	return batch, nil
+}
+
+// warnFirstSkillCollision reports one warning for a catalog name the first time
+// a genuine model or user activation resolves it. The warning names the source
+// the catalog selected and every source it shadowed. Background routes (role
+// preload, compaction reload) and continuations pinned to a recorded source go
+// through the same preparation without re-reporting a catalog choice the user
+// did not just make.
+func (s *Session) warnFirstSkillCollision(invocation skillInvocation, descriptor skill.Descriptor) {
+	if invocation.Source != nil {
+		return
+	}
+	switch invocation.Route {
+	case "model_tool", "user_slash", "user_selection":
+	default:
+		return
+	}
+	name := descriptor.CatalogName
+	collisions := s.skillCollisions[name]
+	if len(collisions) == 0 {
+		return
+	}
+	winner := descriptor.Meta.SkillFile
+	var shadowed []string
+	seen := make(map[string]bool, len(collisions))
+	for _, diagnostic := range collisions {
+		if diagnostic.OtherSource == "" || diagnostic.OtherSource == winner || seen[diagnostic.OtherSource] {
+			continue
+		}
+		seen[diagnostic.OtherSource] = true
+		shadowed = append(shadowed, diagnostic.OtherSource)
+	}
+	if len(shadowed) == 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.skillCollisionWarned[name] {
+		s.mu.Unlock()
+		return
+	}
+	if s.skillCollisionWarned == nil {
+		s.skillCollisionWarned = make(map[string]bool)
+	}
+	s.skillCollisionWarned[name] = true
+	s.mu.Unlock()
+	s.emitDiagnosticWarning(skillCollisionWarning(name, winner, shadowed))
 }
 
 // mintSkillOperationID assigns the session's next lifecycle operation identity
@@ -561,7 +616,7 @@ func (s *Session) admitSkillActivationBatch(batch *skillActivationBatch) error {
 			Identity:         identity,
 			Status:           "pending",
 		}
-		carrier := schema.NewTurn(schema.TurnSystem, llm.User(item.Rendered.Content))
+		carrier := schema.NewTurn(schema.TurnSystem, llm.UserMachinery(item.Rendered.Content))
 		carrier.SkillState = &schema.SkillTurnState{
 			Outcomes:    []schema.SkillActivationOutcome{outcome},
 			Obligations: []schema.SkillDeliveryObligation{obligation},

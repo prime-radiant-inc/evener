@@ -71,9 +71,11 @@
 
 import type { AskBatch, AskResolution } from "@evener/appwire-client";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCardPrimaryAction } from "../../../../keybindings/cardPrimaryAction";
 import { isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import { Button, Card, useToasts, VisuallyHidden } from "../../../../widgets";
+import { Button, Card, StatusDot, ToolIcon, useToasts, VisuallyHidden } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useRovingRadio } from "../../../../widgets/internal/rovingRadio";
 import { requestComposerFocus } from "../composerFocus";
 import { AskQuestionCard } from "./AskQuestionCard";
 import {
@@ -87,7 +89,7 @@ import styles from "./askdock.module.css";
 
 const CLASS = {
   dock: requireClass(styles.dock, "askdock.module.css", "dock"),
-  anchor: requireClass(styles.anchor, "askdock.module.css", "anchor"),
+  attentionCue: requireClass(styles.attentionCue, "askdock.module.css", "attentionCue"),
   batch: requireClass(styles.batch, "askdock.module.css", "batch"),
   tabs: requireClass(styles.tabs, "askdock.module.css", "tabs"),
   tab: requireClass(styles.tab, "askdock.module.css", "tab"),
@@ -107,14 +109,14 @@ export interface AskDockProps {
 const NO_BATCHES: AskBatch[] = [];
 const NO_ANSWERS: Record<string, AskAnswerState> = {};
 const UNTOUCHED_ANSWER: AskAnswerState = { resolution: null, note: "" };
+const ASK_PROMPT = "Answer the agent’s questions.";
 
-// FIRST_CONTROL_SELECTOR names a batch's first answer control. Two callers:
-// the activation auto-focus effect (scoped to [data-ask-question] so a
-// multi-question batch's TAB BUTTONS - which sit before the card in DOM
-// order, kata 99yf - never win over the first actual answer control) and
-// focusBatchEntry's no-tab-strip fallback below.
-const FIRST_CONTROL_SELECTOR =
-  '[data-ask-question] input[type="radio"], [data-ask-question] input[type="checkbox"], [data-ask-question] input[type="text"], [data-ask-question] button';
+// Every answer control carries data-ask-control, so the first-control and
+// first-enabled-control queries derive from ONE selector. They stay scoped
+// to [data-ask-question] so a multi-question batch's TAB BUTTONS - which sit
+// before the card in DOM order (kata 99yf) - never win over an answer.
+const FIRST_CONTROL_SELECTOR = "[data-ask-question] [data-ask-control]";
+const ENABLED_CONTROL_SELECTOR = `${FIRST_CONTROL_SELECTOR}:not(:disabled)`;
 
 // focusBatchEntry moves focus into a batch at its orientation point: the
 // selected tab when the batch has a tab strip (the tab announces where in
@@ -127,9 +129,7 @@ const FIRST_CONTROL_SELECTOR =
 function focusBatchEntry(batchEl: HTMLElement): void {
   const entry =
     batchEl.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]') ??
-    batchEl.querySelector<HTMLElement>(
-      '[data-ask-question] input[type="radio"]:not(:disabled), [data-ask-question] input[type="checkbox"]:not(:disabled), [data-ask-question] input[type="text"]:not(:disabled), [data-ask-question] button:not(:disabled)',
-    ) ??
+    batchEl.querySelector<HTMLElement>(ENABLED_CONTROL_SELECTOR) ??
     (batchEl.tabIndex >= 0 || batchEl.hasAttribute("tabindex") ? batchEl : null);
   entry?.focus();
 }
@@ -223,66 +223,40 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
   }
 
   // Keyboard submit (UX fix): Mod+Enter anywhere in the batch invokes the
-  // SAME primary action the footer button does (send, or advance to the
-  // next question in the walk - the advanceTarget computation above), so a
-  // keyboard-only reader never has to reach for the mouse. A bare Enter
-  // does the same, but ONLY from the question's own free-text answer input
-  // (data-ask-free-input, AskQuestionCard.tsx's own doc comment on that
-  // attribute) - it is a plain <input>, not a <textarea>, so there is no
-  // newline for a bare Enter to otherwise insert, unlike the main
-  // composer's own Shift+Enter-newlines contract. Guarded against IME input
-  // both ways: an IME composition's own confirm keystroke also fires as
-  // "Enter", and must never be read as a submit - the shared
-  // isIMECompositionKeydown guard (keybindings/dispatcher.ts) pairs
-  // isComposing with the keyCode 229 fallback, which some browsers report an
-  // IME commit through WITHOUT isComposing (roborev PR #884 round 7).
-  function handleBatchKeyDown(event: React.KeyboardEvent) {
-    if (event.key !== "Enter" || isIMECompositionKeydown(event.nativeEvent)) return;
-    const isPrimaryChord = event.metaKey || event.ctrlKey;
-    const isFreeTextInputEnter =
-      !isPrimaryChord &&
-      !event.altKey &&
-      !event.shiftKey &&
-      (event.target as HTMLElement).dataset.askFreeInput === "true";
-    if (!isPrimaryChord && !isFreeTextInputEnter) return;
-    event.preventDefault();
-    // The dock CONSUMED this chord: keep it from the window-level dispatcher
-    // too. preventDefault alone only reaches bindings that honor
-    // defaultPrevented - a binding that deliberately ignores it (rail.toggle)
-    // remapped onto one of these chords would otherwise fire alongside the
-    // send (roborev PR #884 round 2).
-    event.stopPropagation();
-    handlePrimaryAction();
-  }
+  // SAME primary action the footer button does (send, or advance to the next
+  // question in the walk); a bare Enter does so only from the question's own
+  // free-text answer input (data-ask-free-input) because it is a plain
+  // <input>, not a <textarea>. The shared hook owns the IME guard and the
+  // stopPropagation that keeps a remapped window-level binding from firing
+  // alongside the send.
+  const handleBatchKeyDown = useCardPrimaryAction({
+    onPrimary: handlePrimaryAction,
+    enabled: !sendDisabled,
+    isBareEnterPrimary: (event) =>
+      !event.altKey && !event.shiftKey && (event.target as HTMLElement).dataset.askFreeInput === "true",
+  });
 
   // ARIA tabs with automatic activation (arrow keys both move and select -
-  // the panel is right there on the same surface, so there is no expensive
-  // switch to defer behind a second Enter press). Home/End jump the ends.
+  // the panel is right there on the same surface). Home/End jump the ends.
+  const moveTab = useRovingRadio({
+    items: batch.questions,
+    onMove: (index) => selectTab(index, true),
+    mode: "tablist",
+  });
   function handleTabsKeyDown(event: React.KeyboardEvent) {
     // Alt/Ctrl/Meta mean the key belongs elsewhere: Alt+ArrowUp/Down and
     // Alt+Home/End are the global transcript scroll/jump chords, and from a
-    // tab BUTTON the dispatcher's editable test does not shield them - the
-    // walk must not eat them (roborev PR #884 round 2). Shift stays LOCAL:
-    // no global binding claims Shift+Arrow/Home/End, and the walk moved tabs
-    // on those chords before the guard existed (round 5).
+    // tab BUTTON the dispatcher's editable test does not shield them. Shift
+    // stays LOCAL: no global binding claims Shift+Arrow/Home/End.
     if (event.altKey || event.ctrlKey || event.metaKey) return;
-    const current = activeIndex >= 0 ? activeIndex : 0;
-    let next = -1;
-    if (event.key === "ArrowRight") next = (current + 1) % total;
-    else if (event.key === "ArrowLeft") next = (current - 1 + total) % total;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = total - 1;
-    if (next === -1) return;
-    event.preventDefault();
-    selectTab(next, true);
+    moveTab(event, activeIndex >= 0 ? activeIndex : 0);
   }
 
-  function renderCard(question: AskBatch["questions"][number], index: number) {
+  function renderCard(question: AskBatch["questions"][number]) {
     return (
       <AskQuestionCard
         key={question.key}
         question={question}
-        number={index + 1}
         answer={answerFor(answers, question.key)}
         disabled={batch.sending}
         onResolutionChange={(resolution: AskResolution | null) =>
@@ -303,11 +277,17 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
     // bubbling up from the batch's own controls (radios, the free-text
     // input); the card is a container, not itself interactive.
     <Card
-      tone="attention"
+      variant="outlined"
       onKeyDown={handleBatchKeyDown}
       data-ask-batch={batch.id}
       tabIndex={batch.sending ? -1 : undefined}
     >
+      {/* Visual caption only: the external announcements component owns the
+          live-region transitions for this virtualized row. */}
+      <div className={CLASS.attentionCue}>
+        <StatusDot state="needs-you" decorative />
+        <span>Question</span>
+      </div>
       <div className={CLASS.batch}>
         {total > 1 && (
           // key="tabs"/key="panel" on both siblings: when a late ask_user call
@@ -348,7 +328,7 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
                   {index + 1}. {question.header}
                   {answered && (
                     <span className={CLASS.tabCheck} aria-hidden="true">
-                      ✓
+                      <ToolIcon kind="check" />
                     </span>
                   )}
                 </button>
@@ -367,10 +347,10 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
           on the screen at all. */}
         {total > 1 ? (
           <div key="panel" role="tabpanel" id={panelId} aria-labelledby={tabId(activeIndex)}>
-            {activeQuestion !== undefined && renderCard(activeQuestion, activeIndex)}
+            {activeQuestion !== undefined && renderCard(activeQuestion)}
           </div>
         ) : (
-          <div key="panel">{batch.questions.map((question, index) => renderCard(question, index))}</div>
+          <div key="panel">{batch.questions.map((question) => renderCard(question))}</div>
         )}
         <div className={CLASS.batchFooter}>
           {/* Visual count only - NOT a live region (virtualized remounts would
@@ -379,7 +359,7 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
             {answeredCount} of {total} {total === 1 ? "question" : "questions"} answered
           </span>
           {/* Accent primary, same pattern as sandboxEscalation's Allow button
-            (attention owns the container above, accent owns the one
+            (the small cue owns attention, accent owns the one
             action that resolves it) - Button's own primary variant is the
             token-contract-ungated --accent, so this needs no allowlisting.
             Label follows advanceTarget so the button never claims
@@ -452,7 +432,7 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
     // audible at all - a live region announces content mutations, and
     // unchanged text is no mutation.
     if (prev.ref !== sessionRef) {
-      if (pending) announce("Answer the agent’s questions.", "prompt");
+      if (pending) announce(ASK_PROMPT, "prompt");
       else announce("");
       return;
     }
@@ -461,7 +441,7 @@ export function AskDockAnnouncements({ ref: sessionRef }: AskDockProps) {
     // true throughout and the new set may carry an identical answered
     // count, so neither other signal moves.
     if (epoch !== prev.epoch && epoch > 0) {
-      announce("Answer the agent’s questions.", "prompt");
+      announce(ASK_PROMPT, "prompt");
       return;
     }
     if (pending && count !== prev.count) {
@@ -624,11 +604,10 @@ export function AskDock({ ref: sessionRef, paneId }: AskDockProps) {
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: catches Alt+PageUp/Down bubbling up from any control inside any batch - the div is a layout container, not itself interactive, same precedent as the batch-level Enter handler above
     <div className={CLASS.dock} ref={dockRef} data-ask-response-dock onKeyDown={handleDockKeyDown}>
-      {/* Visual caption only - NOT a live region. The row is virtualized, so
-          an aria-live region here would re-insert and re-announce on every
-          scroll-away/scroll-back remount; the one live region for this
-          surface is AskDockAnnouncements, mounted outside the virtual list. */}
-      <div className={CLASS.anchor}>Answer the agent’s questions.</div>
+      {/* The question prose renders through AgentMarkdown and inherits the
+          transcript render context (session model, pane id, shared entity
+          map) from TranscriptBody's provider, which wraps this trailing
+          row; entity references in the questions need that shared map. */}
       {batches.map((batch) => (
         <AskBatchCard key={batch.id} sessionRef={sessionRef} batch={batch} answers={answers} onSend={handleSend} />
       ))}

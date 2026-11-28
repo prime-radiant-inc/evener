@@ -29,7 +29,7 @@ func bundledTypedAgentsForTest(t *testing.T) map[string]plugin.Agent {
 
 // TestBundledAgentToolListsNameRegisteredTools keeps a shipped agent's tools:
 // frontmatter honest. That list is an ALLOWLIST: baseSubagentToolPolicy hands
-// it to Registry.RestrictKeepingResultTool, which DELETES every registered tool
+// it to Registry.Restrict, which DELETES every registered tool
 // not in the list and does nothing at all for a listed name it cannot find. A
 // name that is not a registered tool is therefore a silent no-op — the agent
 // ships without the capability its own frontmatter claims, no error is raised,

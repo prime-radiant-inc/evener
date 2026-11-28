@@ -306,9 +306,8 @@ func concurrentEditRefusal(stagedFingerprint, observedFingerprint string) error 
 
 // hostEntryField maps a hostreg validation refusal to the input it blames, in
 // the wire spelling the dialog's own inputs use (HostEntry's fields), so a
-// message lands on the control the operator can fix. A refusal that blames the
-// entry as a whole — a cycle, or a half-specified config_path/addr pair, which
-// blames two inputs at once — returns "" and the caller raises it form-level.
+// message lands on the control the operator can fix. Any refusal that blames
+// the entry as a whole returns "" and the caller raises it form-level.
 func hostEntryField(err error) string {
 	switch {
 	case errors.Is(err, hostreg.ErrMissingSSH):
@@ -330,7 +329,7 @@ func hostEntryField(err error) string {
 		// add form places.
 		return "name"
 	default:
-		// ErrHostCycle and anything else blame the entry as a whole.
+		// Anything else blames the entry as a whole.
 		return ""
 	}
 }
@@ -410,6 +409,22 @@ func (m *hubHostManager) dropHostDerivedState(name string) {
 	if m.cfg.forgetLastGoodThreads != nil {
 		m.cfg.forgetLastGoodThreads(name)
 	}
+	m.forgetAttachedHost(name)
+}
+
+// forgetAttachedHost clears name's startup-reconnect record when the persister
+// hook is wired.
+func (m *hubHostManager) forgetAttachedHost(name string) {
+	if m.cfg.forgetAttachedHost != nil {
+		m.cfg.forgetAttachedHost(name)
+	}
+}
+
+// retireHostRegistration clears retained attach state for the replaced
+// generation and drops the host's startup-reconnect record.
+func (m *hubHostManager) retireHostRegistration(name string, generation uint64) {
+	m.cfg.state.retire(name, generation)
+	m.forgetAttachedHost(name)
 }
 
 // unionHosts returns a and b's distinct entries by name, in a-then-b order.

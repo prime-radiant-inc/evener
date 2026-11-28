@@ -51,7 +51,7 @@ func fuzzScenarioBuildTree_RowsCarryTheirOwnSessionsLastMessage(t *testing.T) {
 		{PID: 1, SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting, RunningSubagentIDs: []string{"01CHILD"}, LastMessage: "Three layouts are ready."},
 		{PID: 2, SessionID: "01NOMETA", Status: appwire.ThreadStatusAwaiting, LastMessage: "A meta-less session's words."},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01LIVE")
 	if !inLive || !inProject || liveRow.LastMessage != "Three layouts are ready." || projectRow.LastMessage != "Three layouts are ready." {
 		t.Fatalf("Live row %q (%v), project row %q (%v): both must carry the daemon's message", liveRow.LastMessage, inLive, projectRow.LastMessage, inProject)

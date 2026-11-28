@@ -32,41 +32,18 @@
   margin-top: calc(-1 * var(--space-5));
 }
 
+/* Disclosure's summary owns the flex layout, hover and open washes, cursor,
+ * color, and focus ring; these rows add only the notes bar's geometry and the
+ * top-aligned preview that the card attaches to its header.
+ * No edge of its own: the card root draws the boundary, so a bottom border
+ * here would double the card's own bottom edge in the collapsed state. The
+ * header/body divider belongs to the expanded header only. */
 .summary {
-  display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  width: 100%;
-  /* No edge of its own: the card root draws the boundary, so a bottom border
-   * here would double the card's own bottom edge in the collapsed state. The
-   * header/body divider belongs to the expanded header only. */
-  border: none;
-  text-align: left;
   min-height: 28px;
   padding: var(--space-1) var(--space-3);
-  background: var(--surface-2);
-  font-family: var(--font-sans);
   font-size: var(--font-size-caption);
-  cursor: pointer;
   user-select: none;
-  box-sizing: border-box;
-  color: var(--ink-mid);
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-/* Both trigger states sit flush inside a clipping boundary (the body's
- * scrollport collapsed, the card's overflow:hidden expanded), where an
- * outside outline is cut off. The sanctioned recipe for rows flush inside a
- * clipping container (sessionchrome.module.css's .right button): the token
- * ring pulled inset. */
-.summary:focus-visible,
-.expandedHeader:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
-}
-
-.summary:hover {
-  background: var(--hover-1);
 }
 
 .summaryLeft {
@@ -86,16 +63,6 @@
   margin-top: 1px;
   color: var(--ink-low);
   flex-shrink: 0;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .chevron {
-    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
-  }
-}
-
-.chevron[data-open="true"] {
-  transform: rotate(90deg);
 }
 
 .sourceIcon {
@@ -126,39 +93,101 @@
   line-height: var(--line-height-ui);
 }
 
+.summaryLine {
+  color: var(--ink-low);
+  line-height: var(--line-height-ui);
+}
+
 .expandedHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  border: none;
-  border-bottom: 1px solid var(--edge);
-  text-align: left;
   height: 28px;
   min-height: 28px;
   padding: 0 var(--space-3);
-  background: var(--hover-1);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  cursor: pointer;
+  border-bottom: 1px solid var(--edge);
   user-select: none;
-  box-sizing: border-box;
-  color: var(--ink-mid);
-}
-
-.expandedHeader:hover {
-  background: var(--hover-2);
 }
 
 .expandedBody {
+  /* Cancel Disclosure's body seam (its own margin-top) so the expanded
+   * header's bottom border stays the single divider between the two rows. */
+  margin-top: calc(-1 * var(--space-1));
   padding: var(--space-3) var(--space-4);
   max-height: 40vh;
   overflow-y: auto;
   overflow-x: clip;
 }
 
-@media (max-width: 899px) {
+:global([data-notes-hidden]) .topNotesPanel:not([data-expanded="true"]) {
+  display: none;
+}
+
+/* The mobile shell can also occupy a wide viewport with a reserved system
+ * edge. Its collapsed summary takes exactly its own height in the reader. */
+:global([data-mobile]) {
+  .topNotesPanel:not([data-expanded="true"]) {
+    position: static;
+    z-index: auto;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+    background: transparent;
+  }
+
   :global([data-pane-scaffold^="session:"]) .topNotesPanel {
+    margin-top: 0;
+  }
+
+  :global([data-pane-scaffold^="session:"]) .topNotesPanel[data-expanded="true"] {
     margin-top: calc(-1 * var(--space-4));
+  }
+
+  .summary {
+    align-items: center;
+    padding: var(--space-1) var(--space-2);
+    /* The hover wash is Disclosure's; the rounded control shape keeps that
+     * wash a soft pill on the reading surface rather than a square slab. */
+    border-radius: var(--radius-control);
+  }
+
+  /* Collapsed on mobile, the chevron hides so the centered em-dash count line
+   * stays balanced; the expanded header keeps it. */
+  .summary .chevron {
+    display: none;
+  }
+
+  .summary .summaryLeft {
+    justify-content: center;
+  }
+
+  .summaryLine {
+    margin-inline: var(--notes-controls-inset, 0px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* A reversal brings back a tappable label over the conversation. Neither
+   * the viewport nor a line beneath the reader's finger moves to make room. */
+  :global([data-reading-overlay]) .topNotesPanel:not([data-expanded="true"]) {
+    position: absolute;
+    z-index: var(--z-raised);
+    top: var(--reading-title-height, 0px);
+    inset-inline: var(--notes-controls-inset, 0px);
+    width: fit-content;
+    max-width: calc(100% - 2 * var(--notes-controls-inset, 0px));
+    margin-inline: auto;
+    border-radius: var(--radius-pill);
+    background: var(--glass-fill, var(--surface-1));
+    box-shadow: var(--shadow-card);
+  }
+
+  :global([data-reading-overlay]) .summaryLine {
+    margin-inline: 0;
+  }
+}
+
+@media (max-width: 899px), (any-pointer: coarse) {
+  .summary {
+    min-height: var(--tap-min);
   }
 }

@@ -57,7 +57,13 @@ func TestCheckSnapshotUpToDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	want := CheckResult{Channel: "snapshot", LatestTag: "snapshot", LatestCommit: "be7002918fdc60dbdeab71d9dd17e00d3d006c56", UpdateAvailable: false}
+	want := CheckResult{
+		Channel:         "snapshot",
+		LatestTag:       "snapshot",
+		LatestCommit:    "be7002918fdc60dbdeab71d9dd17e00d3d006c56",
+		RepoURL:         fakeRepoURL(server),
+		UpdateAvailable: false,
+	}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -332,5 +338,52 @@ func TestHTTPGetSurfacesTransportFailures(t *testing.T) {
 	client := &http.Client{Transport: failingTransport{}}
 	if _, err := httpGet(t.Context(), client, "http://updates.example/version.txt", "text/plain"); err == nil {
 		t.Fatal("a body that cannot be read succeeded")
+	}
+}
+
+func TestCheckReportsPublishedTimestampAndRepoURL(t *testing.T) {
+	t.Parallel()
+	const snapshotLastModified = "Wed, 25 Nov 2026 02:10:14 GMT"
+	const wantSnapshotTime = "2026-11-25T02:10:14Z"
+	const releasePublished = "2026-11-22T18:40:00Z"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/prime-radiant-inc/evener/releases/download/snapshot/version.txt":
+			w.Header().Set("Last-Modified", snapshotLastModified)
+			fmt.Fprintln(w, "b61c6034f9a2")
+		case "/repos/prime-radiant-inc/evener/releases/latest":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"tag_name":     "v0.4.2",
+				"published_at": releasePublished,
+			})
+		case "/repos/prime-radiant-inc/evener/commits/v0.4.2":
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "9d4e21a8c01f"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	snap, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "a968aa7", RepoURL: fakeRepoURL(server)})
+	if err != nil {
+		t.Fatalf("snapshot Check: %v", err)
+	}
+	if snap.LatestPublishedAt != wantSnapshotTime {
+		t.Fatalf("snapshot LatestPublishedAt = %q, want %q", snap.LatestPublishedAt, wantSnapshotTime)
+	}
+	if snap.RepoURL != fakeRepoURL(server) {
+		t.Fatalf("snapshot RepoURL = %q, want %q", snap.RepoURL, fakeRepoURL(server))
+	}
+
+	rel, err := Check(t.Context(), CheckOptions{Channel: "release", CurrentSHA: "8e12c04", APIURL: server.URL})
+	if err != nil {
+		t.Fatalf("release Check: %v", err)
+	}
+	if rel.LatestPublishedAt != releasePublished {
+		t.Fatalf("release LatestPublishedAt = %q, want %q", rel.LatestPublishedAt, releasePublished)
+	}
+	if rel.RepoURL != DefaultRepoURL() {
+		t.Fatalf("release RepoURL = %q, want %q", rel.RepoURL, DefaultRepoURL())
 	}
 }

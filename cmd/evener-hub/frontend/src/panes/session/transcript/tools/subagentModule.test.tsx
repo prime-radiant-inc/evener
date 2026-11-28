@@ -145,14 +145,13 @@ test("unknown lifecycle is unavailable, never a human question, even collapsed",
   expect(screen.getByTestId("delegate-lifecycle").dataset.kind).toBe("unknown");
 });
 
-test("resolveRowKey: prefers delegateId, then jobId, then the fallback", () => {
-  expect(resolveRowKey("dlg_1", "job_1", "call_1")).toBe(resolveRowKey("dlg_1", "job_2", "call_2"));
-  expect(resolveRowKey(undefined, "job_1", "call_1")).not.toBe(resolveRowKey(undefined, "job_2", "call_1"));
-  expect(resolveRowKey(undefined, undefined, "call_1")).toBe("call:call_1");
-  expect(resolveRowKey(undefined, "job_1", "call_1")).not.toBe(resolveRowKey("dlg_1", "job_1", "call_1"));
+test("resolveRowKey: prefers delegateId, then the fallback", () => {
+  expect(resolveRowKey("dlg_1", "call_1")).toBe(resolveRowKey("dlg_1", "call_2"));
+  expect(resolveRowKey(undefined, "call_1")).toBe("call:call_1");
+  expect(resolveRowKey(undefined, "call_1")).not.toBe(resolveRowKey("dlg_1", "call_1"));
   // The per-kind prefix is what stops a delegate id colliding with an unrelated
-  // job id that happens to be the same raw string.
-  expect(resolveRowKey("x", undefined, "f")).not.toBe(resolveRowKey(undefined, "x", "f"));
+  // call id that happens to be the same raw string.
+  expect(resolveRowKey("x", "f")).not.toBe(resolveRowKey(undefined, "x"));
 });
 
 test("rowFromDelegateItem uses stable delegate_id and rejects activation-only job_id", () => {
@@ -732,6 +731,22 @@ test("an expanded card with no child activity yet says so instead of rendering a
   expect(within(quotes).queryAllByRole("listitem")).toHaveLength(0);
 });
 
+test("a closed card with no child activity yet says so through the shared empty state", () => {
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_closed_empty_quotes",
+    callId: "call_closed_empty_quotes",
+    argumentsJSON: JSON.stringify({ prompt: "just spawned" }),
+    output: JSON.stringify({ delegate_id: "job_ceq", status: "running", transcript_ref: "ref_closed_empty" }),
+  });
+  threadsStore.setState((state) => ({
+    watchedThreads: new Map(state.watchedThreads).set("ref_closed_empty", { turns: [] } as unknown as ThreadModel),
+  }));
+  render(<Body item={running} live={false} />);
+  const empty = screen.getByTestId("subagent-quotes-empty");
+  expect(within(empty).getByTestId("empty-state").dataset.reason).toBe("empty");
+});
+
 // mhcf: a child thread/read fixture with MANY intent-bearing steps.
 // childThreadRead above hard-codes exactly two real steps - useful for the
 // Mandate/Activity/Summary shape, but far too few to exercise a cap. `status`
@@ -1057,6 +1072,17 @@ test("the card's first line carries the lifecycle word together with turns, call
     (part) => part.dataset.segment ?? "status",
   );
   expect(order).toEqual(["status", "turns", "calls", "clock"]);
+});
+
+test("the stats line's separators are decoration", async () => {
+  const row = renderRunningStableDelegate("separators");
+  const stats = await within(row).findByTestId("subagent-stats");
+  await waitFor(() => expect(stats.dataset.calls).toBe("3"));
+  const separators = [...stats.querySelectorAll("[data-separator]")];
+  expect(separators.length).toBeGreaterThan(0);
+  for (const separator of separators) {
+    expect(separator.getAttribute("aria-hidden")).toBe("true");
+  }
 });
 
 test("the folded latest-tool-use quote renders below the merged status line", async () => {

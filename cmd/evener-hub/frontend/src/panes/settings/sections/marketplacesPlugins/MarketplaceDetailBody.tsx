@@ -1,8 +1,8 @@
 // MarketplaceDetailBody: the inline body a marketplace row expands under
-// itself - the catalog you install from, and the management actions that
-// used to live in MarketplaceSheet. The catalog comes first (opening a
-// marketplace is usually about its plugins); Refresh, Edit and Remove sit
-// at the bottom, and Edit reveals the name/source form in place. The
+// itself - the catalog you install from, and the management actions
+// (Refresh, Edit, Remove). The catalog comes first (opening a marketplace is
+// usually about its plugins); Refresh, Edit and Remove sit at the bottom, and
+// Edit reveals the name/source form in place. The
 // draft compares against its pinned baseline, not the live entry:
 // untouched forms follow canonical changes, edited forms retain their
 // input and require an explicit choice when the canonical source changes.
@@ -10,7 +10,6 @@
 import type { AppwireClientLike, MarketplaceEntry } from "@evener/appwire-client";
 import { errorText, marketplaceSourcePin } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy, marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
-import type { KeyboardEvent } from "react";
 import { useEffect, useId, useRef, useState } from "react";
 import { connectionStore } from "../../../../stores/connection";
 import type { MarketplaceCatalogEntry } from "../../../../stores/extensions";
@@ -19,28 +18,33 @@ import {
   ConfirmDialog,
   EmptyState,
   FormRow,
+  formatAbsoluteTime,
   InlineNotice,
   Input,
   Loader,
-  PathField,
   PropertyList,
-  RadioGroup,
   useFocusRehome,
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { CatalogPluginRow } from "../../../plugins/PluginRow";
-import { pluginDetailBodyId, samePluginTarget, usePluginRowFocusRehome } from "../../../plugins/pluginRowFocus";
-import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import {
-  MARKETPLACE_SOURCE_OPTIONS,
+  handleDetailEscape,
+  pluginDetailBodyId,
+  samePluginTarget,
+  usePluginRowFocusRehome,
+} from "../../../plugins/pluginRowFocus";
+import { marketplaceMatchesQuery, pluginMatchesQuery } from "../../../plugins/pluginSearch";
+import { writeFailureText } from "../../../plugins/writeFailure";
+import { useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
+import {
   type MarketplaceDraft,
-  type MarketplaceSourceKind,
   marketplaceDraftFor,
   marketplaceDraftIncomplete,
   marketplaceEditParams,
   marketplaceSourceTouched,
 } from "./marketplaceEdit";
+import { MarketplaceSourceFields } from "./marketplaceSourceFields";
 import styles from "./marketplacesPlugins.module.css";
 import { PluginDetailBody, type PluginDetailTarget } from "./PluginDetailBody";
 
@@ -51,11 +55,10 @@ const CLASS = {
   form: requireClass(styles.sheetForm, "marketplacesPlugins.module.css", "sheetForm"),
   actions: requireClass(styles.sheetActions, "marketplacesPlugins.module.css", "sheetActions"),
   divider: requireClass(styles.sheetDivider, "marketplacesPlugins.module.css", "sheetDivider"),
-  rowMeta: requireClass(styles.rowMeta, "marketplacesPlugins.module.css", "rowMeta"),
 };
 
 function lastUpdatedText(seconds: number): string {
-  return seconds > 0 ? new Date(seconds * 1000).toLocaleString() : "never";
+  return seconds > 0 ? formatAbsoluteTime(seconds * 1000, { format: "locale" }) : "never";
 }
 
 export interface MarketplaceDetailBodyProps {
@@ -98,7 +101,6 @@ export function MarketplaceDetailBody({
   onAppliedRemoval,
 }: MarketplaceDetailBodyProps) {
   const store = useExtensionsHostStore();
-  const directory = useHostDirectoryActions();
   const readError = useExtensionsHostState((s) => s.marketplacesError);
   const reading = useExtensionsHostState((s) => s.marketplacesLoading);
   const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
@@ -199,7 +201,7 @@ export function MarketplaceDetailBody({
       void store.getState().browseMarketplace(marketplace.name);
       toasts.push("success", `Refreshed ${marketplace.name}`);
     } catch (err) {
-      toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Refresh failed: ${errorText(err)}`);
+      toasts.push("error", writeFailureText(err, "Refresh failed"));
     }
   }
 
@@ -236,7 +238,7 @@ export function MarketplaceDetailBody({
           );
         }
       } else {
-        toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Remove marketplace failed: ${errorText(err)}`);
+        toasts.push("error", writeFailureText(err, "Remove marketplace failed"));
       }
     }
   }
@@ -245,30 +247,19 @@ export function MarketplaceDetailBody({
   // A query that names this marketplace shows its whole catalog; a query that
   // matched some of its plugins shows those rows.
   const trimmedQuery = query.trim();
-  const nameMatches = trimmedQuery !== "" && marketplace.name.toLowerCase().includes(trimmedQuery.toLowerCase());
+  const nameMatches = trimmedQuery !== "" && marketplaceMatchesQuery(marketplace.name, trimmedQuery);
   const rows =
-    trimmedQuery === "" || nameMatches
-      ? allRows
-      : allRows.filter(
-          (p) =>
-            p.name.toLowerCase().includes(trimmedQuery.toLowerCase()) ||
-            (p.description ?? "").toLowerCase().includes(trimmedQuery.toLowerCase()),
-        );
-
-  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-    // The removed Sheet closed on Escape itself. Inline, the body owns that:
-    // an unclaimed Escape collapses this marketplace and marks the key
-    // handled, so the Settings pane behind it sees defaultPrevented and stays
-    // open. A nested overlay (the remove confirm) claims its own Escape first.
-    if (event.key === "Escape" && !event.defaultPrevented) {
-      event.preventDefault();
-      onCollapse();
-    }
-  }
+    trimmedQuery === "" || nameMatches ? allRows : allRows.filter((p) => pluginMatchesQuery(p, trimmedQuery));
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: Escape is the keyboard dismissal path for the expanded marketplace, the same contract PluginDetail and OverlayPanel give their own surfaces
-    <div ref={bodyRoot} id={id} className={CLASS.body} data-kind="marketplace-detail" onKeyDown={handleKeyDown}>
+    <div
+      ref={bodyRoot}
+      id={id}
+      className={CLASS.body}
+      data-kind="marketplace-detail"
+      onKeyDown={(event) => handleDetailEscape(event, onCollapse)}
+    >
       <ul aria-label={`${marketplace.name} plugins`} className={CLASS.children}>
         {!catalog || catalog.status === "loading" ? (
           <li>
@@ -362,50 +353,7 @@ export function MarketplaceDetailBody({
               disabled={hubWriteBusy}
             />
           </FormRow>
-          <RadioGroup
-            label="Source"
-            value={draft.kind}
-            onChange={(value) => update({ kind: value as MarketplaceSourceKind })}
-            options={MARKETPLACE_SOURCE_OPTIONS}
-            disabled={hubWriteBusy}
-          />
-          {draft.kind === "url" && (
-            <FormRow label="Git URL" htmlFor={`${ids}-url`}>
-              <Input
-                id={`${ids}-url`}
-                value={draft.url}
-                onChange={(event) => update({ url: event.target.value })}
-                placeholder="https://github.com/owner/repo.git"
-                disabled={hubWriteBusy}
-              />
-            </FormRow>
-          )}
-          {draft.kind === "github" && (
-            <FormRow label="owner/repo" htmlFor={`${ids}-repo`}>
-              <Input
-                id={`${ids}-repo`}
-                value={draft.repo}
-                onChange={(event) => update({ repo: event.target.value })}
-                placeholder="owner/repo"
-                disabled={hubWriteBusy}
-              />
-            </FormRow>
-          )}
-          {draft.kind === "directory" && (
-            <FormRow label="Local path" htmlFor={`${ids}-path`}>
-              <PathField
-                ariaLabel="Local path"
-                directory={directory}
-                id={`${ids}-path`}
-                value={draft.path}
-                onChange={(value) => update({ path: value })}
-                kind="dir"
-                complete={(prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles)}
-                placeholder="/absolute/path"
-                disabled={hubWriteBusy}
-              />
-            </FormRow>
-          )}
+          <MarketplaceSourceFields value={draft} onChange={update} disabled={hubWriteBusy} />
           {sourceTouched && (
             <InlineNotice data-testid="marketplace-refetch-note">
               Saving re-fetches the marketplace. Installed plugins are unaffected.

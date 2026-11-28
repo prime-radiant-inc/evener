@@ -82,8 +82,10 @@ func TestHostRecordsSurviveEveryOtherStoreWrite(t *testing.T) {
 	if _, err := store.Transition(record.ID, StateComplete, terminalChange(true)); err != nil {
 		t.Fatalf("Transition: %v", err)
 	}
-	if err := store.MirrorBoundaries(map[string]Boundary{"h1": {Generation: 1, IncarnationID: "inc-h1", PresenceEpoch: 1}}, nil); err != nil {
-		t.Fatalf("MirrorBoundaries: %v", err)
+	if _, err := store.ReconcileMirror(MirrorView{
+		Marks: map[string]Boundary{"h1": {Generation: 1, IncarnationID: "inc-h1", PresenceEpoch: 1}},
+	}); err != nil {
+		t.Fatalf("ReconcileMirror: %v", err)
 	}
 	mustMint(t, store, mintDefaults("h1", store.now()))
 	requireFamily(t, store, family)
@@ -368,7 +370,7 @@ func TestHostRecordsSurviveAQuarantine(t *testing.T) {
 		t.Fatalf("forgetStore: %v", err)
 	}
 
-	reopened, err := Open(path)
+	reopened, err := Open(path, RetentionPolicy{})
 	if err != nil {
 		t.Fatalf("Open on a corrupt store carrying the family: %v, want the custody-first quarantine", err)
 	}
@@ -422,7 +424,7 @@ func TestHostRecordsQuarantineRefusesAnUnreadableFamily(t *testing.T) {
 			if err := forgetStore(path); err != nil {
 				t.Fatalf("forgetStore: %v", err)
 			}
-			_, err := Open(path)
+			_, err := Open(path, RetentionPolicy{})
 			if !errors.Is(err, ErrQuarantineIncomplete) || !errors.Is(err, ErrStoreCorrupt) {
 				t.Fatalf("Open = %v, want ErrQuarantineIncomplete beside ErrStoreCorrupt", err)
 			}

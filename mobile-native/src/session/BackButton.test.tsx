@@ -38,7 +38,7 @@ describe("Back with who else needs you (spec 13.2)", () => {
 			fontVariant: ["tabular-nums"],
 		});
 		const chevron = tree.root.findAll((node) => String(node.type) === "SymbolView")[0];
-		expect(chevron.props).toMatchObject({ name: "chevron.left", tintColor: palette.accentInk });
+		expect(chevron.props).toMatchObject({ name: "chevron.backward", tintColor: palette.accentInk });
 	});
 
 	it("says one other in the singular", () => {

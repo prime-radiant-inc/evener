@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { createRef, useState } from "react";
 import { expect, test, vi } from "vitest";
 import { Input } from "./index";
+import rawStyles from "./input.module.css";
 
 // A controlled-loop test harness: userEvent.type fires one keystroke at a
 // time, and a real controlled <input> only reflects each keystroke if the
@@ -111,23 +112,100 @@ test("aria-describedby passes through only when supplied", () => {
   expect(screen.getByRole("textbox").getAttribute("aria-describedby")).toBeNull();
 });
 
-test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "input.module.css"), "utf8");
-  expect(css).toContain(":focus-visible");
+// --- native pass-through: combobox semantics, data attributes, handlers ----
+test("passes combobox semantics and data attributes to the native input", () => {
+  render(
+    <Input
+      value=""
+      onChange={() => {}}
+      role="combobox"
+      aria-label="Command palette"
+      aria-expanded="true"
+      aria-controls="palette-results"
+      aria-activedescendant="palette-row-0"
+      aria-labelledby="palette-label"
+      data-testid="palette-input"
+    />,
+  );
+  const input = screen.getByRole("combobox", { name: "Command palette" });
+  expect(input.tagName).toBe("INPUT");
+  expect(input.getAttribute("aria-expanded")).toBe("true");
+  expect(input.getAttribute("aria-controls")).toBe("palette-results");
+  expect(input.getAttribute("aria-activedescendant")).toBe("palette-row-0");
+  expect(input.getAttribute("aria-labelledby")).toBe("palette-label");
+  expect(input.getAttribute("data-testid")).toBe("palette-input");
 });
 
-// Beautiful UI "sunken field" treatment: the field sinks into --field via
-// --shadow-inset-field, and its resting hairline (--edge) strengthens on
-// hover/focus-within - see docs/superpowers/specs/2026-08-13-webui-
-// beautiful-ui-retheme-design.md §6.
-test("declares the sunken-field background/shadow and an edge-strong hover/focus-within border", () => {
+test("forwards onKeyDown from the native input", () => {
+  const onKeyDown = vi.fn();
+  render(<Input value="" onChange={() => {}} onKeyDown={onKeyDown} />);
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "ArrowDown" });
+  expect(onKeyDown).toHaveBeenCalledTimes(1);
+  expect(onKeyDown.mock.calls[0]?.[0]).toMatchObject({ key: "ArrowDown" });
+});
+
+test("autoFocus focuses the native input on mount", () => {
+  render(<Input value="" onChange={() => {}} autoFocus />);
+  expect(document.activeElement).toBe(screen.getByRole("textbox"));
+});
+
+// --- ref + fill: opt-in imperative access and an opt-in width -------------
+test("forwards a ref to the underlying native input element", () => {
+  const ref = createRef<HTMLInputElement>();
+  render(<Input ref={ref} value="hi" onChange={() => {}} />);
+  expect(ref.current).toBe(screen.getByRole("textbox"));
+});
+
+test("fill adds its modifier class alongside the unchanged base class", () => {
+  const { rerender } = render(<Input value="" onChange={() => {}} fill />);
+  const classes = screen.getByRole("textbox").className.split(" ");
+  expect(classes).toContain(rawStyles.input);
+  expect(classes).toContain(rawStyles.fillWidth);
+
+  rerender(<Input value="" onChange={() => {}} />);
+  expect(screen.getByRole("textbox").className.split(" ")).not.toContain(rawStyles.fillWidth);
+});
+
+test("the fill modifier sets width 100% and min-width 0", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "input.module.css"), "utf8");
+  const rule = /\.fillWidth\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("width: 100%");
+  expect(rule).toContain("min-width: 0");
+});
+
+test("roomy adds its modifier class alongside the unchanged base class", () => {
+  const { rerender } = render(<Input value="" onChange={() => {}} padding="roomy" />);
+  const classes = screen.getByRole("textbox").className.split(" ");
+  expect(classes).toContain(rawStyles.input);
+  expect(classes).toContain(rawStyles.roomy);
+
+  rerender(<Input value="" onChange={() => {}} />);
+  expect(screen.getByRole("textbox").className.split(" ")).not.toContain(rawStyles.roomy);
+});
+
+test("the roomy modifier carries the palette's padding and control-floored body size", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "input.module.css"), "utf8");
+  const rule = /\.input\.roomy\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("padding: var(--space-3)");
+  expect(rule).toContain("font-size: max(var(--font-size-control), var(--font-size-body))");
+});
+
+// The sunken-field box, the edge-strong hover/focus-within border and the
+// focus ring live once in widgets/internal/control.module.css (pinned by
+// control.contract.test.ts); Input composes that recipe and keeps only its
+// own metrics.
+test("composes the shared control field for its box, hover edge, and focus ring", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "input.module.css"), "utf8");
   const rule = /\.input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(rule).toContain("background: var(--field)");
-  expect(rule).toContain("box-shadow: var(--shadow-inset-field)");
-  expect(css).toMatch(
-    /\.input:hover:not\(:disabled\),\s*\n\.input:focus-within\s*\{[^}]*border-color: var\(--edge-strong\)/,
-  );
+  expect(rule).toContain('composes: controlField from "../internal/control.module.css"');
+});
+
+test("composes the shared phone tap floor", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "input.module.css"), "utf8");
+  const rule = /\.input\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain('composes: tapFloor from "../../styles/tapfloor.module.css"');
 });

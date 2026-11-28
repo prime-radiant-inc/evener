@@ -31,8 +31,10 @@ func appendBulkHistory(tb testing.TB, w *transcript.Writer, minBytes int) {
 			schema.NewTurn(schema.TurnAssistant, llm.Assistant(assistant)),
 			schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "read_file", output, false)),
 		}
-		if _, err := w.AppendBatch(batch); err != nil {
-			tb.Fatalf("append bulk history: %v", err)
+		for _, turn := range batch {
+			if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+				tb.Fatalf("append bulk history: %v", err)
+			}
 		}
 		written += len(assistant) + len(output)
 	}
@@ -148,7 +150,7 @@ func attentionCommitTurn(toolCallID, deliveryID string) schema.Turn {
 func appendAttentionTurns(t *testing.T, w *transcript.Writer, turns ...schema.Turn) {
 	t.Helper()
 	for _, turn := range turns {
-		if err := w.AppendDurable(turn); err != nil {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorDurable}); err != nil {
 			t.Fatal(err)
 		}
 	}

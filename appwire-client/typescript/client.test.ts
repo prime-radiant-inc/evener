@@ -9,8 +9,10 @@ import {
   decodeInitializeResponse,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_TIMEOUT_MS,
+  HubBelowFloorError,
   RECONNECT_BASE_MS,
   RESUME_REQUEST_TIMEOUT_MS,
+  START_REQUEST_TIMEOUT_MS,
   type SubscriberErrorInfo,
   type SubscriberErrorPhase,
 } from "./client";
@@ -118,6 +120,23 @@ describe("decodeInitializeResponse", () => {
       decodeInitializeResponse({
         ...FAKE_INITIALIZE_RESULT,
         features: { ...FAKE_INITIALIZE_RESULT.features, keybindingsSettings: "yes" },
+      }),
+    ).toThrow("invalid initialize response");
+  });
+
+  test.each([true, false])("accepts the threadStartIdempotency capability %s", (threadStartIdempotency) => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: { ...FAKE_INITIALIZE_RESULT.features, threadStartIdempotency },
+    };
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
+  test("rejects a malformed threadStartIdempotency capability", () => {
+    expect(() =>
+      decodeInitializeResponse({
+        ...FAKE_INITIALIZE_RESULT,
+        features: { ...FAKE_INITIALIZE_RESULT.features, threadStartIdempotency: "yes" },
       }),
     ).toThrow("invalid initialize response");
   });
@@ -318,7 +337,14 @@ describe("AppwireClient", () => {
   // byte-identical every time -- so it has to be terminal, or an operator who
   // upgrades the hub under an open browser gets "Reconnecting" forever instead
   // of something they can act on.
-  test("connect gives up when the server rejects the handshake as invalid", async () => {
+  //
+  // A hub refuses a NEWER protocol than the one it serves without naming
+  // upgradeRequired (internal/appserver/server.go only names it for versions
+  // it knows are older than its own). This client's minimum is v7, so that
+  // refusal means the hub itself is below the supported floor: the client must
+  // report the hub needs upgrading on its host, not send the person back to
+  // reload a page that cannot help. It also never announces v6 to find out.
+  test("connect classifies a hub that refuses v7 as below the supported floor", async () => {
     const fake = new FakeSocket();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
 
@@ -329,15 +355,80 @@ describe("AppwireClient", () => {
       id: frame.id,
       error: {
         code: -32600,
-        message: `protocol version "evener-appwire-v2" is incompatible; want "${APPWIRE_PROTOCOL_VERSION}"`,
+        message: `protocol version "${APPWIRE_PROTOCOL_VERSION}" is incompatible; want "evener-appwire-v6"`,
       },
     });
 
-    await expect(connecting).rejects.toThrow(/incompatible/);
+    await expect(connecting).rejects.toBeInstanceOf(HubBelowFloorError);
     expect(client.state).toBe("closed");
-    // Same contract as the mismatched-version test above: the initial
-    // connect must classify the close, not just the reconnect path.
+    expect(client.terminalReason).toBe("hub-below-floor");
+    // One announcement, at the floor: never a v6 probe, never a second dial.
+    expect(sentFrames(fake).filter((sent) => sent.method === "initialize")).toHaveLength(1);
+    expect(frame.params).toMatchObject({ protocolVersion: "evener-appwire-v7" });
+  });
+
+  // The other direction: the hub names upgradeRequired when the CLIENT is
+  // behind it. Nothing about the hub needs fixing, so this stays the
+  // client-side protocol verdict (reload fetches a bundle the hub accepts).
+  test("connect keeps upgradeRequired as a client-side protocol verdict", async () => {
+    const fake = new FakeSocket();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+
+    const connecting = connectReady(fake, client);
+    await flushUntil(() => fake.sent.length > 0);
+    const frame = lastSentFrame(fake);
+    fake.receive({
+      id: frame.id,
+      error: {
+        code: -32600,
+        message: `protocol version "evener-appwire-v6" is older than this server's "${APPWIRE_PROTOCOL_VERSION}": upgrade required`,
+        data: { evenerErrorInfo: "upgradeRequired" },
+      },
+    });
+
+    const rejection = await connecting.catch((error: unknown) => error);
+    expect(rejection).not.toBeInstanceOf(HubBelowFloorError);
+    expect(client.state).toBe("closed");
     expect(client.terminalReason).toBe("protocol");
+  });
+
+  // A hub below the floor is not a transient outage: a ready client that
+  // reconnects into that refusal must close terminally rather than back off
+  // against a hub that cannot accept it until someone upgrades it.
+  test("a reconnect into an older hub closes without retrying", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = new AppwireClient({
+      url: "ws://x/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: sockets.length === 0 });
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    const connecting = client.connect();
+    sockets[0]?.open();
+    await connecting;
+    sockets[0]?.closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const reconnectSocket = sockets[1];
+    if (!reconnectSocket) throw new Error("expected reconnect socket");
+    reconnectSocket.open();
+    await flushUntil(() => reconnectSocket.sent.length > 0);
+    const reconnect = lastSentFrame(reconnectSocket);
+    reconnectSocket.receive({
+      id: reconnect.id,
+      error: {
+        code: -32600,
+        message: `protocol version "${APPWIRE_PROTOCOL_VERSION}" is incompatible; want "evener-appwire-v6"`,
+      },
+    });
+    await flushUntil(() => client.state === "closed");
+
+    expect(client.state).toBe("closed");
+    expect(client.terminalReason).toBe("hub-below-floor");
+    await vi.runAllTimersAsync();
+    expect(sockets).toHaveLength(2);
   });
 
   test("a malformed initial handshake is a terminal protocol failure", async () => {
@@ -1554,17 +1645,105 @@ test("a Resume the hub never answers is bounded by a large finite cap and can be
   expect(vi.getTimerCount()).toBe(0);
 });
 
-test("an explicit numeric Resume deadline remains authoritative", async () => {
+test.each([
+  ["thread/resume", { ref: "local:owner" }],
+  ["thread/start", { cwd: "/tmp/short-start" }],
+] as const)("an explicit numeric %s deadline remains authoritative", async (method, params) => {
   const socket = new FakeSocket({ autoInitialize: true });
   const client = new AppwireClient({ url: "ws://hub/rpc", socketFactory: () => socket });
   try {
     await connectReady(socket, client);
-    const resumed = client.request("thread/resume", { ref: "local:owner" }, { timeoutMs: 37 });
-    const rejected = expect(resumed).rejects.toBeInstanceOf(RequestTimeoutError);
+    const pending =
+      method === "thread/resume"
+        ? client.request(method, params, { timeoutMs: 37 })
+        : client.request(method, params, { timeoutMs: 37 });
+    const rejected = expect(pending).rejects.toBeInstanceOf(RequestTimeoutError);
     await vi.advanceTimersByTimeAsync(37);
     await rejected;
     expect(client.state).toBe("ready");
-    expect(sentFrames(socket).filter((frame) => frame.method === "thread/resume")).toHaveLength(1);
+    expect(sentFrames(socket).filter((frame) => frame.method === method)).toHaveLength(1);
+  } finally {
+    client.close();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("thread/start outlives the ordinary 30s RPC deadline and resolves when the hub replies", async () => {
+  const socket = new FakeSocket({ autoInitialize: true });
+  const client = new AppwireClient({ url: "ws://hub/rpc", socketFactory: () => socket });
+  let settled = false;
+  try {
+    await connectReady(socket, client);
+    const started = client.request("thread/start", { cwd: "/tmp/slow-start" });
+    const observed = started.then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    const startFrame = sentFrames(socket).find((frame) => frame.method === "thread/start");
+    expect(startFrame?.id).toBeTypeOf("number");
+    const ordinary = client.request("thread/list", {});
+    const ordinaryRejected = expect(ordinary).rejects.toBeInstanceOf(RequestTimeoutError);
+
+    // An ordinary request times out at 30s, while thread/start stays pending
+    // across heartbeats so a slow spawn finishes cleanly.
+    await vi.advanceTimersByTimeAsync(30_000);
+    await ordinaryRejected;
+    expect(settled).toBe(false);
+    expect(client.state).toBe("ready");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(settled).toBe(false);
+    expect(sentFrames(socket).some((frame) => frame.method === "ping")).toBe(true);
+
+    const payload = { thread: wireThread("local:slow-ok"), turn: { id: "turn_1", status: "inProgress" } };
+    socket.receive({ id: startFrame?.id as number, result: payload });
+    expect(await observed).toEqual(payload);
+    expect(client.state).toBe("ready");
+  } finally {
+    client.close();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("thread/start eventually times out after its extended budget without retiring the socket", async () => {
+  const socket = new FakeSocket({ autoInitialize: true });
+  const client = new AppwireClient({ url: "ws://hub/rpc", socketFactory: () => socket });
+  let settled = false;
+  try {
+    await connectReady(socket, client);
+    const started = client.request("thread/start", { cwd: "/tmp/wedged-start" });
+    const rejected = expect(started).rejects.toBeInstanceOf(RequestTimeoutError);
+    void started.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+
+    // Still pending right up to the extended start cap.
+    await vi.advanceTimersByTimeAsync(START_REQUEST_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    expect(client.state).toBe("ready");
+
+    // Settles at the cap without closing the primary WebSocket.
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(client.state).toBe("ready");
+    expect(socket.closeRequests).toEqual([]);
+
+    // The socket stays healthy for subsequent RPCs.
+    const followUp = client.request("thread/list", {});
+    const listFrame = sentFrames(socket).find((frame) => frame.method === "thread/list");
+    socket.receive({ id: listFrame?.id as number, result: { data: [] } });
+    expect(await followUp).toEqual({ data: [] });
   } finally {
     client.close();
   }

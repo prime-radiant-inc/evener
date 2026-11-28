@@ -136,6 +136,7 @@
   --font-weight-regular: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
+  --font-weight-bold: 700;
   --tracking-display: -0.02em; /* display weight (600) titles only */
   --tracking-eyebrow: 0.06em; /* THE uppercase eyebrow tracking: caption size, <=2 words, never sentences */
 
@@ -158,6 +159,7 @@
   --space-7: 40px;
   --space-8: 48px;
   --space-9: 64px;
+  --composer-action-inset: var(--space-2);
 
   /* The home-indicator band a docked surface must keep its content clear of.
    * Zero off a phone. It yields as the on-screen keyboard rises over that
@@ -184,21 +186,19 @@
   --speaker-gutter: 34px;
 
   /* The field seat: the rounded --field square a glyph sits on
-   * (styles/surface.module.css). A tile's seat is a full step; a transcript
-   * row's seat is the avatar column plus a half step of overhang each side,
-   * so it stays inside a one-line row's padding. */
+   * (styles/surface.module.css), one full step. */
   --field-seat-size: var(--space-6);
-  --field-seat-size-row: calc(var(--speaker-avatar-size) + var(--space-half));
 
   /* The radius ladder: soft, not bubbly. Each step is the corner of one kind
    * of object, so a nested box takes the step below its container. The page
    * frame (PaneScaffold), tables and side sheets stay square; the bottom
    * sheet rounds its top corners on the panel step. */
   --radius-chip: 6px; /* keycaps, small inline tags, tight inner corners */
-  --radius-control: 8px; /* buttons, fields, rows, tooltips */
-  --radius-pane: 12px; /* cards, code/diff blocks, menus, dialogs, popovers, toasts */
-  --radius-panel: 16px; /* the largest surfaces: prompt card, notes panel, the bottom sheet's top corners */
-  --radius-pill: 999px; /* pill geometry: chips, badges, tracks, counters */
+  --radius-control: 8px; /* fields, rows, tooltips */
+  --radius-pane: 12px; /* cards, code/diff blocks, menus, dialogs, popovers */
+  --radius-panel: 16px; /* prompt card, notes panel, the bottom sheet's top corners */
+  --radius-toast: 22px; /* a 44pt capsule that can grow into a multiline notice */
+  --radius-pill: 999px; /* action buttons, chips, badges, tracks, counters */
 
   /* --- focus ring ------------------------------------------------------
    * THE focus treatment: every :focus-visible (or :focus-within proxy) ring
@@ -479,5 +479,31 @@ body[data-font-size="xl"] { --font-scale: 1.25; }
      * 14.4px and the ui step to 11.7px, and iOS zooms into a 14.4px field
      * just the same (roborev on PR #947). */
     --font-size-control: max(16px, var(--font-size-body), var(--font-size-ui));
+  }
+}
+
+/* Apple touch controls inherit these through body, including portaled menus.
+ * The underlying palette stays live when the reader changes theme. */
+body[data-iphone-glass] {
+  --composer-action-inset: var(--space-1);
+  --glass-control-font: system-ui, sans-serif;
+  --glass-fill: var(--field);
+  --glass-panel: var(--surface-1);
+  --glass-edge: var(--edge);
+  --glass-filter: none;
+  --glass-sheen: none;
+  --glass-shadow: inset 0 0 0 1px var(--glass-edge), var(--shadow-raised);
+  --glass-radius: calc(var(--radius-panel) + var(--radius-control));
+}
+
+/* The native host or browser sets the material after checking transparency.
+ * Unsupported media features also make their negation unknown in WebKit. */
+@media (prefers-contrast: no-preference) {
+  body[data-iphone-glass="regular"] {
+    --glass-fill: color-mix(in oklab, var(--field) 72%, transparent);
+    --glass-panel: color-mix(in oklab, var(--surface-1) 89%, transparent);
+    --glass-edge: color-mix(in oklab, var(--ink-mid) 28%, transparent);
+    --glass-filter: blur(20px) saturate(145%);
+    --glass-sheen: linear-gradient(150deg, color-mix(in oklab, var(--ink-low) 15%, transparent), transparent 45%);
   }
 }

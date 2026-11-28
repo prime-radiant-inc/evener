@@ -10,6 +10,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstanceRow } from "./InstanceRow";
 import { supportsHostDeviceSignIn } from "./oauthFlow";
 import styles from "./ProviderInstanceGroups.module.css";
+import { formatProviderLabel } from "./providerLabel";
 
 const CLASS = {
   groups: requireClass(styles.groups, "ProviderInstanceGroups.module.css", "groups"),
@@ -63,10 +64,13 @@ export function ProviderInstanceGroups(props: ProviderInstanceGroupsProps) {
     <div className={CLASS.groups}>
       {groups.map((group) => (
         <div key={group.providerId} className={CLASS.group}>
-          {/* `name || id`, the same label the Add dialog gives a provider - one
-              pane must not name a provider two ways. */}
+          {/* Shared label with InstanceSheet's base selector so both surfaces
+              name each provider identically and keep distinct registry ids visible. */}
           <div className={CLASS.groupHeader}>
-            {availableProviders.find((provider) => provider.id === group.providerId)?.name || group.providerId}
+            {formatProviderLabel(
+              group.providerId,
+              availableProviders.find((provider) => provider.id === group.providerId)?.name,
+            )}
           </div>
           <ul className={CLASS.list}>
             {group.instances.map((instance) =>

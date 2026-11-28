@@ -5,10 +5,6 @@
   max-width: 40rem;
 }
 
-.root > button {
-  align-self: flex-start;
-}
-
 .root > h3,
 .root > p {
   margin: 0;
@@ -50,11 +46,6 @@
   font-size: var(--font-size-body);
   line-height: var(--line-height-body);
   font-variant-numeric: tabular-nums;
-}
-
-.progress {
-  width: 100%;
-  accent-color: var(--ink-hi);
 }
 
 .claim {

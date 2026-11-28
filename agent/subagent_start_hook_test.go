@@ -541,11 +541,7 @@ func TestSubagentStart_StoppedLaunchStillRearmsPendingAttention(t *testing.T) {
 		t.Fatal("timed out waiting for the hook-stopped run to finalize")
 	}
 	fixture.root.delegateController.mu.Lock()
-	finalState := fixture.root.delegateController.attention[owner]
-	armed := false
-	if finalState != nil {
-		_, armed = finalState.wakeIDs[attention]
-	}
+	_, armed := fixture.root.delegateController.delegateAttentionWakeIDsLocked(owner)[attention]
 	fixture.root.delegateController.mu.Unlock()
 	if armed {
 		return

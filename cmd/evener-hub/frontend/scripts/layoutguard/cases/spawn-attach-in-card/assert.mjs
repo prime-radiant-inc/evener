@@ -97,9 +97,49 @@ export default function assert(m) {
     failures.push(`the effort control is ${m.effort.height}px tall, below the 44px phone tap floor`);
   }
 
+  // The start composer's card keeps its plain framed look in regular glass
+  // mode: the iPhone glass material belongs to surfaces floating over moving
+  // content, so the card's background must be identical with the glass
+  // attribute on and off. A glass-scoped rule restoring the translucent
+  // panel or the diagonal sheen fails here in the browser rather than only in
+  // stylesheet text.
+  if (m.glassCard === null || m.plainCard === null) {
+    failures.push("the card's glass/plain skin readings are missing");
+  } else {
+    if (m.glassCard.backgroundImage !== "none") {
+      failures.push(
+        `the start card paints a background image in glass mode (${m.glassCard.backgroundImage}) - the glass material belongs to surfaces over moving content`,
+      );
+    }
+    if (m.glassCard.backgroundColor !== m.plainCard.backgroundColor) {
+      failures.push(
+        `the start card's glass-mode background (${m.glassCard.backgroundColor}) differs from its plain background (${m.plainCard.backgroundColor})`,
+      );
+    }
+    // The containment invariant holds in glass mode too: no glass-scoped rule
+    // may relax the base clip, which is what keeps the card's content inside
+    // its rounded box and moves the liquid-glass SDK to its documented
+    // sibling canvas placement.
+    for (const [mode, skin] of [
+      ["glass", m.glassCard],
+      ["plain", m.plainCard],
+    ]) {
+      if (skin.overflowX !== "clip" || skin.overflowY !== "clip") {
+        failures.push(
+          `the start card's overflow is not clip in ${mode} mode (x: ${skin.overflowX}, y: ${skin.overflowY}) - a scroll container or visible escape is not the card's containment`,
+        );
+      }
+      if (skin.overflowClipMargin !== m.plainCard.overflowClipMargin) {
+        failures.push(
+          `the start card's clip margin differs between ${mode} and plain mode (${skin.overflowClipMargin} vs ${m.plainCard.overflowClipMargin})`,
+        );
+      }
+    }
+  }
+
   if (failures.length > 0) return { pass: false, reason: failures.join("; ") };
   return {
     pass: true,
-    reason: `at ${m.viewport.width}x${m.viewport.height} the control row is ${m.controls.position}, and attach (${describe(m.attach)}), the model trigger (${describe(m.modelTrigger)}) and Start (${describe(m.start)}) all sit inside the card (${describe(m.card)}) below the field`,
+    reason: `at ${m.viewport.width}x${m.viewport.height} the control row is ${m.controls.position}, and attach (${describe(m.attach)}), the model trigger (${describe(m.modelTrigger)}) and Start (${describe(m.start)}) all sit inside the card (${describe(m.card)}) below the field (display: ${m.field.computedDisplay}, border: ${m.field.computedBorderStyle}, background: ${m.field.computedBackground})`,
   };
 }

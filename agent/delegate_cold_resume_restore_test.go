@@ -73,7 +73,7 @@ func TestColdResumeRestoresAReachabilityExcludedToolOnTheChild(t *testing.T) {
 			t.Fatal("cold restore admitted no subagent session")
 		}
 		// Both surfaces the child is judged on: its own registry, and the
-		// model-facing cache the RestrictKeepingResultTool call rebuilds.
+		// model-facing cache the Restrict call rebuilds.
 		if sub.sess.reg.Get(recovered) == nil {
 			t.Errorf("the child's registry lost %q, which it registers and the ceiling only excluded for reachability", recovered)
 		}

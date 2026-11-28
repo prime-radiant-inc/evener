@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="resolved.css">
 <style>
+  /* biome-ignore lint/complexity/noImportantStyles: layoutguard measures settled geometry, so transitions must not run */
   * { transition: none !important; animation: none !important; }
   .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 8px; }
   .fixture { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
@@ -19,11 +20,18 @@
      CSS modules directly, so this one declaration supplies only its production
      xs square override without introducing the raw `.xs` module-name collision. */
   .attachmentControl { width: 24px; height: 24px; padding: 0; flex: none; }
+  /* The resolver inlines composed @container rules ungated, so this probe is off-screen. */
+  .labelProbe { position: absolute; left: -10000px; top: 0; }
   /* SessionMenu's trigger is intentionally a stand-in: menu.module.css and
      modelswitch.module.css both own a local `.trigger` class that CSS Modules
      keeps distinct in production but a raw stylesheet harness cannot. Its size
      is fixed here; SessionChrome's real `.right` owns its placement and focus. */
   .sessionActionControl { appearance: none; width: 32px; height: 32px; padding: 0; border: 1px solid transparent; border-radius: var(--radius-control); background: transparent; color: inherit; font: var(--font-size-ui) var(--font-sans); }
+  /* PickerTrigger's slot box (widgets/internal/pickerTrigger.module.css),
+     spelled here because its `.wrapper` name collides with Button's. The
+     desktop branch renders it inside Popover's own wrapper, which the .model
+     span below stands in for. */
+  .pickerWrapper { display: inline-flex; min-width: 0; max-width: 100%; }
 </style>
 </head>
 <body>
@@ -39,16 +47,16 @@
         </div>
         <div class="controls" data-controls>
           <div class="leading" data-leading>
-            <span class="wrapper"><button class="button quiet xs attachmentControl focusAttach" data-attachment type="button" aria-label="Attach image">+</button></span>
+            <div class="attachSlot"><span class="wrapper"><button class="button quiet xs attachmentControl focusAttach" data-attachment type="button" aria-label="Attach image">+</button></span></div>
             <div class="chromeSlot" data-chrome-slot>
               <div class="inline inlineRung" data-session-chrome-inline>
                 <div class="body" data-status-body>
                   <div class="row" data-status>
                     <span class="identity">
-                      <span class="model"><button class="trigger focusModel" type="button"><span class="value" data-model-value></span><span class="chevron">⌄</span></button></span>
-                      <span class="effortTrigger focusEffort" data-effort><span class="separator">·</span><span class="effortValue">high</span><span class="effortChevron">⌄</span><select class="effortSelect" aria-label="Reasoning effort"><option>high</option></select></span>
+                      <span class="context" title="Context: 67000 of 100000 tokens used, 67 percent"><!-- biome-ignore lint/a11y/useSemanticElements: the themed gauge is the div Meter.tsx renders, not a native meter --><div class="ring" data-variant="ring" role="meter" aria-label="Context: 67000 of 100000 tokens used, 67 percent" aria-valuenow="67000" aria-valuemin="0" aria-valuemax="100000"><svg class="ringSvg" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><circle class="ringTrack" cx="8" cy="8" r="5.7" stroke-width="2.6"></circle><circle class="ringFill fillNeutral" cx="8" cy="8" r="5.7" stroke-width="2.6" stroke-dasharray="35.814" stroke-dashoffset="11.819" transform="rotate(-90 8 8)"></circle></svg></div></span>
+                      <span class="model"><span class="pickerWrapper"><button class="trigger quietTrigger triggerShrink focusModel" type="button"><span class="value" data-model-value></span><span class="chevron">⌄</span></button></span></span>
+                      <span class="control" data-effort-control data-effort><span class="separator" aria-hidden="true">·</span><span class="quietVariant quietTrigger focusEffort"><span class="quietReadout" aria-hidden="true">high</span><span class="quietCaret" aria-hidden="true">⌄</span><select class="quietSelect" aria-label="Reasoning effort"><option>high</option></select></span></span>
                     </span>
-                    <span class="visuallyHidden"><meter aria-label="Context: 67k of 100k tokens used, 67 percent" min="0" value="67000" max="100000"></meter></span><span class="context" aria-hidden="true"><span class="contextMeter" data-context-meter><span class="track"><span class="fill fillNeutral" style="--fill: 67%"></span></span></span><span class="contextPercent mono" data-context-percent>67%</span></span>
                     <span class="item mono workTime" data-work>12m 34s</span>
                     <span class="item mono queue"><span class="queueFull" data-queue-full>12 queued</span><span class="queueCompact" data-queue-compact>Q12</span></span>
                   </div>
@@ -59,6 +67,7 @@
           </div>
           <div class="actions" data-submit-actions><span class="wrapper"><button class="button primary xs focusSend" data-send type="button">Send</button></span></div>
         </div>
+        <span class="stopLabelStack labelProbe" aria-hidden="true"><span>Stop</span><span class="stopMeasure">Send</span></span>
       </div>
     </div>
   </section>
@@ -87,13 +96,17 @@ for (const spec of fixtures) {
   fixture.dataset.width = String(spec.width);
   if (spec.expectedStatusWidth !== undefined) fixture.dataset.expectedStatusWidth = String(spec.expectedStatusWidth);
   if (spec.shortModel) fixture.dataset.shortModel = "true";
+  // The folded ladder's per-fixture expectations: below the one-line threshold
+  // the effort readout drops before the model label yields, and at the
+  // narrowest cards the field's 14rem floor yields so the row still holds.
+  if (spec.effortHidden) fixture.dataset.effortHidden = "true";
+  if (spec.fieldYields) fixture.dataset.fieldYields = "true";
   if (spec.folded) {
     fixture.dataset.folded = "true";
     fixture.querySelector("[data-card]").dataset.folded = "true";
     fixture.querySelector("[data-leading]").dataset.folded = "true";
-    fixture.querySelector("[data-attachment]").remove();
   }
-  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px composer${spec.folded ? ", folded" : ""}${spec.expectedStatusWidth === undefined ? "" : ` / ${spec.expectedStatusWidth}px status container`}${spec.shortModel ? ", short model label" : ""}`;
+  fixture.querySelector(".fixtureLabel").textContent = `${spec.width}px composer${spec.folded ? ", folded" : ""}${spec.expectedStatusWidth === undefined ? "" : ` / ${spec.expectedStatusWidth}px status container`}${spec.shortModel ? ", short model label" : ""}${spec.effortHidden ? ", effort dropped" : ""}${spec.fieldYields ? ", field floor yielded" : ""}`;
   fixture.querySelector("[data-card]").style.width = `${spec.width}px`;
   fixture.querySelector("[data-prompt-root]").style.width = `${spec.width}px`;
   fixture.querySelector("[data-model-value]").textContent = spec.shortModel
@@ -127,13 +140,13 @@ function blockFraming(el) {
   );
 }
 
-function visibleBox(el) {
-  return getComputedStyle(el).display === "none"
+function visibleBox(el, display = getComputedStyle(el).display) {
+  return display === "none"
     ? { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0, clientWidth: 0, scrollWidth: 0 }
     : box(el);
 }
 
-window.measure = function () {
+window.measure = () => {
   // CDP forcePseudoState applies to the first matching node for each selector.
   // Focus is a style contract, not a per-width contract, so measure those four
   // deliberately forced controls once and attach the result to every fixture.
@@ -152,11 +165,9 @@ window.measure = function () {
     const status = fixture.querySelector("[data-status]");
     const attachment = fixture.querySelector("[data-attachment]");
     const effort = fixture.querySelector("[data-effort]");
-    const contextSemantic = fixture.querySelector(".visuallyHidden > meter");
-    const contextHidden = contextSemantic.parentElement;
+    const effortDisplay = getComputedStyle(effort).display;
+    const contextSemantic = fixture.querySelector('.context [role="meter"]');
     const contextVisual = fixture.querySelector(".context");
-    const contextMeter = fixture.querySelector("[data-context-meter]");
-    const contextPercent = fixture.querySelector("[data-context-percent]");
     const work = fixture.querySelector("[data-work]");
     const queue = fixture.querySelector(".queue");
     const queueFull = fixture.querySelector("[data-queue-full]");
@@ -164,11 +175,15 @@ window.measure = function () {
     const sessionActions = fixture.querySelector("[data-session-actions]");
     const submitActions = fixture.querySelector("[data-submit-actions]");
     const send = fixture.querySelector("[data-send]");
+    const stopLabel = fixture.querySelector(".stopLabelStack");
     const modelValue = fixture.querySelector(".value");
     const modelTrigger = fixture.querySelector(".trigger");
     return {
       width: Number(fixture.dataset.width),
       folded: fixture.dataset.folded === "true",
+      effortHidden: fixture.dataset.effortHidden === "true",
+      fieldYields: fixture.dataset.fieldYields === "true",
+      effortDisplay,
       expectedStatusWidth:
         fixture.dataset.expectedStatusWidth === undefined ? null : Number(fixture.dataset.expectedStatusWidth),
       shortModel: fixture.dataset.shortModel === "true",
@@ -183,17 +198,17 @@ window.measure = function () {
       attachment: attachment === null ? null : box(attachment),
       modelTrigger: box(modelTrigger),
       identity: box(fixture.querySelector(".identity")),
-      effort: visibleBox(effort),
+      effort: visibleBox(effort, effortDisplay),
       contextStructure: {
-        semanticTag: contextSemantic.tagName,
-        semanticChildren: contextSemantic.childElementCount,
-        semanticBox: box(contextHidden),
-        semanticNextIsVisual: contextHidden.nextElementSibling === contextVisual,
-        visualTag: contextVisual.tagName,
-        visualAriaHidden: contextVisual.getAttribute("aria-hidden"),
+        meterCount: fixture.querySelectorAll('[role="meter"]').length,
+        meterAriaLabel: contextSemantic === null ? null : contextSemantic.getAttribute("aria-label"),
+        meterAriaHidden:
+          contextSemantic === null ? null : contextSemantic.closest('[aria-hidden="true"]') !== null,
+        meterBox: contextSemantic === null ? null : box(contextSemantic),
+        meterDisplay: contextSemantic === null ? null : getComputedStyle(contextSemantic).display,
+        wrapperAriaHidden: contextVisual === null ? null : contextVisual.getAttribute("aria-hidden"),
+        wrapperDisplay: contextVisual === null ? null : getComputedStyle(contextVisual).display,
       },
-      contextMeterDisplay: getComputedStyle(contextMeter).display,
-      contextPercentDisplay: getComputedStyle(contextPercent).display,
       context: visibleBox(contextVisual),
       workDisplay: getComputedStyle(work).display,
       work: visibleBox(work),
@@ -203,6 +218,7 @@ window.measure = function () {
       sessionActions: box(sessionActions),
       submitActions: box(submitActions),
       send: box(send),
+      stopLabelDisplay: stopLabel === null ? "missing" : getComputedStyle(stopLabel).display,
       model: {
         triggerWidth: modelTrigger.getBoundingClientRect().width,
         clientWidth: modelValue.clientWidth,

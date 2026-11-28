@@ -332,19 +332,13 @@ func (c *RetirementController) Changed() {
 // retirement claim is preparing or retiring, like every other entry point; the
 // claim re-proves the deadline against the current timeout, so a stale tick
 // from the pre-Retarget timer can never claim before the new deadline.
-func (c *RetirementController) Retarget(timeout time.Duration) error {
-	_, _, err := c.RetargetStamped(timeout)
-	return err
-}
-
-// RetargetStamped is Retarget for a caller that may later have to undo its
-// write: it also reports the deadline the write replaced and mints a write
-// token — the count of timeout writes after this one. The undo, UndoRetarget,
-// needs both: the previous deadline as its restore target, and the token as
-// the exact identity of the write being undone, because two writers can
-// legitimately choose the same deadline and a value comparison cannot tell
-// them apart.
-func (c *RetirementController) RetargetStamped(timeout time.Duration) (previous time.Duration, token uint64, err error) {
+//
+// It also reports the deadline the write replaced and mints a write token —
+// the count of timeout writes after this one. UndoRetarget needs both: the
+// previous deadline as its restore target, and the token as the exact identity
+// of the write being undone, because two writers can legitimately choose the
+// same deadline and a value comparison cannot tell them apart.
+func (c *RetirementController) Retarget(timeout time.Duration) (previous time.Duration, token uint64, err error) {
 	if timeout < 0 {
 		return 0, 0, errRetirementTimeoutNegative
 	}
@@ -370,10 +364,9 @@ func (c *RetirementController) RetargetStamped(timeout time.Duration) (previous 
 // restore ran; a controller that is no longer resident never restores, since
 // the process is preparing or retiring and the deadline no longer matters.
 func (c *RetirementController) UndoRetarget(token uint64, to time.Duration) bool {
-	// Token 0 never names a stamped write on a fresh controller (whose write
-	// count starts at 0), and a negative restore target is refused exactly
-	// like a negative Retarget: neither may bypass the stamped write's
-	// validation.
+	// Token 0 never names a write on a fresh controller (whose write count
+	// starts at 0), and a negative restore target is refused exactly like a
+	// negative Retarget: neither may bypass Retarget's validation.
 	if token == 0 || to < 0 {
 		return false
 	}

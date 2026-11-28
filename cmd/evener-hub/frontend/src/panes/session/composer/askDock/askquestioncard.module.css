@@ -1,45 +1,36 @@
 .question {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  /* The question is the one card inside the attention envelope: the
-   * structural surface on the envelope's wash, a control corner inside the
-   * envelope's card corner, and no edge of its own - the wash around it is
-   * its boundary. */
-  border: none;
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
-}
-
-.head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-1);
-}
-
-.num {
-  font-weight: var(--font-weight-semibold);
-  color: var(--ink-mid);
+  composes: stack3 from "../../../../styles/surface.module.css";
 }
 
 .questionHeader {
   min-width: 0;
-  font-weight: var(--font-weight-semibold);
-  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-mid);
   overflow-wrap: anywhere;
 }
 
 .questionText {
   font-family: var(--font-prose);
-  font-size: var(--font-size-prose);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
   line-height: var(--line-height-prose);
+  letter-spacing: var(--tracking-display);
   color: var(--ink-hi);
+  overflow-wrap: anywhere;
+  /* The base is semibold, so the widget's own semibold strong would not
+   * stand out: markdown bold opts into the bold token through the
+   * widget's documented host seam. */
+  --markdown-strong-weight: var(--font-weight-bold);
 }
 
 .why {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  composes: helpCaption from "../../../../styles/help.module.css";
+  /* The why line renders through the Markdown widget, whose root sets its
+   * own color and family and would otherwise shadow this host's muted
+   * caption treatment with the reading-surface defaults. */
+  --markdown-ink: var(--ink-mid);
+  --markdown-font: var(--font-sans);
 }
 
 .optionGroup {
@@ -57,11 +48,10 @@
 }
 
 .optionRow {
-  /* A plain block whose contents are one continuous inline flow: radio,
-   * bold label, recommended marker, and detail all set like prose, so a
-   * wrapped detail continues at the row's left edge instead of forming an
-   * indented flex column (ask-dialog UX rework). */
-  display: block;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  column-gap: var(--space-2);
   /* Unbroken over-long words in model-provided labels/details still wrap
    * instead of escaping the card. */
   overflow-wrap: break-word;
@@ -80,8 +70,10 @@
 
 /* The chosen option carries a rounded wash and an accent hairline, so the
  * selection reads across the whole row and not only in the native control.
- * --accent: ordinary selection state (design-system.md §4). */
+ * The same recipe as the dock's selected tab (askdock.module.css
+ * .tab[aria-selected="true"]). */
 .optionRow:has(:checked) {
+  color: var(--ink-hi);
   border-color: var(--accent-edge);
   background: var(--accent-bg);
 }
@@ -90,40 +82,9 @@
   background: var(--hover-1);
 }
 
-/* The option's identity is inline bold text (ask-dialog UX rework, replacing
- * the old pill treatment): ordinary wrapping text, so a long valid label
- * takes as many lines as it needs instead of being crushed into a
- * fixed-height box. */
-.optionName {
-  font-weight: var(--font-weight-semibold);
-  color: var(--ink-hi);
-}
-
-/* The recommended marker is a quiet accent suffix directly after the bold
- * label, replacing the old far-right uppercase tag. --accent (not
- * --attention): a pre-selected default is ordinary selection state
- * ("--accent ... carries selection" - design-system.md §4), not a
- * needs-you signal, so this never touches the token-contract allowlist. */
-.optionRecommended {
-  font-size: var(--font-size-caption);
-  color: var(--accent-ink);
-}
-
-.optionDetail {
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}
-
-.alternativeRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  /* The same box an option row takes - its padding and its transparent
-   * edge - so this row's control lines up under theirs and keeps their
-   * rhythm. */
-  padding: var(--space-2);
-  border: 1px solid transparent;
-  border-radius: var(--radius-control);
+.optionControl {
+  margin: var(--space-half) 0 0;
+  accent-color: var(--accent);
 }
 
 .textInput {
@@ -149,6 +110,7 @@
 
 .noteRow {
   display: flex;
+  margin-top: var(--space-1);
 }
 
 /* Touch target floor (2026-07-30-mobile-session-layout-design.md, decision

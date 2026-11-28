@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // Regression: persistent capture failure + one armed invalidation must be
@@ -243,5 +245,54 @@ func TestNavigationRetryDeadlineWakeDoesNotStampTimeHint(t *testing.T) {
 	}
 	if len(hint.Projects) != 1 || hint.Projects[0] != "p1" {
 		t.Fatalf("pending hint Projects = %v, want the armed invalidation preserved as [p1]", hint.Projects)
+	}
+}
+
+// Regression: with no session-age boundary, the scheduler's zero-boundary
+// park must still consume a pending source invalidation. A Sources hint whose
+// rebuild has no fingerprint delta publishes nothing from an ordinary capture,
+// so without the forced refresh the manifest never reaches a stale client.
+func TestNavigationStartPublishesSourceHintWithoutBoundary(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.captured = make(chan struct{}, 4)
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.RetryAfter = 20 * time.Millisecond
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		service.Start(ctx)
+		close(done)
+	}()
+	defer func() {
+		cancel()
+		waitNavigationSignal(t, done, "scheduler shutdown")
+	}()
+	waitCapture(t, source.captured, "initial build")
+	deadline := time.Now().Add(5 * time.Second)
+	for service.Stats().CoreBuilds == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("initial build did not commit")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	service.Invalidate(navigationChangeHint{Sources: true})
+
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case <-service.PublicationReady():
+			publications := service.DrainPublications()
+			if len(publications) != 1 || !hasNavigationTarget(publications[0].Targets, appwire.NavigationTargetManifest, "") {
+				t.Fatalf("publications = %+v, want one manifest target", publications)
+			}
+			return
+		case <-timeout:
+			t.Fatal("scheduler did not publish the sources invalidation")
+		}
 	}
 }

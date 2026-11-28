@@ -80,7 +80,8 @@ func TestLoadRowPresetMustExistInOverlay(t *testing.T) {
 
 // Two individually-clean layers may still collide once merged: an overlay
 // "Authorization" and a config "authorization" fold into one record, and
-// the fold refuses the pair (header names are case-insensitive on the wire).
+// the fold isolates that broken provider (header names are case-insensitive on
+// the wire) without breaking unrelated providers.
 func TestLoadCredentialHeadersCollidingAcrossLayers(t *testing.T) {
 	t.Parallel()
 	overlay := overlayWith("[providers.gwtest]\ncredential_headers = { Authorization = \"$A\" }\n")
@@ -89,7 +90,7 @@ func TestLoadCredentialHeadersCollidingAcrossLayers(t *testing.T) {
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Load(
+	r, err := Load(
 		WithSnapshot(fixtureBytes(t)),
 		WithOverlay(overlay),
 		WithConfigPath(path),
@@ -98,8 +99,15 @@ func TestLoadCredentialHeadersCollidingAcrossLayers(t *testing.T) {
 		WithOffline(true),
 		WithoutCache(),
 	)
-	if err == nil {
-		t.Fatal("credential headers colliding case-insensitively across layers must fail Load")
+	if err != nil {
+		t.Fatalf("Load must isolate colliding user provider instead of failing the registry: %v", err)
+	}
+	var loadErr *ProviderLoadError
+	if !errors.As(r.ProviderError("gwtest"), &loadErr) || loadErr.Provider != "gwtest" {
+		t.Fatalf("ProviderError(gwtest) = %v, want *ProviderLoadError for colliding headers", r.ProviderError("gwtest"))
+	}
+	if r.HasInstance("gwtest") {
+		t.Fatal("gwtest with colliding credential headers must not resolve as an instance")
 	}
 }
 

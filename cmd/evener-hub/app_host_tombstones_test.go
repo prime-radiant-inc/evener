@@ -142,12 +142,12 @@ func TestHostTombstoneRemovalWritesOneAtomicRecord(t *testing.T) {
 	if !ok {
 		t.Fatal("fixture host is not live")
 	}
-	resp, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side"))
+	removed, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side"))
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if !resp.Host.Removed {
-		t.Fatalf("remove response row = %+v, want removed", resp.Host)
+	if !removed.Removed {
+		t.Fatalf("remove response row = %+v, want removed", removed)
 	}
 	tombstone := tombstoneFor(t, f.m, "side")
 	if tombstone.Entry.Name != "side" || tombstone.Entry.SSH != host.SSH {
@@ -508,7 +508,7 @@ func TestHostTombstoneReAddPurgesAndClearsCaches(t *testing.T) {
 	if !ok || newGeneration == oldGeneration {
 		t.Fatalf("re-add did not re-register the source under a fresh generation (old %d, new %d, ok %v)", oldGeneration, newGeneration, ok)
 	}
-	cache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+	cache.Store(hubcore.RemoteThreadSnapshot{
 		Threads: []appwire.Thread{{ID: "stale-t1", Source: "side", Evener: appwire.EvenerThread{Ref: "evener://side/stale-t1"}}},
 		Sources: map[string]hubcore.RemoteSourceSnapshot{
 			"side": {Threads: []appwire.Thread{{ID: "stale-t1", Source: "side"}}, Complete: true},
@@ -524,7 +524,7 @@ func TestHostTombstoneReAddPurgesAndClearsCaches(t *testing.T) {
 	// re-registered name supersedes the tombstone merge (spec §15: "a
 	// concurrent re-add wins by the generation rule ... its new-generation
 	// publication supersedes the tombstone merge for that name").
-	cache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+	cache.Store(hubcore.RemoteThreadSnapshot{
 		Threads: []appwire.Thread{{ID: "stale-tomb", Source: "side", Evener: appwire.EvenerThread{Ref: "evener://side/stale-tomb"}}},
 		Sources: map[string]hubcore.RemoteSourceSnapshot{
 			"side": {Threads: []appwire.Thread{{ID: "stale-tomb", Source: "side"}}, Tombstoned: true},

@@ -1,7 +1,8 @@
-import type { ThreadModel } from "@evener/appwire-client";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import * as appwireClient from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { notificationWireItem } from "@evener/appwire-client/testing/notificationWireFixtures";
 import {
   subagentOutcomesDelegatesResponse,
   subagentWireStep,
@@ -1331,10 +1332,12 @@ describe("trailingRow scroll coordination", () => {
           />,
         ),
       );
-      // One turn row + the synthetic trailing row: following-bottom view
-      // restores scroll to renderedRowCount - 1, so the count must cover the
-      // trailing row or a pending ask's dock restores one row short.
-      expect(capturedCounts.at(-1)).toBe(2);
+      // One turn row + the synthetic trailing row + the end inset row: the
+      // inset is always last (the floating-composer reserve on the phone), so
+      // following-bottom view's restore target of renderedRowCount - 1 lands
+      // on it - showing the last turn clear of the composer - and the count
+      // must cover both synthetic rows or the dock restores one row short.
+      expect(capturedCounts.at(-1)).toBe(3);
     } finally {
       spy.mockRestore();
     }
@@ -1633,7 +1636,9 @@ describe("retained transcript placement", () => {
       loadOlder: async () => {},
       viewId,
       keepViewRemount: keepRemount,
-      renderedRowCount: loaded && !empty ? 1 : 0,
+      // One turn row plus the end inset row (the floating-composer reserve),
+      // mirroring ConversationBody's count; an empty transcript keeps zero.
+      renderedRowCount: loaded && !empty ? 2 : 0,
     });
     return currentModel ? (
       <TranscriptBody
@@ -1726,8 +1731,11 @@ describe("retained transcript placement", () => {
     expect(port().scrollTop).toBe(0);
     rowHeight = 4368;
     await resized();
-    expect((port().firstElementChild as HTMLElement).style.height).toBe("4368px");
-    expect(port().scrollTop).toBe(1856);
+    // The end inset row is the list's second row here and measures at the
+    // seam's row height like any other row: the sizer carries both, and the
+    // normalized 0.5 restore lands at half of the two-row extent.
+    expect((port().firstElementChild as HTMLElement).style.height).toBe("8736px");
+    expect(port().scrollTop).toBe(4040);
   });
 
   test("an actually empty transcript consumes its normalized fallback without waiting for nonexistent rows", async () => {
@@ -1794,7 +1802,9 @@ describe("retained transcript placement", () => {
     rowHeight = 4368;
     await act(async () => rerender(<Harness session="local:new-session" />));
     await resized();
-    expect(port().scrollTop).toBe(3712);
+    // Two rows (one turn + the end inset) at the seam height: latest sits
+    // one port above the sizer end.
+    expect(port().scrollTop).toBe(8080);
   });
 
   test.each([false, true])(
@@ -1809,9 +1819,10 @@ describe("retained transcript placement", () => {
       const scrollingElement = port();
       await resized();
       expect(listRef.current?.isMeasurementReady?.()).toBe(true);
-      expect(scrollingElement.scrollHeight).toBe(4368);
+      // One turn row + the end inset row, both at the seam's row height.
+      expect(scrollingElement.scrollHeight).toBe(8736);
       expect(scrollingElement.clientHeight).toBe(656);
-      expect(scrollingElement.scrollTop).toBe(3712);
+      expect(scrollingElement.scrollTop).toBe(8080);
 
       readBack(3292);
       const captured = captureTranscriptViews();
@@ -1839,7 +1850,7 @@ describe("retained transcript placement", () => {
       await resized();
       expect(port()).toBe(scrollingElement);
       expect(listRef.current?.isMeasurementReady?.()).toBe(true);
-      expect(scrollingElement.scrollTop).toBe(3712);
+      expect(scrollingElement.scrollTop).toBe(8080);
       readBack(3000);
       expect(captureTranscriptViews().get("retained-pane")).toMatchObject({
         anchorOffset: -3000,
@@ -1850,7 +1861,7 @@ describe("retained transcript placement", () => {
       await resized();
       expect(port()).toBe(scrollingElement);
       expect(listRef.current?.isMeasurementReady?.()).toBe(true);
-      expect(scrollingElement.scrollTop).toBe(3712);
+      expect(scrollingElement.scrollTop).toBe(8080);
     },
   );
 
@@ -1859,7 +1870,8 @@ describe("retained transcript placement", () => {
     const { rerender } = await act(async () => render(<Harness key="outgoing" listRef={listRef} />));
     await resized();
     expect(listRef.current?.isMeasurementReady?.()).toBe(true);
-    expect(port().scrollTop).toBe(3712);
+    // One turn row + the end inset row at the seam height, latest at the end.
+    expect(port().scrollTop).toBe(8080);
     readBack(3292);
     await act(async () => prepareTranscriptViewRemount(captureTranscriptViews(), "desktop"));
     // Registration is the only incoming restore. Do not replay a transition's
@@ -1877,7 +1889,8 @@ describe("retained transcript placement", () => {
     await act(async () => rerender(<p>Closed pane</p>));
     await act(async () => rerender(<Harness />));
     await resized();
-    expect(port().scrollTop).toBe(3712);
+    // Latest again spans both rows (turn + end inset) at the seam height.
+    expect(port().scrollTop).toBe(8080);
   });
 
   test("two exact views keep distinct positions through same-view content reload", async () => {
@@ -1959,5 +1972,661 @@ describe("retained transcript placement", () => {
       ),
     );
     expect(port().scrollTop).toBe(3292);
+  });
+});
+
+describe("consecutive quiet_yield cross-turn grouping", () => {
+  function quietTurn(id: string, commentary?: string) {
+    return {
+      id,
+      status: "completed" as const,
+      items: [
+        {
+          id: `item_${id}`,
+          turnId: id,
+          type: "systemMessage" as const,
+          text: "quiet-sentinel",
+          eventKind: "quiet_yield",
+          ...(commentary === undefined ? {} : { raw: { commentary } }),
+        },
+      ],
+    };
+  }
+
+  test("folds 2+ consecutive quiet-only turns into one collapsed group while keeping a single quiet yield after actions standalone", () => {
+    const model: ThreadModel = {
+      ...fixture,
+      turns: [
+        {
+          id: "turn_actions",
+          status: "completed",
+          items: [
+            {
+              id: "tool_a",
+              turnId: "turn_actions",
+              type: "commandExecution",
+              text: "",
+              toolName: "shell",
+              description: "Check status",
+              status: "completed",
+            },
+            {
+              id: "qy_after_action",
+              turnId: "turn_actions",
+              type: "systemMessage",
+              text: "quiet-sentinel",
+              eventKind: "quiet_yield",
+            },
+          ],
+        },
+        quietTurn("turn_q1", "commentary-1"),
+        quietTurn("turn_q2"),
+      ],
+    };
+
+    const twoQuietProjection = appwireClient.projectThread(model, preset("intent"));
+    const twoQuietRows = transcriptRowsForProjection(twoQuietProjection);
+    expect(twoQuietRows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup"]);
+    const group = twoQuietRows[1];
+    if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+    expect(group.sourceTurnIds).toEqual(["turn_q1", "turn_q2"]);
+
+    const threeQuietModel: ThreadModel = {
+      ...model,
+      turns: [...model.turns, quietTurn("turn_q3", "commentary-3")],
+    };
+    const threeQuietRows = transcriptRowsForProjection(appwireClient.projectThread(threeQuietModel, preset("intent")));
+    expect(threeQuietRows[1]?.id).toBe(group.id);
+    expect(transcriptAnchorEntriesForRows(threeQuietRows).map((a) => a.id)).toContain("item_turn_q3");
+
+    render(
+      <TranscriptBody model={threeQuietModel} config={preset("full")} surface="preview" disclosureScope="qy:group" />,
+    );
+    const collapsed = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+    expect(collapsed.open).toBe(false);
+    expect(collapsed.querySelector("[data-count]")?.getAttribute("data-count")).toBe("3");
+    expect(screen.queryByText("commentary-1")).toBeNull();
+    const summary = collapsed.querySelector(":scope > summary");
+    if (!summary) throw new Error("missing summary");
+    fireEvent.click(summary);
+    expect(collapsed.open).toBe(true);
+  });
+
+  test.each(["chat", "intent", "tools", "activity", "full"] as const)(
+    "folds consecutive notification-bearing quiet wakes into one collapsed group at %s preset",
+    (level) => {
+      const notificationWake = (id: string, jobId: string) => ({
+        id,
+        status: "completed" as const,
+        items: [
+          {
+            id: `steer_${id}`,
+            turnId: id,
+            type: "steering" as const,
+            steeringKind: "notification",
+            text: `<job-notification job_id="${jobId}" event="progress" job_type="shell" status="running">\nworking\n</job-notification>`,
+            status: "completed" as const,
+          },
+          {
+            id: `qy_${id}`,
+            turnId: id,
+            type: "systemMessage" as const,
+            text: "quiet-sentinel",
+            eventKind: "quiet_yield",
+          },
+        ],
+      });
+      const model: ThreadModel = {
+        ...fixture,
+        turns: [
+          {
+            id: "turn_u",
+            status: "completed",
+            items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+          },
+          notificationWake("turn_w1", "job_1"),
+          notificationWake("turn_w2", "job_2"),
+        ],
+      };
+      const rows = transcriptRowsForProjection(appwireClient.projectThread(model, preset(level)));
+      expect(rows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup"]);
+      const group = rows[1];
+      if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+      expect(group.sourceTurnIds).toEqual(["turn_w1", "turn_w2"]);
+      expect(group.quietCount).toBe(2);
+
+      render(<TranscriptBody model={model} config={preset(level)} surface="preview" disclosureScope={`qy:${level}`} />);
+      const collapsed = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+      expect(collapsed.open).toBe(false);
+      expect(collapsed.querySelector("[data-count]")?.getAttribute("data-count")).toBe("2");
+      const summary = collapsed.querySelector(":scope > summary");
+      if (!summary) throw new Error("missing summary");
+      fireEvent.click(summary);
+      expect(collapsed.open).toBe(true);
+      if (level !== "chat") {
+        expect(
+          screen.getByTestId("quiet-yield-group-body").querySelectorAll('[data-testid="notification-card"]'),
+        ).toHaveLength(2);
+      }
+    },
+  );
+
+  test("keeps cross-turn intentGroup contiguous across an empty hidden-steering turn", () => {
+    const model: ThreadModel = {
+      ...fixture,
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          items: [
+            {
+              id: "tool_1",
+              turnId: "turn_1",
+              type: "commandExecution",
+              text: "",
+              toolName: "shell",
+              description: "Step 1",
+              status: "completed",
+            },
+          ],
+        },
+        {
+          id: "turn_hidden",
+          status: "completed",
+          items: [
+            {
+              id: "steer_hidden",
+              turnId: "turn_hidden",
+              type: "steering",
+              steeringKind: "notification",
+              text: "tick",
+              status: "completed",
+            },
+          ],
+        },
+        {
+          id: "turn_2",
+          status: "completed",
+          items: [
+            {
+              id: "tool_2",
+              turnId: "turn_2",
+              type: "commandExecution",
+              text: "",
+              toolName: "shell",
+              description: "Step 2",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    };
+    const rows = transcriptRowsForProjection(appwireClient.projectThread(model, preset("chat")));
+    expect(rows.some((row) => row.kind === "intentGroup")).toBe(true);
+  });
+
+  test.each(["intent", "tools", "activity", "full"] as const)(
+    "breaks quietYieldGroup on a failed job notification while grouping routine wakes at %s preset",
+    (level) => {
+      const completedNotif = notificationWireItem("job-shell-completed");
+      const failedNotif = notificationWireItem("job-shell-failed");
+      const watchNotif = notificationWireItem("job-watch-send");
+      const wake = (id: string, notif: typeof completedNotif, suffix: string) => ({
+        id,
+        status: "completed" as const,
+        items: [
+          {
+            id: `steer_${id}_${suffix}`,
+            turnId: id,
+            type: "steering" as const,
+            steeringKind: notif.steeringKind,
+            text: notif.text ?? "",
+            status: "completed" as const,
+          },
+          {
+            id: `qy_${id}_${suffix}`,
+            turnId: id,
+            type: "systemMessage" as const,
+            text: "quiet-sentinel",
+            eventKind: "quiet_yield",
+          },
+        ],
+      });
+      const model: ThreadModel = {
+        ...fixture,
+        turns: [
+          {
+            id: "turn_u",
+            status: "completed",
+            items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+          },
+          wake("turn_fail", failedNotif, "f"),
+          wake("turn_ok1", completedNotif, "1"),
+          wake("turn_ok2", watchNotif, "2"),
+        ],
+      };
+      const rows = transcriptRowsForProjection(appwireClient.projectThread(model, preset(level)));
+      expect(rows.map((row) => row.kind)).toEqual(["turn", "turn", "quietYieldGroup"]);
+      const group = rows[2];
+      if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+      expect(group.sourceTurnIds).toEqual(["turn_ok1", "turn_ok2"]);
+      expect(group.quietCount).toBe(2);
+    },
+  );
+
+  test.each(["intent", "tools", "activity", "full"] as const)(
+    "folds settled healthy reasoning into quietYieldGroup while breaking on live or failed reasoning at %s preset",
+    (level) => {
+      const settledWake = (id: string, thought: string) => ({
+        id,
+        status: "completed" as const,
+        items: [
+          {
+            id: `reason_${id}`,
+            turnId: id,
+            type: "reasoning" as const,
+            text: "",
+            reasoningSummaries: [[thought]],
+            status: "completed" as const,
+          },
+          {
+            id: `qy_${id}`,
+            turnId: id,
+            type: "systemMessage" as const,
+            text: "quiet-sentinel",
+            eventKind: "quiet_yield",
+          },
+        ],
+      });
+      const model: ThreadModel = {
+        ...fixture,
+        turns: [
+          {
+            id: "turn_u",
+            status: "completed",
+            items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+          },
+          settledWake("turn_r1", "thought-wake-1"),
+          settledWake("turn_r2", "thought-wake-2"),
+        ],
+      };
+      const rows = transcriptRowsForProjection(appwireClient.projectThread(model, preset(level)));
+      expect(rows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup"]);
+      const group = rows[1];
+      if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+      expect(group.sourceTurnIds).toEqual(["turn_r1", "turn_r2"]);
+      expect(group.quietCount).toBe(2);
+
+      render(
+        <TranscriptBody model={model} config={preset(level)} surface="preview" disclosureScope={`qyr:${level}`} />,
+      );
+      const collapsed = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+      expect(collapsed.open).toBe(false);
+      const summary = collapsed.querySelector(":scope > summary");
+      if (!summary) throw new Error("missing summary");
+      fireEvent.click(summary);
+      expect(collapsed.open).toBe(true);
+      const body = screen.getByTestId("quiet-yield-group-body");
+      expect(body.children.length).toBe(4);
+
+      // Failed or live reasoning breaks the quiet group.
+      const brokenModel: ThreadModel = {
+        ...fixture,
+        turns: [
+          ...model.turns,
+          {
+            id: "turn_failed_r",
+            status: "failed",
+            items: [
+              {
+                id: "reason_fail",
+                turnId: "turn_failed_r",
+                type: "reasoning",
+                text: "",
+                reasoningSummaries: [["failed-thought"]],
+                status: "failed",
+              },
+            ],
+          },
+          {
+            id: "turn_live_r",
+            status: "inProgress",
+            items: [
+              {
+                id: "qy_pre",
+                turnId: "turn_live_r",
+                type: "systemMessage",
+                text: "quiet-sentinel",
+                eventKind: "quiet_yield",
+              },
+              {
+                id: "reason_live",
+                turnId: "turn_live_r",
+                type: "reasoning",
+                text: "",
+                reasoningSummaries: [["live-thought"]],
+                status: "inProgress",
+              },
+            ],
+          },
+        ],
+      };
+      const brokenRows = transcriptRowsForProjection(appwireClient.projectThread(brokenModel, preset(level)));
+      expect(brokenRows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup", "turn", "turn"]);
+    },
+  );
+
+  test("keeps newly arriving quiet_yield commentary and quietYieldGroup collapsed when Full baseline is active", async () => {
+    const initialModel: ThreadModel = {
+      ...fixture,
+      turns: [
+        {
+          id: "turn_u",
+          status: "completed",
+          items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+        },
+      ],
+    };
+    const rendered = await act(async () =>
+      render(
+        <TranscriptBody
+          model={initialModel}
+          config={preset("full")}
+          surface="readOnly"
+          disclosureScope="qy:full-baseline"
+        />,
+      ),
+    );
+    const updatedModel: ThreadModel = {
+      ...fixture,
+      turns: [
+        ...initialModel.turns,
+        {
+          id: "turn_action_qy",
+          status: "completed",
+          items: [
+            {
+              id: "act_1",
+              turnId: "turn_action_qy",
+              type: "commandExecution",
+              text: "",
+              toolName: "shell",
+              status: "completed",
+            },
+            {
+              id: "qy_standalone",
+              turnId: "turn_action_qy",
+              type: "systemMessage",
+              text: "quiet-sentinel",
+              eventKind: "quiet_yield",
+              raw: { commentary: "standalone-full-commentary" },
+            },
+          ],
+        },
+        {
+          id: "turn_w1",
+          status: "completed",
+          items: [
+            {
+              id: "r_w1",
+              turnId: "turn_w1",
+              type: "reasoning",
+              text: "",
+              reasoningSummaries: [["thought-w1"]],
+              status: "completed",
+            },
+            { id: "qy_w1", turnId: "turn_w1", type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" },
+          ],
+        },
+        {
+          id: "turn_w2",
+          status: "completed",
+          items: [
+            {
+              id: "qy_w2",
+              turnId: "turn_w2",
+              type: "systemMessage",
+              text: "quiet-sentinel",
+              eventKind: "quiet_yield",
+              raw: { commentary: "grouped-full-commentary" },
+            },
+          ],
+        },
+      ],
+    };
+    await act(async () =>
+      rendered.rerender(
+        <TranscriptBody
+          model={updatedModel}
+          config={preset("full")}
+          surface="readOnly"
+          disclosureScope="qy:full-baseline"
+        />,
+      ),
+    );
+
+    const standalone = screen.getByTestId("system-notice-quiet-yield") as HTMLDetailsElement;
+    const group = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+    expect(standalone.open).toBe(false);
+    expect(group.open).toBe(false);
+
+    const groupSummary = group.querySelector(":scope > summary");
+    if (!groupSummary) throw new Error("missing group summary");
+    await act(async () => {
+      fireEvent.click(groupSummary);
+    });
+    expect(group.open).toBe(true);
+    for (const notice of screen.getAllByTestId("system-notice-quiet-yield")) {
+      expect((notice as HTMLDetailsElement).open).toBe(false);
+    }
+
+    await act(async () =>
+      rendered.rerender(
+        <TranscriptBody
+          model={updatedModel}
+          config={preset("full")}
+          surface="readOnly"
+          disclosureScope="qy:full-baseline"
+        />,
+      ),
+    );
+    expect((screen.getByTestId("quiet-yield-group") as HTMLDetailsElement).open).toBe(true);
+    for (const notice of screen.getAllByTestId("system-notice-quiet-yield")) {
+      expect((notice as HTMLDetailsElement).open).toBe(false);
+    }
+  });
+
+  test("folds quiet wakes carrying routine housekeeping (round_timings, exit-0 hooks) while breaking on boundaries", () => {
+    const config = makeTranscriptDisplayConfig(
+      { kind: "preset", level: "full" },
+      { roundTimings: true, hookExits: "all", systemEvents: true },
+    );
+    const wake = (id: string, extraItems: TurnModel["items"] = []): TurnModel => ({
+      id,
+      status: "completed",
+      items: [
+        ...extraItems,
+        { id: `qy_${id}`, turnId: id, type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" },
+      ],
+    });
+    const timingItem = (id: string, turnId: string): ItemModel => ({
+      id,
+      turnId,
+      type: "systemMessage",
+      eventKind: "round_timings",
+      text: "Round 1 timing",
+      status: "completed",
+    });
+    const hookOk = (id: string, turnId: string): ItemModel => ({
+      id,
+      turnId,
+      type: "systemMessage",
+      eventKind: "hook_completed",
+      text: "Hook ok",
+      exitCode: 0,
+      status: "completed",
+    });
+    const hookFail = (id: string, turnId: string): ItemModel => ({
+      id,
+      turnId,
+      type: "systemMessage",
+      eventKind: "hook_completed",
+      text: "Hook failed",
+      exitCode: 1,
+      status: "completed",
+    });
+    const model: ThreadModel = {
+      ...fixture,
+      turns: [
+        {
+          id: "turn_u",
+          status: "completed",
+          items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+        },
+        wake("turn_rt1", [timingItem("rt_1", "turn_rt1"), hookOk("hk_1", "turn_rt1")]),
+        {
+          id: "turn_rt2",
+          status: "completed",
+          items: [
+            {
+              id: "qy_turn_rt2",
+              turnId: "turn_rt2",
+              type: "systemMessage",
+              text: "quiet-sentinel",
+              eventKind: "quiet_yield",
+            },
+            timingItem("rt_2", "turn_rt2"),
+          ],
+        },
+        wake("turn_hk_fail", [hookFail("hk_fail", "turn_hk_fail")]),
+        wake("turn_warn", [{ id: "w_1", turnId: "turn_warn", type: "warning", text: "Heads up", status: "completed" }]),
+        wake("turn_tool", [
+          {
+            id: "t_1",
+            turnId: "turn_tool",
+            type: "commandExecution",
+            text: "",
+            toolName: "shell",
+            status: "completed",
+          },
+        ]),
+        wake("turn_msg", [{ id: "m_1", turnId: "turn_msg", type: "agentMessage", text: "Hello", status: "completed" }]),
+      ],
+    };
+    const rows = transcriptRowsForProjection(appwireClient.projectThread(model, config));
+    expect(rows.map((row) => row.kind)).toEqual(["turn", "quietYieldGroup", "turn", "turn", "turn", "turn"]);
+    const group = rows[1];
+    if (group?.kind !== "quietYieldGroup") throw new Error("expected quietYieldGroup");
+    expect(group.sourceTurnIds).toEqual(["turn_rt1", "turn_rt2"]);
+    expect(group.quietCount).toBe(2);
+  });
+
+  test("renders each wake's TurnSeparator inside an expanded quietYieldGroup even when followed by another turn, while keeping collapsed one-line", async () => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { tokenCounts: true });
+    const makeModel = (withFollowingTurn: boolean): ThreadModel => ({
+      ...fixture,
+      turns: [
+        {
+          id: "turn_u",
+          status: "completed",
+          usage: { inputTokens: 10, outputTokens: 2 },
+          items: [{ id: "u1", turnId: "turn_u", type: "userMessage", text: "watch", status: "completed" }],
+        },
+        {
+          id: "turn_w1",
+          status: "completed",
+          usage: { inputTokens: 111, outputTokens: 11 },
+          items: [
+            {
+              id: "r_w1",
+              turnId: "turn_w1",
+              type: "reasoning",
+              text: "",
+              reasoningSummaries: [["thought-w1"]],
+              status: "completed",
+            },
+            { id: "qy_w1", turnId: "turn_w1", type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" },
+          ],
+        },
+        {
+          id: "turn_w2",
+          status: "completed",
+          usage: { inputTokens: 222, outputTokens: 22 },
+          items: [
+            { id: "qy_w2", turnId: "turn_w2", type: "systemMessage", text: "quiet-sentinel", eventKind: "quiet_yield" },
+          ],
+        },
+        ...(withFollowingTurn
+          ? [
+              {
+                id: "turn_next",
+                status: "completed" as const,
+                usage: { inputTokens: 333, outputTokens: 33 },
+                items: [
+                  {
+                    id: "a_next",
+                    turnId: "turn_next",
+                    type: "agentMessage" as const,
+                    text: "next",
+                    status: "completed" as const,
+                  },
+                ],
+              },
+            ]
+          : []),
+      ],
+    });
+
+    const rendered = await act(async () =>
+      render(
+        <TranscriptBody
+          model={makeModel(true)}
+          config={config}
+          surface="readOnly"
+          disclosureScope="qy:turn-separators-followed"
+        />,
+      ),
+    );
+    const group = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+    const groupRow = group.closest('[data-testid="transcript-row"]');
+    expect(group.open).toBe(false);
+    expect(groupRow?.querySelectorAll('[data-testid="turn-separator"]')).toHaveLength(0);
+
+    const groupSummary = group.querySelector(":scope > summary");
+    if (!groupSummary) throw new Error("missing group summary");
+    await act(async () => {
+      fireEvent.click(groupSummary);
+    });
+    expect(group.open).toBe(true);
+    const groupBody = screen.getByTestId("quiet-yield-group-body");
+    const bodySeparators = [...groupBody.querySelectorAll('[data-testid="turn-separator"]')];
+    expect(bodySeparators).toHaveLength(2);
+    expect(bodySeparators[0]?.textContent).toContain("111");
+    expect(bodySeparators[1]?.textContent).toContain("222");
+    // Reasoning entry r_w1 is NOT the last entry of turn_w1, so separator sits with qy_w1 rather than r_w1.
+    expect(bodySeparators[0]?.closest("[data-view-anchor-id]")?.getAttribute("data-view-anchor-id")).toBe("qy_w1");
+    expect(bodySeparators[1]?.closest("[data-view-anchor-id]")?.getAttribute("data-view-anchor-id")).toBe("qy_w2");
+
+    // Trailing group: collapsed shows trailing separator once; expanded renders per-wake separators without duplicating the trailing one.
+    await act(async () => {
+      resetDisclosureStoreForTests();
+      rendered.rerender(
+        <TranscriptBody
+          model={makeModel(false)}
+          config={config}
+          surface="readOnly"
+          disclosureScope="qy:turn-separators-trailing"
+        />,
+      );
+    });
+    const trailingGroup = screen.getByTestId("quiet-yield-group") as HTMLDetailsElement;
+    const trailingRow = trailingGroup.closest('[data-testid="transcript-row"]');
+    expect(trailingRow?.querySelectorAll('[data-testid="turn-separator"]')).toHaveLength(1);
+    const trailingSummary = trailingGroup.querySelector(":scope > summary");
+    if (!trailingSummary) throw new Error("missing trailing summary");
+    await act(async () => {
+      fireEvent.click(trailingSummary);
+    });
+    expect(trailingRow?.querySelectorAll('[data-testid="turn-separator"]')).toHaveLength(2);
   });
 });

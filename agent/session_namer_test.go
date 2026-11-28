@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -151,6 +152,53 @@ func TestSessionNamerEnabledUsesActiveModelFallback(t *testing.T) {
 	if !sessionNamerEnabled(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")) {
 		t.Fatal("session namer should enable when cheap model is configured")
 	}
+}
+
+func TestSessionNamerUsableSkipsOneShot(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name            string
+		turnEndsProcess bool
+		nonInteractive  bool
+		want            bool
+	}{
+		{name: "persistent interactive", turnEndsProcess: false, nonInteractive: false, want: true},
+		{name: "persistent non-interactive", turnEndsProcess: false, nonInteractive: true, want: true},
+		{name: "one-shot non-interactive", turnEndsProcess: true, nonInteractive: true, want: false},
+		{name: "one-shot turn-ends-process", turnEndsProcess: true, nonInteractive: false, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sess := newSession(t, withConfig(SessionConfig{
+				StateDir:        t.TempDir(),
+				TurnEndsProcess: tc.turnEndsProcess,
+				NonInteractive:  tc.nonInteractive,
+			}))
+			if got := sess.sessionNamerUsable(); got != tc.want {
+				t.Fatalf("sessionNamerUsable() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("one-shot initial prompt does not launch namer", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int32
+		sess := newSession(t, withConfig(SessionConfig{
+			StateDir:        t.TempDir(),
+			TurnEndsProcess: true,
+			NonInteractive:  true,
+		}))
+		sess.nameSessionFromTextFunc = func(context.Context, string, string) error {
+			calls.Add(1)
+			return nil
+		}
+		sess.launchInitialPromptNamer(context.Background(), "fix the flaky test")
+		sess.sendersWG.Wait()
+		if got := calls.Load(); got != 0 {
+			t.Fatalf("one-shot launchInitialPromptNamer invoked namer %d times, want 0", got)
+		}
+	})
 }
 
 func TestNameSession_SanitizesGeneratedName(t *testing.T) {

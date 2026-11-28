@@ -295,8 +295,8 @@ func TestResolve_AliasOfDerivedEffortRow(t *testing.T) {
 	// A budget-shaped target's alias carries the budget shape through.
 	r2 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.flash-alias]\nalias_of = \"gemini-2.5-flash\"\n")
 	alias = mustResolve(t, r2, "google/flash-alias")
-	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
-		t.Fatalf("budget alias must inherit the shape: %+v", alias.Caps.ThinkingShape)
+	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
+		t.Fatalf("curated level alias must inherit the shape: %+v", alias.Caps.ThinkingShape)
 	}
 }
 
@@ -305,9 +305,9 @@ func TestResolve_AliasOfDerivedEffortRow(t *testing.T) {
 // inherited, exactly like a directly named row (roborev round 4).
 func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 	t.Parallel()
-	// The openai-chat target carries no shape of its own, but its catalog
-	// row records budget_tokens — the alias derives from those inherited
-	// controls, not from the target's (absent) verdict.
+	// The openai-chat target carries no shape of its own, and its catalog
+	// row records only budget_tokens — under Interactions (which has no budget
+	// shape), the alias derives no shape without effort evidence.
 	r := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.or-pro]\nalias_of = \"openrouter/google/gemini-2.5-pro\"\n")
 	target := mustResolve(t, r, "openrouter/google/gemini-2.5-pro")
 	if target.Protocol != ProtocolOpenAIChat || target.Caps.ThinkingShape != nil {
@@ -317,8 +317,8 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 	if alias.Protocol != ProtocolGoogle {
 		t.Fatalf("alias protocol = %s", alias.Protocol)
 	}
-	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
-		t.Fatalf("cross-protocol alias must derive budget from the inherited catalog controls: %+v", alias.Caps.ThinkingShape)
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("cross-protocol alias with budget_tokens only must derive no shape on Interactions: %+v", *alias.Caps.ThinkingShape)
 	}
 
 	// A cross-protocol target whose effort control its own derivation
@@ -334,23 +334,14 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 		t.Fatalf("alias of a derived-controls target must derive no shape, got %v", *alias.Caps.ThinkingShape)
 	}
 
-	// A same-protocol alias whose own config supplies budget controls
-	// re-derives from that evidence: the target's absent verdict is stale
-	// once the alias's layers change the controls (roborev round 10).
-	r7 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.cu-budget]\nalias_of = \"gemini-2.5-computer-use-preview-10-2025\"\nreasoning_controls = [\"budget_tokens\"]\n")
-	alias = mustResolve(t, r7, "google/cu-budget")
-	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
-		t.Fatalf("alias with its own budget controls must derive budget: %+v", alias.Caps.ThinkingShape)
-	}
-
 	// A same-protocol alias whose own config changes the controls also
 	// invalidates the target's inherited shape: overriding a level-shaped
-	// target with budget controls must produce budget, not level
+	// target with budget-only controls drops level (no budget shape on Interactions)
 	// (roborev round 11).
 	r8 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k"}, "[providers.google.models.level-to-budget]\nalias_of = \"gemini-3.1-pro-preview\"\nreasoning_controls = [\"budget_tokens\"]\n")
 	alias = mustResolve(t, r8, "google/level-to-budget")
-	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "budget" {
-		t.Fatalf("alias overriding level to budget must derive budget: %+v", alias.Caps.ThinkingShape)
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("alias overriding level to budget_tokens must derive no shape on Interactions: %+v", *alias.Caps.ThinkingShape)
 	}
 
 	// An explicit thinking_shape on the alias always wins over both
@@ -510,8 +501,27 @@ func TestResolve_TransportAssembly(t *testing.T) {
 	if res.Transport.BaseURL != "https://aiplatform.googleapis.com/v1/projects/p/locations/global" || res.Transport.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || res.Transport.StreamEndpoint != "/publishers/anthropic/models/{model}:streamRawPredict" || res.Transport.Body["anthropic_version"] != "vertex-2023-10-16" || res.Transport.ModelsEndpoint != EndpointUnsupported {
 		t.Fatalf("vertex anthropic: %+v", res.Transport)
 	}
-	if res := mustResolve(t, r, "google-vertex/gemini-2.5-flash"); res.Transport.Endpoint != "/publishers/google/models/{model}:generateContent" || res.Protocol != ProtocolGoogle {
+	if res := mustResolve(t, r, "google-vertex/gemini-3.8-flash"); res.Transport.Endpoint != "/interactions" || res.Transport.StreamEndpoint != "/interactions" || res.Transport.CountTokensEndpoint != EndpointUnsupported || res.Protocol != ProtocolGoogle {
 		t.Fatalf("vertex gemini: %+v", res.Transport)
+	}
+	// Test VertexSupportsGeminiModel filtering rules directly.
+	for id, want := range map[string]bool{
+		"gemini-1.5-pro-002":     false,
+		"gemini-2.5-flash":       false,
+		"gemini-2.5-pro":         false,
+		"gemini-2.5-flash-lite":  false,
+		"gemini-3-flash-preview": false,
+		"gemini-3-pro-preview":   false,
+		"gemini-3.1-pro-preview": true,
+		"gemini-3.1-flash-lite":  true,
+		"gemini-3.5-flash":       true,
+		"gemini-3.8-flash":       true,
+		"gemini-4-neon":          true,
+		"gemini-omni-1.2-flash":  true,
+	} {
+		if got := VertexSupportsGeminiModel(id); got != want {
+			t.Errorf("VertexSupportsGeminiModel(%q) = %v, want %v", id, got, want)
+		}
 	}
 	if res := mustResolve(t, r, "google-vertex/claude-opus-5"); res.Transport.Endpoint != "/publishers/anthropic/models/{model}:rawPredict" || res.Protocol != ProtocolAnthropic {
 		t.Fatalf("vertex claude under google-vertex: %+v", res.Transport)
@@ -546,11 +556,18 @@ func TestResolve_TransportAssembly(t *testing.T) {
 	if res := mustResolve(t, r, "google-vertex-anthropic/claude-sonnet-4-6"); hasWarning(res, "regional") {
 		t.Fatal("Sonnet 4.6 and earlier are fine on regional endpoints")
 	}
-	if res := mustResolve(t, r, "google-vertex/gemini-3.5-flash"); !hasWarning(res, "regional") || !hasWarning(res, "Gemini 3") {
+	if res := mustResolve(t, r, "google-vertex/gemini-3.5-flash"); !hasWarning(res, "regional") || !hasWarning(res, "/interactions") {
 		t.Fatalf("regional vertex gemini: %+v", res)
 	}
-	if res := mustResolve(t, r, "google-vertex/gemini-2.5-flash"); hasWarning(res, "regional") {
-		t.Fatal("Gemini 2.5 and earlier are fine on regional endpoints")
+	if res := mustResolve(t, r, "google-vertex/gemini-2.5-flash"); !hasWarning(res, "regional") {
+		t.Fatalf("every ProtocolGoogle model on a regional Vertex endpoint must warn (Interactions rejects single-region): %+v", res.Warnings)
+	}
+	// Pre-Gemini-3 and unsupported 3.0 preview rows on google-vertex are hidden in the catalog.
+	if res := mustResolve(t, r, "google-vertex/gemini-2.5-flash"); !res.Model.Hidden {
+		t.Fatal("google-vertex/gemini-2.5-flash must be hidden in catalog")
+	}
+	if res := mustResolve(t, r, "google-vertex/gemini-3-flash-preview"); !res.Model.Hidden {
+		t.Fatal("google-vertex/gemini-3-flash-preview must be hidden in catalog")
 	}
 	// The warning is about the location the URL was built with: an instance
 	// whose own base_url carries no location placeholder reaches no regional
@@ -757,6 +774,84 @@ surface = "anthropic"
 	}
 }
 
+// A live roster can route a row over Messages while its provider's own wire
+// is Chat. When an authored exact-model row puts that row back on Chat, the
+// provider's Chat field table must apply: the field flags are judged against
+// the protocol that finally wins, not the live route the replay passed
+// through.
+func TestResolve_ProviderFieldsFollowTheFinalChatProtocol(t *testing.T) {
+	t.Parallel()
+	cfg := `
+[providers.gw]
+base = "openai"
+protocol = "openai-chat"
+base_url = "https://gw.example.test/v1"
+[providers.gw.fields]
+stream_options = false
+[providers.gw.models."claude-live"]
+protocol = "openai-chat"
+`
+	r := fixtureLoad(t, nil, cfg)
+	r.ApplyLive("gw", []Model{{
+		ID:       "claude-live",
+		Protocol: ProtocolAnthropic,
+		Transport: &Transport{
+			Endpoint:            "/v1/messages",
+			StreamEndpoint:      "/v1/messages",
+			CountTokensEndpoint: EndpointUnsupported,
+		},
+	}})
+
+	res := mustResolve(t, r, "gw/claude-live")
+	if res.Protocol != ProtocolOpenAIChat || res.Transport.Endpoint != "/chat/completions" {
+		t.Fatalf("authored override must keep the Chat route: protocol=%q endpoint=%q", res.Protocol, res.Transport.Endpoint)
+	}
+	if v, ok := res.Caps.Fields["stream_options"]; !ok || v {
+		t.Fatalf("stream_options = %v (present %v), want the provider's false on the final Chat protocol", v, ok)
+	}
+	if res.Provenance["Fields.stream_options"] != LayerConfig+"/provider" {
+		t.Fatalf("stream_options provenance = %q, want the config provider layer", res.Provenance["Fields.stream_options"])
+	}
+}
+
+// Without an authored override the live row keeps its Messages route, and the
+// provider's Chat field table must not leak onto it: the row starts from the
+// Messages baseline instead.
+func TestResolve_LiveMessagesRouteKeepsMessagesFields(t *testing.T) {
+	t.Parallel()
+	cfg := `
+[providers.gw]
+base = "openai"
+protocol = "openai-chat"
+base_url = "https://gw.example.test/v1"
+[providers.gw.fields]
+stream_options = false
+[providers.gw.models."claude-live"]
+surface = "anthropic"
+`
+	r := fixtureLoad(t, nil, cfg)
+	r.ApplyLive("gw", []Model{{
+		ID:       "claude-live",
+		Protocol: ProtocolAnthropic,
+		Transport: &Transport{
+			Endpoint:            "/v1/messages",
+			StreamEndpoint:      "/v1/messages",
+			CountTokensEndpoint: EndpointUnsupported,
+		},
+	}})
+
+	res := mustResolve(t, r, "gw/claude-live")
+	if res.Protocol != ProtocolAnthropic || res.Transport.Endpoint != "/v1/messages" {
+		t.Fatalf("live route must stay Messages: protocol=%q endpoint=%q", res.Protocol, res.Transport.Endpoint)
+	}
+	if _, ok := res.Caps.Fields["stream_options"]; ok {
+		t.Fatal("the provider's Chat field table must not reach a Messages row")
+	}
+	if v, ok := res.Caps.Fields["stop_sequences"]; !ok || !v {
+		t.Fatalf("stop_sequences = %v (present %v), want the Messages baseline", v, ok)
+	}
+}
+
 // TestResolve_WebSearchEndpointGate pins WebSearch's first-party-endpoint
 // gate: a platform-side capability, not a wire-protocol fact (spec §4.2
 // says explicitly it is not one of the facts an alias imports), so it
@@ -848,7 +943,7 @@ base = "openai"
 endpoint = "/responses"
 
 [providers.vertexclaude]
-base = "google-vertex"
+base = "google-vertex-web"
 [providers.vertexclaude.vars]
 "GOOGLE_VERTEX_PROJECT" = "my-project"
 "GOOGLE_VERTEX_LOCATION" = "global"
@@ -874,7 +969,7 @@ host_rule = "ollama-host"
 "GOOGLE_VERTEX_LOCATION" = "global"
 
 [providers.vertexalias]
-base = "google-vertex"
+base = "google-vertex-web"
 [providers.vertexalias.vars]
 "GOOGLE_VERTEX_PROJECT" = "my-project"
 "GOOGLE_VERTEX_LOCATION" = "global"
@@ -882,7 +977,7 @@ base = "google-vertex"
 alias_of = "claude-opus-5"
 
 [providers.vertexaliasgw]
-base = "google-vertex"
+base = "google-vertex-web"
 base_url = "https://alias-gateway.example/v1"
 [providers.vertexaliasgw.models."my-claude-alias"]
 alias_of = "claude-opus-5"
@@ -908,7 +1003,11 @@ base = "google-vertex-anthropic"
 "GOOGLE_VERTEX_PROJECT" = "my-project"
 "GOOGLE_VERTEX_LOCATION" = "global"
 `
-	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg)
+	r := fixtureLoad(t, map[string]string{"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "a"}, cfg, WithOverlay(overlayWith(`
+[providers."google-vertex-web"]
+base = "google-vertex"
+web_search = true
+`)))
 	cases := []struct {
 		ref      string
 		want     string
@@ -1027,7 +1126,7 @@ base = "google-vertex-anthropic"
 base_url = "https://glob-gateway.example/v1"
 
 [providers.vertexaliastarget]
-base = "google-vertex"
+base = "google-vertex-anthropic"
 [providers.vertexaliastarget.vars]
 "GOOGLE_VERTEX_PROJECT" = "my-project"
 "GOOGLE_VERTEX_LOCATION" = "global"
@@ -1445,6 +1544,23 @@ func TestResolve_LiveInputModalitiesReachCaps(t *testing.T) {
 	}
 }
 
+// An OpenAI-compatible server may advertise an output cap equal to its
+// context window: the live listing is the serving endpoint's own statement
+// of its limits, so the resolved row keeps the advertised cap. Only catalog
+// spellings are junk at equality; every layer loses a cap above the window.
+func TestResolve_LiveEqualWindowOutputCapStays(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, nil, "")
+	r.ApplyLive("openrouter", []Model{{
+		ID:   "Inkling-2-Mini",
+		Caps: Caps{ContextWindow: new(262144), MaxOutputTokens: new(262144)},
+	}})
+	res := mustResolve(t, r, "openrouter/Inkling-2-Mini")
+	if res.Caps.MaxOutputTokens == nil || *res.Caps.MaxOutputTokens != 262144 || res.Provenance["MaxOutputTokens"] != "live" {
+		t.Fatalf("an advertised live cap equal to the window must stay: %v (%s)", res.Caps.MaxOutputTokens, res.Provenance["MaxOutputTokens"])
+	}
+}
+
 // A live listing's tools verdict reaches the resolved row, including the
 // override of a catalog fact. This guards the live-layer plumbing the gateway
 // reader depends on; it passes before the capabilities.tools parse because
@@ -1569,12 +1685,12 @@ effort_parameter_unsupported = true
 func TestResolve_NoEffortVerdictKeepsBudgetCapability(t *testing.T) {
 	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
-[providers.google.models."budget-model"]
+[providers.anthropic.models."budget-model"]
 reasoning = true
 reasoning_controls = ["budget_tokens"]
 effort_parameter_unsupported = true
 `)))
-	res := mustResolve(t, r, "google/budget-model")
+	res := mustResolve(t, r, "anthropic/budget-model")
 	if !slices.Contains(res.Caps.ReasoningControls, "budget_tokens") {
 		t.Fatalf("ReasoningControls = %v, want budget_tokens preserved", res.Caps.ReasoningControls)
 	}
@@ -1593,15 +1709,15 @@ effort_parameter_unsupported = true
 func TestResolve_LiveNoEffortVerdictKeepsBudgetCapability(t *testing.T) {
 	t.Parallel()
 	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
-[providers.google.models."gemini-budget"]
+[providers.anthropic.models."claude-budget"]
 reasoning = true
 reasoning_controls = ["budget_tokens"]
 `)))
 	unsupported := true
-	r.ApplyLive("google", []Model{{
-		ID: "gemini-budget", Caps: Caps{Reasoning: new(true), EffortParameterUnsupported: &unsupported, EffortValues: []string{}},
+	r.ApplyLive("anthropic", []Model{{
+		ID: "claude-budget", Caps: Caps{Reasoning: new(true), EffortParameterUnsupported: &unsupported, EffortValues: []string{}},
 	}})
-	res := mustResolve(t, r, "google/gemini-budget")
+	res := mustResolve(t, r, "anthropic/claude-budget")
 	if !slices.Contains(res.Caps.ReasoningControls, "budget_tokens") {
 		t.Fatalf("ReasoningControls = %v, want budget_tokens preserved through the live layer", res.Caps.ReasoningControls)
 	}

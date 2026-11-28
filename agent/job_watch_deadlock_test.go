@@ -48,7 +48,7 @@ func newCallerSendWatchSession(t *testing.T, watchEvent string) *Session {
 	installWatchBelowValidation(t, sess.jobManager, watchArgs{
 		Target: "caller",
 		Events: []string{watchEvent},
-		Send:   &watchSendArgs{To: "caller", Message: "ping"},
+		Send:   &watchSendArgs{To: "caller"},
 	})
 	return sess
 }

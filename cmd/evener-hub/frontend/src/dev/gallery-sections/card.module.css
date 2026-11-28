@@ -1,7 +1,5 @@
 .row {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
+  composes: rowStart from "../gallery-section.module.css";
 }
 
 .body {

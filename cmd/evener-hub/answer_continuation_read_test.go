@@ -43,7 +43,7 @@ func TestAnswerContinuationReadRoutes(t *testing.T) {
 		id    string
 		links []string
 	}{{"A", nil}, {"B", []string{"A"}}, {"X", nil}, {"C", []string{"B"}}} {
-		if err := w.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: v.id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(v.id), AnswerToTurnIDs: v.links}); err != nil {
+		if _, err := w.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: v.id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(v.id), AnswerToTurnIDs: v.links}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -58,7 +58,7 @@ func TestAnswerContinuationReadRoutes(t *testing.T) {
 	cfg := hubcore.WebConfig{Past: past}
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 	defer daemon.Close()
-	identity, err := daemonserver.PrepareAppIdentity("local", id, path)
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", id, "local:"+id, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestAnswerContinuationFirstQueryWithoutSubscribers(t *testing.T) {
 		id    string
 		links []string
 	}{{"A", nil}, {"B", []string{"A"}}, {"X", nil}, {"C", []string{"B"}}} {
-		if err := w.Append(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: v.id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(v.id), AnswerToTurnIDs: v.links}); err != nil {
+		if _, err := w.Record(schema.Turn{Format: schema.TurnFormatIdentity, TurnID: v.id, TurnKind: schema.TurnSpanExecution, Kind: schema.TurnUserInput, Message: llm.User(v.id), AnswerToTurnIDs: v.links}, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -239,7 +239,7 @@ func TestAnswerContinuationFirstQueryWithoutSubscribers(t *testing.T) {
 	}
 	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
 	defer daemon.Close()
-	identity, err := daemonserver.PrepareAppIdentity("local", id, path)
+	identity, err := daemonserver.PrepareAppIdentityForRef("local", id, "local:"+id, path)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -75,6 +75,20 @@ test("a hidden provider cannot satisfy setup", async () => {
   await waitFor(() => expect(result.current.status).toBe("missing"));
 });
 
+test("a broken provider with loadError cannot satisfy setup", async () => {
+  connect([
+    {
+      ...provider,
+      activeSource: "none",
+      credentialRequired: false,
+      hidden: false,
+      loadError: 'providers.kimi: base "kimi-code-plan-global" is not a registry id',
+    },
+  ]);
+  const { result } = renderHook(useProviderSetup);
+  await waitFor(() => expect(result.current.status).toBe("missing"));
+});
+
 test.each(["none", "store", "env:OLLAMA_API_KEY"])(
   "implicit keyless providers with source %s still require available models",
   async (activeSource) => {

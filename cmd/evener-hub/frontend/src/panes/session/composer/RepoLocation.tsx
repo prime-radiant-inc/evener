@@ -33,6 +33,7 @@
 import { memo } from "react";
 import { useClient } from "../../../shell/clientContext";
 import { useGitLocation } from "../../../shell/gitLocation";
+import { MIDDLE_TRUNCATION_HEAD_SHARE, middleTruncate } from "../../../transcriptDisplay/middleTruncate";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ForgeMark } from "./ForgeMark";
 import styles from "./repoLocation.module.css";
@@ -65,42 +66,21 @@ const CLASS = {
 // grammar ToolRow.tsx's collapsed summary and toolcallitem.module.css's
 // .clampedHead/.clampedTail pair established).
 
-/** The head's share of the default cut, in code points - ToolRow.tsx's own
- * middleTruncationCut uses the same 60%. */
-const HEAD_SHARE = 0.6;
-
-/** Splits `chars` (the text's code points, materialized once by
- * MiddleTruncated) at `cut` into its head and tail halves, or returns null
- * when the cut would empty either side - a one-sided split is not a middle
- * truncation. The cut first walks left off boundary whitespace: head and tail
- * render as separate spans, and CSS white-space processing drops a space at a
- * span edge, so every space must stay interior to one half. */
-function splitChars(chars: string[], cut: number): [string, string] | null {
-  let position = cut;
-  while (position > 0 && position < chars.length) {
-    if (/\s/.test(chars[position - 1] ?? "") || /\s/.test(chars[position] ?? "")) position -= 1;
-    else break;
-  }
-  if (position <= 0 || position >= chars.length) return null;
-  return [chars.slice(0, position).join(""), chars.slice(position).join("")];
-}
-
 /** The default cut: ~60% of the code points to the head. */
-function proportionalCut(chars: string[]): number {
-  return Math.ceil(chars.length * HEAD_SHARE);
+function proportionalCut(chars: readonly string[]): number {
+  return Math.ceil(chars.length * MIDDLE_TRUNCATION_HEAD_SHARE);
 }
 
 /** The repo reference's cut: at its `#`, so the branch marker and everything
  * after it ride the never-shrinking tail and the branch cannot ellipsize away.
  * The reference is always built with a literal `#`, so -1 cannot occur today;
- * splitChars' one-sided guard keeps a stray -1 from splitting anything. */
-function branchMarkerCut(chars: string[]): number {
+ * middleTruncate's one-sided guard keeps a stray -1 from splitting anything. */
+function branchMarkerCut(chars: readonly string[]): number {
   return chars.indexOf("#");
 }
 
-function MiddleTruncated({ text, cutOf }: { text: string; cutOf: (chars: string[]) => number }) {
-  const chars = Array.from(text);
-  const split = splitChars(chars, cutOf(chars));
+function MiddleTruncated({ text, cutOf }: { text: string; cutOf: (chars: readonly string[]) => number }) {
+  const split = middleTruncate(text, cutOf);
   if (split === null) return <span className={CLASS.head}>{text}</span>;
   const [head, tail] = split;
   return (

@@ -42,7 +42,7 @@ func TestNavigationRowsCarryApprovalPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Capture: %v", err)
 	}
-	projection, err := buildNavigationProjection(snapshot.Inputs)
+	projection, err := buildNavigationProjection(t.Context(), snapshot.Inputs)
 	if err != nil {
 		t.Fatalf("buildNavigationProjection: %v", err)
 	}

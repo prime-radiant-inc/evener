@@ -30,7 +30,17 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "transcript",
-    searchTerms: ["transcript", "tokens", "cost", "thinking", "tool calls", "desktop layout", "mobile layout"],
+    searchTerms: [
+      "transcript",
+      "tokens",
+      "cost",
+      "thinking",
+      "tool calls",
+      "desktop layout",
+      "mobile layout",
+      "unread",
+      "open at unread replies",
+    ],
     label: "Conversation display",
     cluster: "preferences",
   },
@@ -69,7 +79,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "mobile", searchTerms: ["pairing", "phone", "device", "mobile"], label: "Devices", cluster: "system" },
   {
     id: "hub",
-    searchTerms: ["runtime", "listen", "token", "workers"],
+    searchTerms: ["updates", "restart", "daemons", "workers"],
     label: "Hub",
     cluster: "system",
   },

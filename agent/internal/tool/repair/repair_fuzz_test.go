@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -51,14 +50,15 @@ func FuzzRepairJSON(f *testing.F) {
 }
 
 // FuzzRepairArgs checks that normalization produces JSON-serializable output
-// without mutating the caller's map.
+// without mutating the caller's map or any nested slices/maps.
 func FuzzRepairArgs(f *testing.F) {
-	f.Add("/tmp/file", "true", "42", "tag", "unknown", false)
-	f.Add("", "FALSE", "not-a-number", "", "extra", true)
-	f.Add("value", " true ", "3.14", "tag", "other", false)
+	f.Add("/tmp/file", "true", "42", "tag", "unknown", false, `[{"old_str":"a","newText":"b","replaceAll":"true","notes":"x"}]`)
+	f.Add("", "FALSE", "not-a-number", "", "extra", true, `{"old_text":"a","new_text":"b"}`)
+	f.Add("value", " true ", "3.14", "tag", "other", false, "not json")
+	f.Add("a.go", "true", "1", "tag", "notes", false, `[null, "str", {"old_str":"a","new_str":"b"}]`)
 
-	f.Fuzz(func(t *testing.T, path, flag, count, tag, extra string, openSchema bool) {
-		if len(path)+len(flag)+len(count)+len(tag)+len(extra) > 1<<16 {
+	f.Fuzz(func(t *testing.T, path, flag, count, tag, extra string, openSchema bool, editsRaw string) {
+		if len(path)+len(flag)+len(count)+len(tag)+len(extra)+len(editsRaw) > 1<<16 {
 			return
 		}
 		params := map[string]any{
@@ -78,8 +78,7 @@ func FuzzRepairArgs(f *testing.F) {
 			"tags":             tag,
 			"unknown_" + extra: extra,
 		}
-		before := make(map[string]any, len(args))
-		maps.Copy(before, args)
+		before := cloneTestValue(args)
 
 		out, _ := RepairArgs(params, args)
 		if !reflect.DeepEqual(args, before) {
@@ -97,6 +96,79 @@ func FuzzRepairArgs(f *testing.F) {
 		outAgain, _ := RepairArgs(params, args)
 		if !reflect.DeepEqual(outAgain, out) {
 			t.Fatalf("RepairArgs output was not deterministic: first=%#v second=%#v", out, outAgain)
+		}
+
+		editSchema := multiEditParams()
+		editCases := []map[string]any{
+			// Stringified JSON (array, object, or plain non-JSON string)
+			{
+				"path":  path,
+				"edits": editsRaw,
+			},
+			// Nested edits[] with aliases, coercion, unknown keys, and malformed items
+			{
+				"file_path": path,
+				"edits": []any{
+					map[string]any{
+						"old_str":    path,
+						"newText":    tag,
+						"replaceAll": flag,
+						"notes":      extra,
+					},
+					map[string]any{
+						"old_string": path,
+						"new_str":    tag,
+						"newText":    extra,
+					},
+					nil,
+					editsRaw,
+				},
+			},
+			// Bare object for edits
+			{
+				"file_path": path,
+				"edits": map[string]any{
+					"old_str":    path,
+					"newText":    tag,
+					"replaceAll": flag,
+					"notes":      extra,
+				},
+			},
+			// Mixed-form with edits: nil
+			{
+				"file_path":  path,
+				"edits":      nil,
+				"old_string": tag,
+				"new_string": extra,
+			},
+			// Mixed-form with edits: []any{...}
+			{
+				"file_path":  path,
+				"edits":      []any{map[string]any{"old_string": path, "new_string": tag}},
+				"old_str":    extra,
+				"new_string": count,
+			},
+			// Legacy top-level promotion
+			{
+				"path":       path,
+				"old_str":    tag,
+				"newText":    extra,
+				"replaceAll": flag,
+			},
+		}
+		for _, ec := range editCases {
+			beforeEdit := cloneTestValue(ec)
+			outEdit, _ := RepairArgs(editSchema, ec)
+			if !reflect.DeepEqual(ec, beforeEdit) {
+				t.Fatalf("RepairArgs mutated nested multi-edit input: before=%#v after=%#v", beforeEdit, ec)
+			}
+			if _, err := json.Marshal(outEdit); err != nil {
+				t.Fatalf("multi-edit RepairArgs output is not JSON-serializable: %v; output=%#v", err, outEdit)
+			}
+			outEditAgain, _ := RepairArgs(editSchema, ec)
+			if !reflect.DeepEqual(outEditAgain, outEdit) {
+				t.Fatalf("multi-edit RepairArgs output was not deterministic: first=%#v second=%#v", outEdit, outEditAgain)
+			}
 		}
 
 		// These forms cover the safe no-op cases: a native alias, an alias
@@ -127,8 +199,7 @@ func FuzzRepairArgs(f *testing.F) {
 				args: map[string]any{"flag": true, "count": 1.0, "tags": []any{"typed"}},
 			},
 		} {
-			beforeCase := make(map[string]any, len(tc.args))
-			maps.Copy(beforeCase, tc.args)
+			beforeCase := cloneTestValue(tc.args)
 			outCase, _ := RepairArgs(tc.params, tc.args)
 			if _, err := json.Marshal(outCase); err != nil {
 				t.Fatalf("extra RepairArgs case was not serializable: %v", err)

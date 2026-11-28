@@ -60,7 +60,7 @@ func TestS5Cov_TaskReminderFull(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Add a progress note to the first task.
-	if err := store.Update([]taskpkg.TaskUpdate{{ID: added[0].ID, Status: taskpkg.TaskOpen, Notes: "started it"}}); err != nil {
+	if _, err := store.Update([]taskpkg.TaskUpdate{{ID: added[0].ID, Status: taskpkg.TaskOpen, Notes: "started it"}}); err != nil {
 		t.Fatal(err)
 	}
 

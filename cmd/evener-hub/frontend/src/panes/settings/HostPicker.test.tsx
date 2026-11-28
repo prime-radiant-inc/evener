@@ -129,3 +129,34 @@ test("re-reads the registry on the existing quiet-refresh cadence", async () => 
     vi.useRealTimers();
   }
 });
+
+// The picker's poll is the settings surface's shared rendering clock: it
+// stops while the tab is hidden and re-reads on the first visible frame.
+test("pauses the quiet-refresh poll while hidden and re-reads on the first visible frame", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const setVisibility = (state: "visible" | "hidden") =>
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+  try {
+    setVisibility("visible");
+    const fake = connectFakeClient([hostRow({ name: "beta", attached: true })]);
+    render(<HostPicker />);
+    await screen.findByRole("option", { name: "beta" });
+    const reads = () => fake.calls.filter((call) => call.method === "evener/host/list").length;
+    expect(reads()).toBe(1);
+
+    await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS));
+    expect(reads()).toBe(2);
+
+    setVisibility("hidden");
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await act(() => vi.advanceTimersByTimeAsync(HOST_POLL_MS * 3));
+    expect(reads()).toBe(2);
+
+    setVisibility("visible");
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await waitFor(() => expect(reads()).toBe(3));
+  } finally {
+    Reflect.deleteProperty(document, "visibilityState");
+    vi.useRealTimers();
+  }
+});

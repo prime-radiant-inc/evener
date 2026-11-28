@@ -1,0 +1,324 @@
+schema: 1
+id: edit_file.large_file_no_padding
+tool: edit_file
+prompt: |
+  Read pipeline.py, then use edit_file to change VERSION = "1.0.0" to VERSION = "1.1.0"
+  and DEFAULT_TIMEOUT = 30 to DEFAULT_TIMEOUT = 60.
+  Use only read_file and edit_file (do not run shell commands).
+  Finish with RESULT_LARGE_FILE_NO_PADDING.
+fixture:
+  files:
+    pipeline.py: |
+      """Pipeline helpers for the demo worker."""
+
+      VERSION = "1.0.0"
+
+      def stage_1(value):
+          """Return the value unchanged for stage 1."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_2(value):
+          """Return the value unchanged for stage 2."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_3(value):
+          """Return the value unchanged for stage 3."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_4(value):
+          """Return the value unchanged for stage 4."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_5(value):
+          """Return the value unchanged for stage 5."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_6(value):
+          """Return the value unchanged for stage 6."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_7(value):
+          """Return the value unchanged for stage 7."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_8(value):
+          """Return the value unchanged for stage 8."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_9(value):
+          """Return the value unchanged for stage 9."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_10(value):
+          """Return the value unchanged for stage 10."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_11(value):
+          """Return the value unchanged for stage 11."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_12(value):
+          """Return the value unchanged for stage 12."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_13(value):
+          """Return the value unchanged for stage 13."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_14(value):
+          """Return the value unchanged for stage 14."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_15(value):
+          """Return the value unchanged for stage 15."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_16(value):
+          """Return the value unchanged for stage 16."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_17(value):
+          """Return the value unchanged for stage 17."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_18(value):
+          """Return the value unchanged for stage 18."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_19(value):
+          """Return the value unchanged for stage 19."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_20(value):
+          """Return the value unchanged for stage 20."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_21(value):
+          """Return the value unchanged for stage 21."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_22(value):
+          """Return the value unchanged for stage 22."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_23(value):
+          """Return the value unchanged for stage 23."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_24(value):
+          """Return the value unchanged for stage 24."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_25(value):
+          """Return the value unchanged for stage 25."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_26(value):
+          """Return the value unchanged for stage 26."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_27(value):
+          """Return the value unchanged for stage 27."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_28(value):
+          """Return the value unchanged for stage 28."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_29(value):
+          """Return the value unchanged for stage 29."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_30(value):
+          """Return the value unchanged for stage 30."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_31(value):
+          """Return the value unchanged for stage 31."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_32(value):
+          """Return the value unchanged for stage 32."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_33(value):
+          """Return the value unchanged for stage 33."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_34(value):
+          """Return the value unchanged for stage 34."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_35(value):
+          """Return the value unchanged for stage 35."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_36(value):
+          """Return the value unchanged for stage 36."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_37(value):
+          """Return the value unchanged for stage 37."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_38(value):
+          """Return the value unchanged for stage 38."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_39(value):
+          """Return the value unchanged for stage 39."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_40(value):
+          """Return the value unchanged for stage 40."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_41(value):
+          """Return the value unchanged for stage 41."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      def stage_42(value):
+          """Return the value unchanged for stage 42."""
+          current = value
+          if current is None:
+              return current
+          return current
+
+      DEFAULT_TIMEOUT = 30
+
+      # End of pipeline helpers.
+expect:
+  calls:
+    - tool: read_file
+    - tool: edit_file
+    - tool: communicate
+  forbidden_calls: [shell]
+  artifacts:
+    - path: pipeline.py
+      contains: "VERSION = \"1.1.0\"\n"
+    - path: pipeline.py
+      contains: "DEFAULT_TIMEOUT = 60\n"
+  final_contains: ["RESULT_LARGE_FILE_NO_PADDING"]

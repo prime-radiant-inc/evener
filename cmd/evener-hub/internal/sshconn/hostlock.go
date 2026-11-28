@@ -55,7 +55,7 @@ type hostLockEntry struct {
 
 // hostLockGate is the per-host gate itself: the mutex every holder of one
 // host's work serializes on (Ensure, the reconnect supervisor, AddHost,
-// UpdateHost, RemoveHost, DetachHost, Close — and, through Manager.TryAcquire,
+// UpdateHost, RemoveHost, Close — and, through Manager.TryAcquire,
 // the deploy pipeline's plan/deploy/restart paths), plus the holder
 // registration the pipeline's busy refusal renders (deploy pipeline 08b §5).
 //
@@ -135,13 +135,21 @@ func (g *hostLockGate) holderOf() hostops.Holder {
 // different gates for one name.
 func (m *Manager) hostLock(name string) *hostLockGate {
 	m.mu.Lock()
+	lock := m.hostLockLocked(name)
+	m.mu.Unlock()
+	return lock
+}
+
+// hostLockLocked is hostLock for a caller that already holds m.mu, so a path
+// that must register a loop and its gate in one critical section (the startup
+// reconnect) can take the live-user reference atomically.
+func (m *Manager) hostLockLocked(name string) *hostLockGate {
 	entry := m.locks[name]
 	if entry == nil {
 		entry = &hostLockEntry{}
 		m.locks[name] = entry
 	}
 	entry.refs++
-	m.mu.Unlock()
 	return &entry.gate
 }
 
@@ -206,7 +214,7 @@ func lockHostCtx(ctx context.Context, mu *hostLockGate) error {
 // holder, returning the typed busy error naming the current holder when the
 // gate is held. The gate it takes is the one gate this Manager's own paths use
 // (Ensure, the reconnect supervisor, AddHost, UpdateHost, RemoveHost,
-// DetachHost, Close), so a plan cannot interleave with an in-flight attach or
+// Close), so a plan cannot interleave with an in-flight attach or
 // teardown for the same host.
 //
 // Nothing waits: the acquisition is a TryLock on the same mutex, and a failed

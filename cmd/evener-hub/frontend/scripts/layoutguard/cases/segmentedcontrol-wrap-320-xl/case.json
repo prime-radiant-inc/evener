@@ -1,0 +1,25 @@
+{
+  "name": "segmentedcontrol-wrap-320-xl",
+  "description": "SegmentedControl in the activity sidebar's Overview category strip: at a 320px sidebar with XL text, every label and count wraps in full inside its equal column (no ellipsis, no clipped overflow), at least one label and one count take two lines, and the track grows in block size above its one-line floor.",
+  "viewport": {
+    "width": 1200,
+    "height": 900,
+    "deviceScaleFactor": 1,
+    "mobile": false
+  },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tapfloor.module.css",
+    "styles/text.module.css",
+    "styles/tokens.css",
+    "styles/surface.module.css",
+    "styles/dockedEdge.module.css",
+    "widgets/segmentedcontrol/segmentedcontrol.module.css",
+    "shell/activitybar/activitybar.module.css"
+  ],
+  "mutation": {
+    "declaration": "widgets/segmentedcontrol/segmentedcontrol.module.css: the .optionLabel.wrap and .optionDetail.wrap declarations (white-space: normal, overflow-wrap: anywhere, overflow: visible, text-overflow: clip) removed, leaving the base .optionLabel/.optionDetail nowrap + overflow:hidden + text-overflow:ellipsis rules",
+    "verified": "2026-11-23",
+    "expect": "fail: the Agents detail (1024/10690) is 74px of text in a 54px box (ellipsized), every label and detail keeps white-space:nowrap with overflow-wrap:normal, no label or count occupies two lines, and the track stays at its 61.2px one-line floor"
+  }
+}

@@ -338,9 +338,9 @@ func TestRgCaptureAccountsRetainedSourceBytes(t *testing.T) {
 }
 
 // TestGrepRgDisclosesWhenTheTailRecordIsCapped is MEDIUM 1's user-visible half:
-// GrepSkipping discloses only when the omitted count is positive, so the
-// negative count above made a search that dropped records report itself as
-// complete — the exact defect class this PR exists to close.
+// Grep discloses only when the omitted count is positive, so the negative
+// count above made a search that dropped records report itself as complete —
+// the exact defect class this PR exists to close.
 func TestGrepRgDisclosesWhenTheTailRecordIsCapped(t *testing.T) {
 	// Not parallel: shrinks the package-wide byte budget.
 	root := t.TempDir()

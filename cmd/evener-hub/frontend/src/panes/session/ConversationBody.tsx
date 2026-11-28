@@ -3,10 +3,21 @@ import {
   createTranscriptProjector,
   formatQuoteBlock,
   resolveEffectiveConfig,
+  sessionActionError,
 } from "@evener/appwire-client";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useStore } from "zustand";
-import { chromeStore } from "../../shell/chromeStore";
+import { chromeStore, ReaderHeaderPinContext } from "../../shell/chromeStore";
 import { focusedSessionRef } from "../../shell/focusedSession";
 import { useOptionalNeedsYouController } from "../../shell/NeedsYouProvider";
 import { navigate, paneToURL, refParam } from "../../shell/routing";
@@ -14,6 +25,7 @@ import { cadenceStateFor } from "../../shell/sessionStatus";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { controlsFor, recoveryFence } from "../../stores/liveControls";
+import { usePrefsStore } from "../../stores/prefs";
 import { ownerRetainedRef } from "../../stores/recoveryFence";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -69,6 +81,33 @@ import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
 import { useConversationIdentity } from "./useConversationIdentity";
 
+/* The conversation's two terminal faces, shared by the session pane and the
+ * cascade column so both seats word and reason a session the same way. Each
+ * seat adds what it owns: the pane its Close affordance and fuller hint. A
+ * loading face carries no pane-only recovery control, so it stays with the
+ * seat that can offer one. */
+export function ConversationDeletedFace({
+  hint = "Its transcript is gone.",
+  action,
+}: {
+  hint?: string;
+  action?: ReactNode;
+}) {
+  return <EmptyState title="This session was deleted" hint={hint} reason="deleted" action={action} />;
+}
+
+/* A transcript the hub reported it cannot serve, with the shared
+ * session-action sentence every action error uses. */
+export function ConversationUnavailableFace({ error }: { error: unknown }) {
+  return (
+    <EmptyState
+      title="Transcript unavailable"
+      reason="unavailable"
+      hint={sessionActionError("Couldn't load transcript", error)}
+    />
+  );
+}
+
 // A conversation rendered in a seat. The session pane is one seat; a drilled
 // cascade column is another. The seat supplies what the conversation cannot
 // derive from its ref alone, and owns its own frame: the pane's scaffold and
@@ -91,10 +130,6 @@ export interface ConversationSeat {
   focused: boolean;
   // Seat-level policy for mount autofocus, independent of the shared editor.
   mountAutofocus?: boolean;
-  // The seat's own chrome already renders this conversation's activity
-  // counts (a cascade column's ScopeActivityControls), so the composer's
-  // phone row must not duplicate them.
-  ownsActivityCounts?: boolean;
   // A resumed conversation continues under a new ref. A pane replaces its
   // route; a cascade column lets its own reconciliation replace the scope in
   // place. The draft always carries to the resumed identity first. The
@@ -266,8 +301,10 @@ function LiveConversationBody({
     model,
     hasOlder,
     olderPageKey,
+    readerActive,
     loadOlder,
     loadingOlder,
+    olderReadInFlight,
     loadOlderReportingError,
     olderError,
     olderPermanent,
@@ -298,6 +335,32 @@ function LiveConversationBody({
     (height: number) => setOverlayHeight((current) => (current === height ? current : Math.max(0, height))),
     [],
   );
+  // The height of the chrome the phone floats over the transcript: the footer
+  // holding the composer and its notices. The reserve that lifts the floating
+  // controls is sized from it (session.module.css --floating-chrome-height), so
+  // a staged attachment strip or a grown draft moves the controls with the
+  // composer instead of leaving them underneath it. Null until measured: the
+  // stylesheet's own fallback is the reserve for that first frame.
+  const [chromeHeight, setChromeHeight] = useState<number | null>(null);
+  const footerRef = useRef<HTMLDivElement>(null);
+  // The footer (and its ref) exists only while the live surface renders; the
+  // effect must run again when a loading surface hands it back a footer.
+  const footerPresent = !deletedRef && model !== undefined;
+  useLayoutEffect(() => {
+    const node = footerRef.current;
+    if (!footerPresent || !isMobile || node === null) {
+      setChromeHeight(null);
+      return;
+    }
+    const measure = () => setChromeHeight(node.getBoundingClientRect().height);
+    measure();
+    // jsdom has no ResizeObserver; the mount measurement above is the whole
+    // behavior there.
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [footerPresent, isMobile]);
   // Only the actual focused conversation participates: a session pane, or a
   // cascade's active leaf (its keyboard-scroll pane id plus the exact focused
   // ref). A parent column's broad seat.focused value never grants it.
@@ -401,12 +464,17 @@ function LiveConversationBody({
   );
 
   const seenBoundary = useSeenDivider(ref, model);
+  const openAtUnreadReplies = usePrefsStore((state) => state.openAtUnreadReplies);
   const retainedCapture = seat.readView?.getCapture();
-  const openingTurnId = unseenOpeningTurnId(seenBoundary, {
-    thread: model,
-    askDockPending: askPending,
-    retained: retainedCapture,
-  });
+  const openingTurnId = unseenOpeningTurnId(
+    seenBoundary,
+    {
+      thread: model,
+      askDockPending: askPending,
+      retained: retainedCapture,
+    },
+    openAtUnreadReplies,
+  );
   const openAtRow = useMemo(
     () => (openingTurnId === null ? -1 : transcriptFirstRowIndexForTurn(renderRows, openingTurnId)),
     [renderRows, openingTurnId],
@@ -431,9 +499,15 @@ function LiveConversationBody({
     cancelOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
-    // The trailing row is a real virtual row, so every end-targeted scroll
-    // path must count it or it lands one row short.
-    renderedRowCount: renderRows.length + (trailingRow !== undefined ? 1 : 0),
+    // The synthetic rows are real virtual rows, so every end-targeted scroll
+    // path must count them or it lands short: the trailing row when present,
+    // and the end inset row whenever any content exists (the phone's
+    // floating-composer reserve, always the list's last row - an empty
+    // transcript keeps zero rows).
+    renderedRowCount:
+      renderRows.length +
+      (trailingRow !== undefined ? 1 : 0) +
+      (renderRows.length > 0 || trailingRow !== undefined ? 1 : 0),
     sourceTurnRowIndexes,
     // An ask batch completing changes no turn/item shape: without this
     // signal a scrolled-away reader would get no new-content pill.
@@ -457,6 +531,9 @@ function LiveConversationBody({
     ref,
     paneId: seat.viewFallbackId,
     rows: renderRows,
+    config: displayConfig,
+    cwd: model?.cwd,
+    disclosureScope: seat.readView?.id ?? seat.viewFallbackId,
     listRef: virtualListRef,
     ownerDocument,
     jumpToRow: flow.jumpToRow,
@@ -475,6 +552,13 @@ function LiveConversationBody({
     // transcript, so the scroll port Find marks and observes is not mounted.
     transcriptMounted: model !== undefined && (!isDormantTranscript(model.turns) || pendingRowsVisible),
   });
+  const pinHeader = useContext(ReaderHeaderPinContext);
+  const hasInlineControls = !deletedRef && !!model && keyboardPaneId !== null && (!!find.view || approvalPending);
+  useLayoutEffect(() => {
+    if (!pinHeader || !hasInlineControls) return;
+    pinHeader(true);
+    return () => pinHeader(false);
+  }, [pinHeader, hasInlineControls]);
   // Going to the live end also ends Find's search into older history, so a
   // match arriving later cannot pull the reader back up.
   const { leaveHistory } = find;
@@ -594,7 +678,10 @@ function LiveConversationBody({
             <LoadOlderRow
               onLoad={loadOlderReportingError}
               loading={loadingOlder}
+              readInFlight={olderReadInFlight}
               error={olderError}
+              pageKey={olderPageKey ?? null}
+              readerActive={readerActive}
               scrollElement={() => virtualListRef.current?.getScrollElement() ?? null}
             />
           )
@@ -636,8 +723,22 @@ function LiveConversationBody({
       </div>
     ) : null;
 
+  // The stack's committed clearance (its measured height plus the inset it
+  // floats above the reader's bottom edge) is published as a property so the
+  // end inset row can top up the phone's composer reserve instead of adding a
+  // second full reserve above the stack. The chrome's own measured height is
+  // published too: the reserve that lifts the floating controls is sized from
+  // it, never from a constant that a taller composer outgrows.
   const content = (
-    <div className={styles.contentColumn}>
+    <div
+      className={styles.contentColumn}
+      style={
+        {
+          "--overlay-clearance": `${overlayHeight}px`,
+          ...(chromeHeight === null ? {} : { "--floating-chrome-height": `${chromeHeight}px` }),
+        } as CSSProperties
+      }
+    >
       <TopNotesPanel sessionRef={ref} model={model} sourcePaneId={seat.viewFallbackId} />
       <SandboxEscalationRail sessionRef={ref} />
       {find.view && <FindBar view={find.view} />}
@@ -656,7 +757,7 @@ function LiveConversationBody({
   );
 
   const footer = (
-    <div className={styles.footer}>
+    <div className={styles.footer} ref={footerRef}>
       <div className={styles.measure}>
         <LivenessLine
           lastFrameAt={model.lastFrameAt}
@@ -674,9 +775,9 @@ function LiveConversationBody({
         {/* Recovery keeps the composer and its menu mounted. Retain the
             fallback for other local snapshots with no Send surface, and for
             remote ones on a phone: the composer never mounts for a
-            notLoaded remote share, the phone layout has no status bar to
-            carry the menu, and a single-pane phone hides the rail, so this
-            menu is the only remaining way into Overview and About.
+            notLoaded remote share, and a single-pane phone hides the rail.
+            This fallback keeps session actions available; StackHost's top bar
+            supplies Find and Overview.
             Owner-retained sessions still direct recovery to their owner. */}
         {model.status.type === "notLoaded" &&
           !recoveryOwnerRef &&
@@ -696,7 +797,6 @@ function LiveConversationBody({
             submission={submission}
             focused={seat.focused}
             mountAutofocus={seat.mountAutofocus}
-            ownsActivityCounts={seat.ownsActivityCounts}
             onEditingChange={handleEditingChange}
           />
         )}
@@ -777,18 +877,26 @@ function RestartRequiredNotice({ sessionRef, ownerRef }: { sessionRef: string; o
     }
   };
   return (
-    <div role="alert" data-reason={ownerRef ? "owner-retained" : "version-mismatch"}>
+    <InlineNotice
+      tone="danger"
+      live="alert"
+      data-reason={ownerRef ? "owner-retained" : "version-mismatch"}
+      action={
+        ownerRef ? (
+          <>
+            <Button disabled={refreshing} onClick={() => void refresh()}>
+              Refresh session
+            </Button>
+            {error && <span>{error}</span>}
+          </>
+        ) : undefined
+      }
+    >
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : DEGRADED_VERSION_NOTICE}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
-      {ownerRef && (
-        <Button disabled={refreshing} onClick={() => void refresh()}>
-          Refresh session
-        </Button>
-      )}
-      {error && <span>{error}</span>}
-    </div>
+    </InlineNotice>
   );
 }
 

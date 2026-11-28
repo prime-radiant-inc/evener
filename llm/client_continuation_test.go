@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/auth/githubcopilot"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/tokenauth"
@@ -206,5 +207,161 @@ func TestPlanContinuationNormalizesTheScopeEndpoint(t *testing.T) {
 	}
 	if plan.StorageScope.BaseURL != srv.URL || plan.StorageScope.Path != "/responses" {
 		t.Fatalf("the scope records a normalized transport: %q %q", plan.StorageScope.BaseURL, plan.StorageScope.Path)
+	}
+}
+
+// TestResponsesEndpointFamilyForCopilotIsDisabled pins that the Copilot
+// subscription is its own responses endpoint family and that the public
+// OpenAI continuation contract, including its support entry, never applies.
+func TestResponsesEndpointFamilyForCopilotIsDisabled(t *testing.T) {
+	t.Parallel()
+	res := registry.Resolved{
+		Protocol:  registry.ProtocolOpenAIResponses,
+		Transport: registry.Transport{Auth: registry.AuthOAuthGitHubCopilot},
+	}
+	family := llm.ResponsesEndpointFamilyFor(res)
+	if family != llm.ResponsesEndpointFamilyGitHubCopilot {
+		t.Fatalf("family = %q, want %q", family, llm.ResponsesEndpointFamilyGitHubCopilot)
+	}
+	support := llm.ResponsesContinuationSupportFor(llm.DefaultResponsesContinuationSupportRegistry(), family)
+	if support.Enabled {
+		t.Fatalf("support = %+v, want Copilot continuation disabled", support)
+	}
+	decision := llm.DecideResponsesContinuation(llm.ResponsesContinuationAuto, support)
+	if decision.HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("history mode = %q, want full history", decision.HistoryMode)
+	}
+}
+
+// TestShapeRequestCopilotAlwaysFullHistory pins that no anchor or storage
+// flag survives shaping for a Copilot row, while the public family keeps its
+// anchor exactly as before.
+func TestShapeRequestCopilotAlwaysFullHistory(t *testing.T) {
+	t.Parallel()
+	store := true
+	req := llm.Request{
+		HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp_1",
+		ConversationID: "conv_1", Store: &store,
+	}
+	copilot := llm.ShapeRequest(req, registry.Resolved{
+		Protocol:  registry.ProtocolOpenAIResponses,
+		Transport: registry.Transport{Auth: registry.AuthOAuthGitHubCopilot},
+	})
+	if copilot.PreviousResponseID != "" || copilot.ConversationID != "" || copilot.Store != nil {
+		t.Fatalf("shaped = %+v, want full history with no store", copilot)
+	}
+	if copilot.HistoryMode != llm.HistoryModeFullHistory {
+		t.Fatalf("shaped history mode = %q, want full history", copilot.HistoryMode)
+	}
+	public := llm.ShapeRequest(req, registry.Resolved{Protocol: registry.ProtocolOpenAIResponses})
+	if public.PreviousResponseID != "resp_1" || public.ConversationID != "conv_1" {
+		t.Fatalf("public shaped = %+v, want its anchor preserved", public)
+	}
+}
+
+// copilotAccountRegistry loads a Copilot instance under one state root with
+// that root's own sign-in record, so the test can hold two accounts that share
+// nothing on disk. The row advertises no continuation contract: the account's
+// roster does not grant Copilot server-side storage.
+func copilotAccountRegistry(t *testing.T, stateRoot, accountID, accessToken string) *registry.Registry {
+	t.Helper()
+	if err := githubcopilot.SaveAuth(stateRoot, "work", githubcopilot.AuthRecord{
+		Instance: "work", Scheme: githubcopilot.AuthScheme, Version: 1,
+		AccessToken: accessToken, CopilotToken: "copilot-" + accessToken, AccountID: accountID,
+		ObtainedAt: time.Now().Add(-time.Hour), CopilotExpiry: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(stateRoot),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"work": {Base: "github-copilot", Protocol: registry.ProtocolOpenAIResponses},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	return r
+}
+
+// TestPlanContinuationCopilotAccountsStayIsolated pins the two boundaries the
+// Copilot subscription must keep: two accounts on two state roots share no
+// continuation or anchor state. Neither account's row accepts the other's
+// anchor, conversation id, or store flag, neither plan offers storage, and the
+// per-root continuation secret cannot reproduce the other root's handle hash.
+func TestPlanContinuationCopilotAccountsStayIsolated(t *testing.T) {
+	t.Parallel()
+	rootA, rootB := t.TempDir(), t.TempDir()
+	regA := copilotAccountRegistry(t, rootA, "account-a", "access-a")
+	regB := copilotAccountRegistry(t, rootB, "account-b", "access-b")
+	clientA := llm.NewClient(llm.WithRegistry(regA), llm.WithClientStateDir(rootA))
+	clientB := llm.NewClient(llm.WithRegistry(regB), llm.WithClientStateDir(rootB))
+	resA, err := regA.Resolve("work/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("resolve account-a: %v", err)
+	}
+	resB, err := regB.Resolve("work/claude-haiku-5.5")
+	if err != nil {
+		t.Fatalf("resolve account-b: %v", err)
+	}
+	for name, res := range map[string]registry.Resolved{"account-a": resA, "account-b": resB} {
+		if res.Transport.Auth != registry.AuthOAuthGitHubCopilot {
+			t.Fatalf("%s auth = %q, want the Copilot subscription transport", name, res.Transport.Auth)
+		}
+	}
+
+	// Account B's anchor, conversation, and store flag must not survive
+	// shaping on either account's row: full history is the only mode Copilot
+	// is proven to serve.
+	store := true
+	req := userRequest("work", "claude-haiku-5.5")
+	req.HistoryMode = llm.HistoryModeResponsesDelta
+	req.PreviousResponseID = "resp_account_b"
+	req.ConversationID = "conv_account_b"
+	req.Store = &store
+	for name, res := range map[string]registry.Resolved{"account-a": resA, "account-b": resB} {
+		shaped := llm.ShapeRequest(req, res)
+		if shaped.PreviousResponseID != "" || shaped.ConversationID != "" || shaped.Store != nil {
+			t.Fatalf("%s accepted a Copilot continuation anchor: %+v", name, shaped)
+		}
+	}
+
+	for name, c := range map[string]*llm.Client{"account-a": clientA, "account-b": clientB} {
+		plan, err := c.PlanResponsesContinuation(context.Background(), req)
+		if err != nil {
+			t.Fatalf("%s plan: %v", name, err)
+		}
+		if plan.EndpointFamily != llm.ResponsesEndpointFamilyGitHubCopilot ||
+			plan.ContinuationStorageAllowed ||
+			plan.StoragePolicyLabel != llm.ResponsesStoragePolicyCopilotDisabled {
+			t.Fatalf("%s plan = %+v, want Copilot with storage disabled", name, plan)
+		}
+		if plan.RequestFingerprint != "" || plan.StorageScopeFingerprint != "" {
+			t.Fatalf("%s plan recorded continuation state for a Copilot row: %+v", name, plan)
+		}
+	}
+
+	// The continuation secret is per state root, so even the redacted handle
+	// for one account's anchor cannot be reproduced under the other root.
+	hasherA, err := llm.ContinuationHasherForStateDir(rootA)
+	if err != nil {
+		t.Fatalf("account-a hasher: %v", err)
+	}
+	hasherB, err := llm.ContinuationHasherForStateDir(rootB)
+	if err != nil {
+		t.Fatalf("account-b hasher: %v", err)
+	}
+	handleA, err := hasherA.HashContinuationHandle("previous_response_id", "resp_account_b")
+	if err != nil {
+		t.Fatalf("account-a hash: %v", err)
+	}
+	handleB, err := hasherB.HashContinuationHandle("previous_response_id", "resp_account_b")
+	if err != nil {
+		t.Fatalf("account-b hash: %v", err)
+	}
+	if handleA == handleB {
+		t.Fatalf("both Copilot state roots resolved the anchor to one handle: %q", handleA)
 	}
 }

@@ -14,62 +14,6 @@ import (
 	"primeradiant.com/evener/agent/provenance"
 )
 
-// TestCovWatchConfigHasPendingMatchingKey covers watchConfigHasPendingMatchingKey: nil cfg, empty pending, receiver mismatch,
-// and a matching pending key.
-func TestCovWatchConfigHasPendingMatchingKey(t *testing.T) {
-	t.Parallel()
-	jm := newTestJM(t)
-
-	// nil cfg.
-	if watchConfigHasPendingMatchingKey(nil, watchKey{}) {
-		t.Fatal("nil cfg should return false")
-	}
-
-	// Empty pending.
-	cfg := &watchConfig{target: "job_test", pending: nil}
-	if watchConfigHasPendingMatchingKey(cfg, watchKey{Target: "job_test"}) {
-		t.Fatal("empty pending should return false")
-	}
-
-	// Non-empty pending but receiver mismatch.
-	cfg.pending = map[jobstore.WatchSendKey]*jobstore.WatchSendState{
-		{}: {DeliveryID: "d1"},
-	}
-	cfg.receiverSessionID = "other_session"
-	key := watchKey{Target: "job_test", ReceiverSessionID: "my_session"}
-	if watchConfigHasPendingMatchingKey(cfg, key) {
-		t.Fatal("receiver mismatch should return false")
-	}
-
-	// Matching receiver and matching pending key.
-	cfg.receiverSessionID = ""
-	pendingKey := jobstore.WatchSendKey{
-		VisibleSessionID:        jm.sessionID,
-		WatchTarget:             "job_test",
-		ResolvedWatchedIdentity: "job_test",
-		ResolvedSendTo:          "caller",
-	}
-	cfg.pending = map[jobstore.WatchSendKey]*jobstore.WatchSendState{
-		pendingKey: {DeliveryID: "d1"},
-	}
-	matchKey := watchKey{
-		VisibleSessionID: jm.sessionID,
-		Target:           "job_test",
-		SendTo:           "caller",
-	}
-	if !watchConfigHasPendingMatchingKey(cfg, matchKey) {
-		t.Fatal("matching pending key should return true")
-	}
-
-	// Non-matching pending key (different target).
-	cfg.pending = map[jobstore.WatchSendKey]*jobstore.WatchSendState{
-		{WatchTarget: "other_job"}: {DeliveryID: "d2"},
-	}
-	if watchConfigHasPendingMatchingKey(cfg, matchKey) {
-		t.Fatal("non-matching pending key should return false")
-	}
-}
-
 // TestCovRememberUnpersistedTerminalPendingWatchSend covers
 // rememberUnpersistedTerminalPendingWatchSend.
 func TestCovRememberUnpersistedTerminalPendingWatchSend(t *testing.T) {
@@ -149,7 +93,7 @@ func TestCovRecordWatchSendPending(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	key := watchKey{
 		VisibleSessionID: jm.sessionID,
@@ -203,7 +147,7 @@ func TestCovRemoveRuntimePendingWatchSend(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	onSessionEventKD(jm, events.EventCommunicate, nil)
 	key := watchKey{
@@ -247,66 +191,6 @@ func TestCovChildResumable(t *testing.T) {
 	}
 	if s.childResumable("dlg_resumable") {
 		t.Fatal("delegate ID should not be accepted as a child session ID")
-	}
-}
-
-// TestCovWatchKeyMatchesClearRequest covers all branches of
-// watchKeyMatchesClearRequest.
-func TestCovWatchKeyMatchesClearRequest(t *testing.T) {
-	t.Parallel()
-	candidate := watchKey{VisibleSessionID: "s1", Target: "job_1", SendTo: "caller", ReceiverSessionID: "r1", ReceiverDelegateID: "d1"}
-
-	// Exact match.
-	if !watchKeyMatchesClearRequest(candidate, candidate) {
-		t.Fatal("exact match should return true")
-	}
-
-	// Mismatch VisibleSessionID.
-	req := candidate
-	req.VisibleSessionID = "other"
-	if watchKeyMatchesClearRequest(candidate, req) {
-		t.Fatal("mismatch session should return false")
-	}
-
-	// Mismatch Target.
-	req = candidate
-	req.Target = "other_job"
-	if watchKeyMatchesClearRequest(candidate, req) {
-		t.Fatal("mismatch target should return false")
-	}
-
-	// Request SendTo non-empty and mismatch.
-	req = candidate
-	req.SendTo = "other"
-	if watchKeyMatchesClearRequest(candidate, req) {
-		t.Fatal("mismatch SendTo should return false")
-	}
-
-	// Request SendTo empty — match (wildcard).
-	req = candidate
-	req.SendTo = ""
-	if !watchKeyMatchesClearRequest(candidate, req) {
-		t.Fatal("empty request SendTo should match")
-	}
-
-	// ReceiverSessionID non-empty and mismatch.
-	req = candidate
-	req.ReceiverSessionID = "other"
-	if watchKeyMatchesClearRequest(candidate, req) {
-		t.Fatal("mismatch ReceiverSessionID should return false")
-	}
-
-	// ReceiverDelegateID non-empty and mismatch.
-	req = candidate
-	req.ReceiverDelegateID = "other"
-	if watchKeyMatchesClearRequest(candidate, req) {
-		t.Fatal("mismatch ReceiverDelegateID should return false")
-	}
-
-	// All empty optional fields — should match.
-	req = watchKey{VisibleSessionID: "s1", Target: "job_1"}
-	if !watchKeyMatchesClearRequest(candidate, req) {
-		t.Fatal("empty optional fields should match")
 	}
 }
 
@@ -597,7 +481,7 @@ func TestCovHasPendingWatchSends(t *testing.T) {
 	installWatchBelowValidation(t, jm, watchArgs{
 		Target: runtimeMessageAliasCaller,
 		Events: []string{"communicate"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if jm.hasPendingWatchSends() {
 		t.Fatal("watch with no pending should return false")

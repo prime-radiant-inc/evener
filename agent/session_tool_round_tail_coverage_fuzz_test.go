@@ -233,7 +233,7 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 			s.hookRunner = runner
 			s.mu.Lock()
 			s.state = SessionProcessing
-			s.comm = communicateResult{called: true, reply: "reply"}
+			s.comm = communicateResult{phase: commBoundarySettled, reply: "reply"}
 			s.mu.Unlock()
 			done, _, err = s.deliverIfCommunicated(context.Background(), false)
 			if err != nil {

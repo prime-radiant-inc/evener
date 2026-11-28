@@ -56,7 +56,7 @@ func waitServeTurn(ctx context.Context, turns <-chan string, want string) error 
 // serve.go). It then asserts thread/read reports the NEW model IMMEDIATELY —
 // with no turn ever started — which is only true if serve.go's closure calls
 // srv.UpdateSessionInfo synchronously after sess.SetModel succeeds. Deleting
-// that UpdateSessionInfo line (while leaving sess.SetModel(model) itself
+// that UpdateSessionInfo line (while leaving sess.SetModel(provider, model) itself
 // intact) makes this test fail, because status.Model would then only refresh
 // on the next EventSessionStart, which never fires again mid-session.
 func TestServeModelSwitch_ThreadReadReflectsNewModelWithNoInterveningTurn(t *testing.T) {
@@ -400,6 +400,33 @@ func TestServeModelSwitch_MidTurnSetQueuesUntilNextTurn(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ThreadModelSet during an active turn: %v", err)
 	}
+
+	// The pick is ACCEPTED: both surfaces a composer reads must reflect it
+	// while the first turn is still parked in the provider — the same
+	// immediate reflection an effort change gets mid-turn. thread/read must
+	// already name the queued pick (a read is the authority the pane's label
+	// rehydrates from, so a read naming the old model is the label flipping
+	// back on reconnect or reload), and the subscribed client must receive
+	// thread/model/changed for it now, not only at the boundary.
+	midTurn, cancelMidTurnRead := context.WithTimeout(ctx, 10*time.Second)
+	readMidTurn, err := client.ThreadRead(midTurn, appwire.ThreadReadParams{Ref: ref})
+	cancelMidTurnRead()
+	if err != nil {
+		t.Fatalf("ThreadRead while the picked turn is still running: %v", err)
+	}
+	if readMidTurn.Thread.ModelProvider != "gpt-queued" {
+		t.Fatalf("thread/read mid-turn ModelProvider = %q, want the queued pick %q (an accepted pick must be readable before its turn boundary)", readMidTurn.Thread.ModelProvider, "gpt-queued")
+	}
+	frameDeadline, cancelFrameWait := context.WithTimeout(ctx, 10*time.Second)
+	if params, err := waitForServeModelChanged(frameDeadline, frames, "gpt-queued"); err != nil {
+		cancelFrameWait()
+		t.Fatalf("thread/model/changed for the accepted mid-turn pick: %v", err)
+	} else if params.ModelProvider != "openai" {
+		cancelFrameWait()
+		t.Fatalf("mid-turn thread/model/changed ModelProvider = %q, want %q", params.ModelProvider, "openai")
+	}
+	cancelFrameWait()
+
 	releaseFirstNow()
 
 	if err := waitServeTurn(ctx, frames.turnDone, first.Turn.ID); err != nil {
@@ -884,6 +911,20 @@ func TestServeModelSwitch_QueuedExplicitProviderLeavesOpenRouterForAnthropic(t *
 		Model:         "claude-opus-5",
 	}); err != nil {
 		t.Fatalf("ThreadModelSet during an active turn: %v", err)
+	}
+	// The accepted pick publishes its own thread/model/changed at queue time;
+	// drain that acceptance frame here, so the frame read below the boundary
+	// is the boundary's own resolution and not the acceptance echoing the
+	// pick back. The acceptance still names the picked provider: it is what
+	// the reader was told when the pick was accepted.
+	acceptanceDeadline, cancelAcceptance := context.WithTimeout(ctx, 10*time.Second)
+	acceptance, acceptanceErr := waitForServeModelChanged(acceptanceDeadline, frames, "claude-opus-5")
+	cancelAcceptance()
+	if acceptanceErr != nil {
+		t.Fatalf("thread/model/changed for the accepted mid-turn pick: %v", acceptanceErr)
+	}
+	if acceptance.ModelProvider != "anthropic" {
+		t.Fatalf("mid-turn thread/model/changed ModelProvider = %q, want %q", acceptance.ModelProvider, "anthropic")
 	}
 	releaseFirstNow()
 

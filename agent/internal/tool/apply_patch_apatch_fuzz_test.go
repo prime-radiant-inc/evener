@@ -143,7 +143,7 @@ func apatch_runOnce(t *testing.T, patch, base string) (apatch_applyResult, map[s
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte(base), 0o644); err != nil {
 		t.Fatalf("seed file.txt: %v", err)
 	}
-	out, err := ApplyPatch(confinedPatchMutator(t, root), patch)
+	out, err := ApplyPatch(t.Context(), confinedPatchMutator(t, root), patch)
 	errText := ""
 	if err != nil {
 		// Error messages can embed the absolute sandbox path (each run gets a

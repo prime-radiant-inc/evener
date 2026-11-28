@@ -133,7 +133,7 @@ it("pastes a pairing link, connects, and opens the Board", async () => {
 		origin: "https://magic-kingdom:9180",
 		token: "s3cret",
 	});
-	expect(navigation.navigate).toHaveBeenCalledWith("Sessions");
+	expect(navigation.navigate).toHaveBeenCalledWith("Workspace");
 	expect(onChoices(tree)).toBe(true);
 });
 
@@ -164,7 +164,7 @@ it("lists saved hubs when none is selected, and opens the one chosen", async () 
 	expect(renderedText(tree)).toContain("http://100.113.28.18:9180");
 	await press(tree, "paradise-park, http://100.113.28.18:9180");
 	expect(mocks.connection.selectHub).toHaveBeenCalledWith("hub-2");
-	expect(navigation.navigate).toHaveBeenCalledWith("Sessions");
+	expect(navigation.navigate).toHaveBeenCalledWith("Workspace");
 });
 
 it("never asks to reconnect", async () => {

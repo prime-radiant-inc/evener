@@ -1,8 +1,9 @@
 {
   "name": "toolrow-failure-badge-corner",
-  "description": "A failed tool call marks its kind icon with a danger cross pinned to the icon glyph's bottom-right corner (Jesse, 2026-10-20) rather than opening a second inline column of ink beside the icon. The badge is a sibling of the seat, not a child: the cross must read at full strength whatever the seat's own treatment, so it sits outside the seat's box and still hangs off the glyph's corner (the seat's avatar-column box is wider and taller than the 14px icon). These are the things jsdom cannot check: that the cross is positioned rather than contributing a flex column, and that the DRAWN cross - not the badge wrapper, whose box is as tall as the seat - meets the icon glyph's bottom-right corner. Each fixture is its own document at its own width, so the desktop leg and the phone leg each see the media context they claim; at both the slot pulls into the seat column the tool row reserves in its own padding.",
+  "description": "A failed tool call marks its kind icon with a danger cross pinned to the icon glyph's bottom-right corner rather than opening a second inline column of ink beside the icon. The badge is a sibling of the seat, not a child: the cross reads at full strength outside the aria-hidden seat while still anchored to the 14px glyph's corner. Above 700px the icon slot pulls into the turn's shared --speaker-gutter while the rationale stays on the content edge; below 700px the slot leads inline at the content edge with the rationale one gutter later.",
   "cssFiles": [
     "styles/global.css",
+    "styles/text.module.css",
     "styles/tokens.css",
     "styles/railseat.module.css",
     "styles/surface.module.css",
@@ -18,8 +19,8 @@
   },
   "mutation": {
     "declaration": "toolcallitem.module.css: .failureBadge { position: absolute; ... } - the position: absolute declaration reverted to static (so the badge becomes a flex column beside the icon again)",
-    "verified": "2026-10-20",
+    "verified": "2026-11-25",
     "expect": "fail",
-    "note": "Reverting position: absolute to static fails at both widths on every axis: the badge reports static, the cross lands 17px right of and 5.1px above the icon's corner and does not overlap the icon glyph at all, the failed row's rationale starts at 56.0 instead of the clean row's 46.0, and the rationale no longer sits on the row's content edge. Restored before the passing run. Two earlier defects in this case are worth recording: the first version asserted only on the badge WRAPPER's box and passed while the cross was drawn at mid-height beside the icon (roborev), and its 420px leg rendered inside one 1200px document, so it measured the desktop cascade at 'phone' width (adversarial review). The assertions now measure the cross svg and the icon svg, and each width is a separate iframe document whose realized viewport the case checks. 2026-11-13: the case also holds the seat column. Mutation-tested by changing toolcallitem.module.css .call padding-left to var(--tool-card-inset) alone: both legs fail with the icon slot starting 22px left of its tool row's box. Restored before the passing run."
+    "note": "Reverting position: absolute to static fails at both widths on every axis (cross off icon corner, failed rationale shifted off clean rationale). On 2026-11-25, also mutation-tested the Option A desktop gutter pull by reverting styles/railseat.module.css .gutterPull to margin-left: 0: failed desktop (900px) with icon slot at 50.0 instead of rail origin 16.0 and rationale at 84.0 instead of content edge 50.0. Restored before the passing run."
   }
 }

@@ -656,24 +656,12 @@ func pruneLiveSubtree(node TreeNode, liveMap map[string]LiveEntry) TreeNode {
 }
 
 // BuildTree assembles the sidebar Tree from all session metas, the
-// currently-live set, and the user's explicit archive decisions, using the
-// current wall clock for tier classification.
-func BuildTree(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool) Tree {
-	return BuildTreeAt(metas, live, decisions, time.Now())
-}
-
-// BuildTreeWithProjects builds a tree from identities resolved by the caller
-// at ingestion. The project map is keyed by the effective working directory;
-// grouping and ordering do not perform filesystem or Git resolution.
-func BuildTreeWithProjects(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, projects map[string]identifier.Project) Tree {
-	return BuildTreeAtWithProjects(metas, live, decisions, time.Now(), projects)
-}
-
-// BuildTreeAt is BuildTree with an injected clock so tier classification
-// (Current/Recent/Archived, by last-activity age) is deterministic in tests.
-func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time) Tree {
-	projects := ResolveProjectMap(metas, live)
-	return BuildTreeAtWithProjects(metas, live, decisions, now, projects)
+// currently-live set, explicit archive decisions, and caller-resolved project
+// identities keyed by EffectiveWorkingDir, using the current wall clock for
+// tier classification. Grouping and ordering do not perform filesystem or Git
+// resolution.
+func BuildTree(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, projects map[string]identifier.Project) Tree {
+	return BuildTreeAt(metas, live, decisions, time.Now(), projects)
 }
 
 // ResolveProjectMap resolves every distinct live/past working directory once
@@ -828,7 +816,7 @@ func liveWorkspaceIdentity(entry LiveEntry) (string, appwire.Ref, bool) {
 }
 
 // LiveRowRef is the ref a live root's Live row carries (liveRefMap in
-// buildTreeAtWithProjects): the workspace ref its daemon advertises when that
+// buildTreeAt): the workspace ref its daemon advertises when that
 // ref is valid for the daemon's own source, else the session's local ref. A
 // client joining per-session data to Board rows by ref, as it does with
 // evener/activity/read, needs this exact spelling.
@@ -891,15 +879,16 @@ func projectKeyForPath(path string, resolvedProjects map[string]identifier.Proje
 	return "no-project"
 }
 
-// BuildTreeAtWithProjects assembles a tree using projects resolved by the
-// caller. The map is keyed by EffectiveWorkingDir; it prevents resolver calls
-// from leaking into grouping/sorting helpers.
-func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, resolvedProjects map[string]identifier.Project) Tree {
+// BuildTreeAt is BuildTree with an injected clock so tier classification
+// (Current/Recent/Archived, by last-activity age) is deterministic in tests.
+// resolvedProjects is keyed by EffectiveWorkingDir so grouping and sorting
+// helpers perform no filesystem or Git resolution.
+func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, resolvedProjects map[string]identifier.Project) Tree {
 	effectiveMetas, sessionIsIndexed := treeMetasWithLive(metas, live, now, resolvedProjects)
-	return buildTreeAtWithProjects(effectiveMetas, live, decisions, now, resolvedProjects, sessionIsIndexed)
+	return buildTreeAt(effectiveMetas, live, decisions, now, resolvedProjects, sessionIsIndexed)
 }
 
-func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, resolvedProjects map[string]identifier.Project, sessionIsIndexed map[string]bool) Tree {
+func buildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, resolvedProjects map[string]identifier.Project, sessionIsIndexed map[string]bool) Tree {
 	sortSessionMetas(metas, SessionOrderLess)
 	metas = dedupeMetasByID(metas)
 
@@ -1428,8 +1417,8 @@ func (b *treeBuilder) needsYouTier() []TreeNode {
 	b.markArchivedTree(needsYou, b.nodeProjectKey)
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
 	// errored (broken beats blocked) > blocked on a person (a question, an
-	// approval, or a turn that ended on needs_response, #4093) > the rest of
-	// the tier (warnings and restarts). hubapi.NeedsYouBand owns the bands.
+	// approval, #4093) > the rest of the tier (warnings and restarts).
+	// hubapi.NeedsYouBand owns the bands.
 	sortNeedsYou(needsYou)
 	return needsYou
 }
@@ -1524,7 +1513,7 @@ func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions 
 	if len(subset) == 0 {
 		return TreeProject{}, false
 	}
-	tree := buildTreeAtWithProjects(subset, live, decisions, now, resolvedProjects, sessionIsIndexed)
+	tree := buildTreeAt(subset, live, decisions, now, resolvedProjects, sessionIsIndexed)
 	for _, p := range tree.Projects {
 		if p.Key == projectID {
 			return p, true
@@ -1564,7 +1553,7 @@ func projectArchivedDecision(decisions map[ArchiveKey]bool, projectID string, so
 		sources = []string{""}
 	}
 	for _, source := range sources {
-		if v, ok := decisions[ArchiveKey{Kind: "project", ID: projectID, Source: source}]; ok && v {
+		if v, ok := decisions[ProjectDecisionKey(source, projectID)]; ok && v {
 			return true
 		}
 	}
@@ -1589,7 +1578,7 @@ func projectArchivedByEverySource(decisions map[ArchiveKey]bool, projectID strin
 		sources = []string{""}
 	}
 	for _, source := range sources {
-		if v, ok := decisions[ArchiveKey{Kind: "project", ID: projectID, Source: source}]; !ok || !v {
+		if v, ok := decisions[ProjectDecisionKey(source, projectID)]; !ok || !v {
 			return false
 		}
 	}
@@ -1608,6 +1597,10 @@ func sessionSourceFromID(id string) string {
 	return NormalizeDecisionSource(ref.SourceID)
 }
 
+// SessionSourceFromID is sessionSourceFromID for callers outside this
+// package: the source that owns a canonical session identity's decisions.
+func SessionSourceFromID(id string) string { return sessionSourceFromID(id) }
+
 // liveEntrySource returns a live entry's owning source, preferring the
 // rendezvous ref source when present and falling back to the session identity.
 func liveEntrySource(entry LiveEntry) string {
@@ -1616,6 +1609,10 @@ func liveEntrySource(entry LiveEntry) string {
 	}
 	return sessionSourceFromID(entry.SessionID)
 }
+
+// LiveEntrySource is liveEntrySource for callers outside this package: the
+// source that owns a live entry's decisions.
+func LiveEntrySource(entry LiveEntry) string { return liveEntrySource(entry) }
 
 // sortedDecisionSources returns a deterministic, source-only slice for a
 // project's accumulated source set. A nil map yields nil so controller-local

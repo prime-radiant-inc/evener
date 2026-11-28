@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/afero"
@@ -16,6 +17,46 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
+
+// ForkOption configures optional overrides when branching a session via
+// ForkSession, ForkSessionAtUserTurn, or AsideSession.
+type ForkOption func(*forkOptions)
+
+type forkModelOverride struct {
+	profileID string
+	model     string
+}
+
+type forkOptions struct {
+	modelOverride *forkModelOverride
+}
+
+// WithForkModel overrides the child session's persisted provider profile and
+// model instead of inheriting the parent's.
+func WithForkModel(profileID, model string) ForkOption {
+	return func(o *forkOptions) {
+		o.modelOverride = &forkModelOverride{profileID: profileID, model: model}
+	}
+}
+
+func resolveForkOptions(opts []ForkOption) (forkOptions, error) {
+	var resolved forkOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&resolved)
+		}
+	}
+	if resolved.modelOverride != nil {
+		resolved.modelOverride.profileID = strings.TrimSpace(resolved.modelOverride.profileID)
+		resolved.modelOverride.model = strings.TrimSpace(resolved.modelOverride.model)
+		if resolved.modelOverride.profileID == "" && resolved.modelOverride.model == "" {
+			resolved.modelOverride = nil
+		} else if resolved.modelOverride.profileID != "" && resolved.modelOverride.model == "" {
+			return forkOptions{}, errors.New("fork model override requires model when profileID is set")
+		}
+	}
+	return resolved, nil
+}
 
 // ErrDivergencePositionOutOfRange indicates a divergenceTurn that names no
 // entry in the parent transcript: less than 1, or beyond the entry count.
@@ -54,8 +95,8 @@ func divergenceEntryAt(allEntries []transcript.Entry, divergenceTurn int) (trans
 //
 // If parentForkLabel is non-empty, the parent's meta is updated with that label so the
 // parent branch can be identified in session listings.
-func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {
-	return forkSessionFS(afero.NewOsFs(), stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel)
+func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string, opts ...ForkOption) (string, error) {
+	return forkSessionFS(afero.NewOsFs(), stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel, opts...)
 }
 
 // ForkSessionAtUserTurn creates a new session branched from a parent session at a
@@ -69,13 +110,17 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 //
 // If parentForkLabel is non-empty, the parent's meta is updated with that label so
 // the parent branch can be identified in session listings.
-func ForkSessionAtUserTurn(stateDir, parentID string, divergenceTurn int, parentForkLabel string) (childID, originalInput string, err error) {
-	return forkSessionAtUserTurnFS(afero.NewOsFs(), stateDir, parentID, divergenceTurn, parentForkLabel)
+func ForkSessionAtUserTurn(stateDir, parentID string, divergenceTurn int, parentForkLabel string, opts ...ForkOption) (childID, originalInput string, err error) {
+	return forkSessionAtUserTurnFS(afero.NewOsFs(), stateDir, parentID, divergenceTurn, parentForkLabel, opts...)
 }
 
-func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, parentForkLabel string) (string, string, error) {
+func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, parentForkLabel string, opts ...ForkOption) (string, string, error) {
 	if divergenceTurn < 1 {
 		return "", "", fmt.Errorf("%w: divergenceTurn must be >= 1, got %d", ErrDivergencePositionOutOfRange, divergenceTurn)
+	}
+	resolvedOpts, err := resolveForkOptions(opts)
+	if err != nil {
+		return "", "", err
 	}
 
 	deps := defaultForkDeps()
@@ -100,7 +145,7 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 	// The child gets only the prefix before the divergence turn, with nil
 	// replacement turn (the aside pattern): opening the fork never auto-runs
 	// the diverging message.
-	childID, err := writeForkChild(fs, stateDir, parentID, parentHeader, parentMeta, allEntries[:divergenceTurn-1], divergenceTurn, nil, deps)
+	childID, err := writeForkChild(fs, stateDir, parentID, parentHeader, parentMeta, allEntries[:divergenceTurn-1], divergenceTurn, nil, resolvedOpts, deps)
 	if err != nil {
 		return "", "", err
 	}
@@ -116,8 +161,8 @@ func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceT
 	return childID, apptranscript.UserFacingText(divergenceEntry.Turn.Message), nil
 }
 
-func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {
-	return forkSessionWithDeps(fs, stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel, defaultForkDeps())
+func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string, opts ...ForkOption) (string, error) {
+	return forkSessionWithDeps(fs, stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel, defaultForkDeps(), opts...)
 }
 
 func defaultForkDeps() forkSessionDeps {
@@ -141,9 +186,13 @@ type forkSessionDeps struct {
 	maxScanToken int
 }
 
-func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string, deps forkSessionDeps) (string, error) {
+func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string, deps forkSessionDeps, opts ...ForkOption) (string, error) {
 	if divergenceTurn < 1 {
 		return "", fmt.Errorf("%w: divergenceTurn must be >= 1, got %d", ErrDivergencePositionOutOfRange, divergenceTurn)
+	}
+	resolvedOpts, err := resolveForkOptions(opts)
+	if err != nil {
+		return "", err
 	}
 
 	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, deps.maxScanToken)
@@ -165,7 +214,7 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 		return "", fmt.Errorf("load parent session meta: %w", err)
 	}
 
-	childID, err := writeForkChild(fs, stateDir, parentID, parentHeader, parentMeta, prefixEntries, divergenceTurn, &editedMessage, deps)
+	childID, err := writeForkChild(fs, stateDir, parentID, parentHeader, parentMeta, prefixEntries, divergenceTurn, &editedMessage, resolvedOpts, deps)
 	if err != nil {
 		return "", err
 	}
@@ -219,16 +268,17 @@ func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (t
 // and saves the child meta. divergenceTurn is recorded in the child meta as
 // the first turn unique to this branch; editedMessage == nil means the branch
 // diverges past the parent's tip with no replacement turn (the aside case).
-func writeForkChild(fs afero.Fs, stateDir, parentID string, parentHeader transcript.Header, parentMeta schema.SessionMeta, prefixEntries []transcript.Entry, divergenceTurn int, editedMessage *string, deps forkSessionDeps) (string, error) {
-	return writeForkChildWithConfig(fs, stateDir, parentID, parentHeader, parentMeta, prefixEntries, divergenceTurn, editedMessage, nil, deps)
+func writeForkChild(fs afero.Fs, stateDir, parentID string, parentHeader transcript.Header, parentMeta schema.SessionMeta, prefixEntries []transcript.Entry, divergenceTurn int, editedMessage *string, options forkOptions, deps forkSessionDeps) (string, error) {
+	return writeForkChildWithConfig(fs, stateDir, parentID, parentHeader, parentMeta, prefixEntries, divergenceTurn, editedMessage, nil, options, deps)
 }
 
 // forkInheritsParentPrompt reports whether a fork/aside child shares the
 // parent's role and plugin configuration and therefore inherits its launch
 // prompt and baseline.
-func forkInheritsParentPrompt(parentMeta schema.SessionMeta, childCfg schema.ConfigSnapshot) bool {
+func forkInheritsParentPrompt(parentMeta schema.SessionMeta, childCfg schema.ConfigSnapshot, childProfileID string) bool {
 	return !parentMeta.IsSubagent && !parentMeta.Manager && !parentMeta.Config.Manager &&
-		childCfg.AgentName == parentMeta.Config.AgentName && slices.Equal(childCfg.PluginDirs, parentMeta.Config.PluginDirs)
+		childCfg.AgentName == parentMeta.Config.AgentName && slices.Equal(childCfg.PluginDirs, parentMeta.Config.PluginDirs) &&
+		(childProfileID == "" || parentMeta.ProfileID == "" || childProfileID == parentMeta.ProfileID)
 }
 
 // resolveEffectiveSavedSystemPrompt resolves the launch system prompt a saved
@@ -237,10 +287,10 @@ func forkInheritsParentPrompt(parentMeta schema.SessionMeta, childCfg schema.Con
 // chain (while LaunchSystemPrompt == "") finds no unrecovered fork boundary
 // where !forkInheritsParentPrompt.
 func resolveEffectiveSavedSystemPrompt(loadMeta func(id string) (schema.SessionMeta, error), meta schema.SessionMeta, headerPrompt string) (prompt string, legacyMismatched bool) {
-	if recovered := validSavedSystemPrompt(meta.LaunchSystemPrompt); recovered != "" {
+	if recovered := schema.ValidSavedSystemPrompt(meta.LaunchSystemPrompt); recovered != "" {
 		return recovered, false
 	}
-	header := validSavedSystemPrompt(headerPrompt)
+	header := schema.ValidSavedSystemPrompt(headerPrompt)
 	if header == "" {
 		return "", false
 	}
@@ -255,10 +305,10 @@ func resolveEffectiveSavedSystemPrompt(loadMeta func(id string) (schema.SessionM
 		if err != nil {
 			break
 		}
-		if !forkInheritsParentPrompt(parentMeta, cur.Config) {
+		if !forkInheritsParentPrompt(parentMeta, cur.Config, "") {
 			return "", true
 		}
-		if recovered := validSavedSystemPrompt(parentMeta.LaunchSystemPrompt); recovered != "" {
+		if recovered := schema.ValidSavedSystemPrompt(parentMeta.LaunchSystemPrompt); recovered != "" {
 			if header == recovered {
 				return header, false
 			}
@@ -269,7 +319,7 @@ func resolveEffectiveSavedSystemPrompt(loadMeta func(id string) (schema.SessionM
 	return header, false
 }
 
-func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHeader transcript.Header, parentMeta schema.SessionMeta, prefixEntries []transcript.Entry, divergenceTurn int, editedMessage *string, config *schema.ConfigSnapshot, deps forkSessionDeps) (string, error) {
+func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHeader transcript.Header, parentMeta schema.SessionMeta, prefixEntries []transcript.Entry, divergenceTurn int, editedMessage *string, config *schema.ConfigSnapshot, options forkOptions, deps forkSessionDeps) (string, error) {
 	// Mint a new child session ID.
 	childID, err := identifier.NewSessionID()
 	if err != nil {
@@ -284,11 +334,30 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	}
 	// A fork or aside is a new ordinary session, not a resumed Manager.
 	childConfig.Manager = false
+
+	childHeaderProfileID := parentHeader.ProfileID
+	childHeaderModel := parentHeader.Model
+	childMetaProfileID := parentMeta.ProfileID
+	childMetaModel := parentMeta.Model
+	if options.modelOverride != nil {
+		if options.modelOverride.profileID != "" {
+			childHeaderProfileID = options.modelOverride.profileID
+			childMetaProfileID = options.modelOverride.profileID
+		}
+		if options.modelOverride.model != "" {
+			childHeaderModel = options.modelOverride.model
+			childMetaModel = options.modelOverride.model
+		}
+	}
+
 	// The child keeps the parent's launch prompt only when it is the same role:
 	// a delegate or Manager parent, or a config that reselects the agent or its
-	// plugins, makes this a new ordinary session that renders its own.
+	// plugins, or a provider change, makes this a new ordinary session that
+	// renders its own.
 	inherited := ""
-	if forkInheritsParentPrompt(parentMeta, childConfig) {
+	inheritsPrompt := forkInheritsParentPrompt(parentMeta, childConfig, childMetaProfileID) &&
+		(options.modelOverride == nil || options.modelOverride.profileID == "" || parentHeader.ProfileID == "" || childHeaderProfileID == parentHeader.ProfileID)
+	if inheritsPrompt {
 		inherited, _ = resolveEffectiveSavedSystemPrompt(func(id string) (schema.SessionMeta, error) {
 			return schema.LoadSessionMetaWithFS(fs, stateDir, id)
 		}, parentMeta, parentHeader.SystemPrompt)
@@ -297,8 +366,8 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 		SessionID:        childID,
 		ParentSessionID:  parentID,
 		CreatedAt:        now,
-		ProfileID:        parentHeader.ProfileID,
-		Model:            parentHeader.Model,
+		ProfileID:        childHeaderProfileID,
+		Model:            childHeaderModel,
 		WorkingDir:       parentHeader.WorkingDir,
 		Depth:            parentHeader.Depth,
 		BuildVersion:     parentHeader.BuildVersion,
@@ -364,8 +433,8 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	memorySaveUnavailable := childConfig.DisableMemory || (parentMeta.MemorySaveUnavailable && !parentMeta.IsSubagent)
 	childMeta := schema.SessionMeta{
 		ID:                    childID,
-		ProfileID:             parentMeta.ProfileID,
-		Model:                 parentMeta.Model,
+		ProfileID:             childMetaProfileID,
+		Model:                 childMetaModel,
 		CheapModel:            parentMeta.CheapModel,
 		Config:                childConfig,
 		EnvInfo:               parentMeta.EnvInfo,

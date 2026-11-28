@@ -22,8 +22,7 @@ import (
 // The session populates this before each ManageContext call so that checkpoint
 // and summarize have access to data outside the turn history.
 type CompactionMeta struct {
-	SessionID       string   // session id; non-empty only when the session is persistent (has a stateDir)
-	ActivatedSkills []string // skill names activated during this session
+	SessionID string // session id; non-empty only when the session is persistent (has a stateDir)
 	// PendingAskTurnIDs is an operation-local snapshot from the session's
 	// pending owner. Folds retain that execution tail, not a reconstructed ask.
 	PendingAskTurnIDs []string
@@ -103,6 +102,10 @@ type Manager struct {
 	// of char/4 for the bulk of history. Reset to 0 after compaction.
 	lastInputTokens     int // exact input token count from last API response
 	historyLenAtMeasure int // number of turns when lastInputTokens was recorded
+	// measuredAnchor fingerprints the turn at historyLenAtMeasure-1, and
+	// measuredTarget names the target that reported the count (issue #7154).
+	measuredAnchor string
+	measuredTarget string
 
 	// estimate is the memo behind EstimateStatusForRevision. It is only ever a
 	// cache of a value the full walk would produce: see estimateMemo. Guarded by

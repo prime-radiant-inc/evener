@@ -2,44 +2,27 @@
   display: block;
 }
 
+/* The row anatomy is shared with DisclosureHeading; the face below is this widget's. */
 .summary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  composes: foldRow from "../internal/foldHeader.module.css";
+  padding-inline: var(--space-2);
   border-radius: var(--radius-control);
   cursor: pointer;
   list-style: none;
-  color: var(--ink-mid);
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
 .summary::-webkit-details-marker {
   display: none;
 }
 
-.summary:hover:not([aria-disabled="true"]) {
-  background: var(--hover-1);
-}
-
-/* Every variant's ring. Inset because quiet and rule summaries sit flush with
- * the column inside the transcript's clipping scroll port, where an outset
- * ring would lose its sides (topnotespanel.module.css insets for the same
- * reason). */
-.summary:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
+/* A disabled row keeps its attenuated face and drops the shared hover wash. */
+.summary[aria-disabled="true"]:hover {
+  background: none;
 }
 
 .summary[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.5;
-}
-
-@media (max-width: 899px), (any-pointer: coarse) {
-  .summary {
-    min-height: var(--tap-min);
-  }
 }
 
 /* The open disclosure's own persistent affordance - the same "which one is
@@ -99,10 +82,11 @@
   background: none;
 }
 
-/* Turns the shared widgets/chevron icon rather than a text triangle. The
- * icon's box is square, so the rotation below cannot widen its painted box -
- * a `▸` glyph's 6x18 line box, turned 90°, painted 18px wide and escaped
- * whatever row held it (see widgets/chevron's own header). */
+/* Seats the shared widgets/chevron icon rather than a text triangle. The
+ * icon's box is square, so the rotation it owns in widgets/chevron's own
+ * stylesheet cannot widen its painted box - a `▸` glyph's 6x18 line box,
+ * turned 90°, painted 18px wide and escaped whatever row held it (see
+ * widgets/chevron's own header). */
 .chevron {
   display: inline-flex;
   align-items: center;
@@ -114,10 +98,6 @@
   color: var(--ink-low);
 }
 
-.chevron[data-open="true"] {
-  transform: rotate(90deg);
-}
-
 /* The body fades in when the disclosure opens (the reveal recipe, gated by
  * reduced motion there); closing is instant and the chevron carries it. */
 .body {
@@ -126,14 +106,7 @@
 }
 
 /* Opening a disclosure is a small acknowledgement, not a performance: the
- * chevron turns and the body fades up (.body composes the reveal recipe). No
- * slide, no scale, no height animation: the body's size belongs to its
- * content, and the body is only mounted while open.
- *
- * Gated behind prefers-reduced-motion: no-preference - a reader who asked for
- * less motion gets an instant open. */
-@media (prefers-reduced-motion: no-preference) {
-  .chevron {
-    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
-  }
-}
+ * chevron turns (widgets/chevron owns that rotation and its reduced-motion
+ * gate) and the body fades up (.body composes the reveal recipe). No slide, no
+ * scale, no height animation: the body's size belongs to its content, and the
+ * body is only mounted while open. */

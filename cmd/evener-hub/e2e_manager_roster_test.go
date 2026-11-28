@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -221,19 +222,46 @@ func TestManagerRosterEndToEnd(t *testing.T) {
 	if clearedWorker.Thread.Evener.Ref != barrier.Evener.Ref || clearedWorker.Thread.SessionID == barrier.SessionID {
 		t.Fatalf("worker Clear did not retain workspace and replace session: old=%+v new=%+v", barrier, clearedWorker.Thread)
 	}
-	workerClear := managerCall()
-	workerClearEntries := rosterModelEntries(t, workerClear, watchID, managerRef, manager.SessionID)
-	if entry := workerClearEntries[barrier.Evener.Ref]; entry.Ref != barrier.Evener.Ref || entry.Kind != "new" {
-		t.Fatalf("worker Clear delivered entry=%+v, want live replacement", entry)
+	// A worker Clear is two roster changes on one ref: the retired session
+	// disappears, then the replacement appears once its session is live. Each
+	// change can open its own Manager turn, and when the two land in one publish
+	// the broker merges them. Drain until the replacement's own instance shows
+	// up rather than assuming the first turn after the clear already names it;
+	// every turn drained here is answered, so no in-flight turn is left behind.
+	wantWorker := clearedWorker.Thread.Evener.InstanceID
+	for {
+		workerClear := managerCall()
+		seen := false
+		for _, entries := range rosterModelCall(t, workerClear, watchID, managerRef, manager.SessionID) {
+			if entry := entries[barrier.Evener.Ref]; entry.Kind == "new" && entry.RosterInstanceID == wantWorker {
+				seen = true
+			}
+		}
+		workerClear.RespondToolCall("communicate", communicateArgs("worker Clear received"))
+		if seen {
+			break
+		}
 	}
-	workerClear.RespondToolCall("communicate", communicateArgs("worker Clear received"))
 	// Clear retains the workspace ref, but replaces the Manager session ID.
-	awaitThread(ctx, t, human, managerRef, "Manager Clear capability", func(thread appwire.Thread) bool { return thread.Evener.Capabilities.Clear })
-	cleared, err := clientRequest[appwire.ThreadClearResponse](ctx, human, appwire.MethodThreadClear, appwire.ThreadClearParams{
-		Ref: managerRef, ExpectedInstanceID: manager.Evener.InstanceID, ClientMutationID: newMutationID(t),
-	})
-	if err != nil {
-		t.Fatal(err)
+	// The Manager's roster watch stays armed, so a worker's roster change can
+	// wake it between the readiness wait below and the clear, and a session
+	// with turn work withdraws Clear by design. That wake settles on its own
+	// without a model round, so wait for a quiet session again instead of
+	// reporting the race as an unavailable clear.
+	var cleared appwire.ThreadClearResponse
+	for attempt := 0; ; attempt++ {
+		awaitThread(ctx, t, human, managerRef, "Manager Clear capability", func(thread appwire.Thread) bool {
+			return thread.Evener.Capabilities.Clear && thread.Evener.ActiveTurnID == ""
+		})
+		cleared, err = clientRequest[appwire.ThreadClearResponse](ctx, human, appwire.MethodThreadClear, appwire.ThreadClearParams{
+			Ref: managerRef, ExpectedInstanceID: manager.Evener.InstanceID, ClientMutationID: newMutationID(t),
+		})
+		if err == nil {
+			break
+		}
+		if attempt == 2 || !threadBusyRefusal(err) {
+			t.Fatal(err)
+		}
 	}
 	if cleared.Thread.Evener.Ref != managerRef || cleared.Thread.SessionID == manager.SessionID || !cleared.Thread.Evener.Manager {
 		t.Fatalf("Clear did not preserve Manager workspace while replacing session ID: old=%+v new=%+v", manager.Evener, cleared.Thread.Evener)
@@ -287,6 +315,15 @@ func TestManagerRosterEndToEnd(t *testing.T) {
 
 func rosterModelEntries(t *testing.T, call *fakellm.Call, watchID, managerRef, sessionID string) map[string]appwire.RosterEvent {
 	t.Helper()
+	frames := rosterModelCall(t, call, watchID, managerRef, sessionID)
+	return frames[len(frames)-1]
+}
+
+// rosterModelCall returns every roster frame the model call carries, oldest
+// first, and holds each frame to the Manager's own contract: the armed watch ID
+// rides the round and the Manager never lists itself.
+func rosterModelCall(t *testing.T, call *fakellm.Call, watchID, managerRef, sessionID string) []map[string]appwire.RosterEvent {
+	t.Helper()
 	if watchID != "" && !call.Contains(watchID) {
 		t.Fatalf("Manager model round lacks roster watch ID %s", watchID)
 	}
@@ -294,7 +331,7 @@ func rosterModelEntries(t *testing.T, call *fakellm.Call, watchID, managerRef, s
 	for _, entries := range frames {
 		assertRosterExcludesManager(t, entries, managerRef, sessionID)
 	}
-	return frames[len(frames)-1]
+	return frames
 }
 
 func rosterModelFrames(t *testing.T, call *fakellm.Call) []map[string]appwire.RosterEvent {
@@ -343,6 +380,25 @@ func TestRosterModelFramesReplay(t *testing.T) {
 	frames := rosterModelFrames(t, call)
 	if len(frames) != 3 || frames[0]["local:manager"].Ref == "" || frames[1]["local:older-worker"].Ref == "" || frames[2]["local:latest-worker"].Ref == "" {
 		t.Fatalf("replayed roster frames=%+v, want all three in wire order", frames)
+	}
+}
+
+// threadBusyRefusal reports whether a clear was refused because the session
+// still held turn work when the request arrived: the hub's live-read gate says
+// the action is unavailable, and the daemon refuses the mutation as a conflict
+// naming the unresolved work. Any other refusal is a real failure, not a race.
+func threadBusyRefusal(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	switch wire.Code {
+	case appwire.CodeUnavailable:
+		return evenerErrorInfoFromData(wire.Data) == string(appwire.ErrorActionUnavailable)
+	case appwire.CodeConflict:
+		return strings.Contains(wire.Message, "thread has unresolved ")
+	default:
+		return false
 	}
 }
 

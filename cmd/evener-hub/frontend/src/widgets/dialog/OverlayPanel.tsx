@@ -1,7 +1,17 @@
-import { type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
+import {
+  type HTMLAttributes,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useId,
+  useRef,
+} from "react";
 import { LayerFocusScope } from "../focusscope";
+import { IconButton } from "../iconbutton";
 import { requireClass } from "../internal/requireClass";
-import { usePresence } from "../internal/usePresence";
+import { usePresence, useShownWhileClosing } from "../internal/usePresence";
 import { CloseIcon } from "./CloseIcon";
 import styles from "./dialog.module.css";
 
@@ -9,6 +19,8 @@ export interface OverlayPanelProps {
   open: boolean;
   onClose: () => void;
   title: string;
+  /** Internal seam: Sheet actions and Close share a row with the title. */
+  headerActions?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
   /** Caller-composed class for the panel element: a shared base class plus
@@ -30,12 +42,18 @@ export interface OverlayPanelProps {
   bodyClassName?: string;
   /** Optional extra class appended to the header element's base `.header` class. */
   headerClassName?: string;
-  /** Optional inline style applied to the panel element. Defaults to
-   * undefined; existing consumers that don't pass it are unchanged. Used by
-   * the expandable Sheet to drive a dynamic peek/full height on the panel
-   * itself (not a child wrapper) so a `.bottom` max-height cap can't clamp
-   * the full-screen geometry. */
-  style?: CSSProperties;
+  /** Internal seam, not part of the widget surface: the panel element, for a
+   * gesture that reads or drives its transform directly. */
+  panelRef?: RefObject<HTMLDivElement | null>;
+  /** Internal seam: the body element, for a gesture that reads or releases
+   * its scroll. */
+  bodyRef?: RefObject<HTMLDivElement | null>;
+  /** Internal seam: the scrim element. It is assigned alongside OverlayPanel's
+   * own ref, which usePresence watches for the exit. */
+  scrimRef?: RefObject<HTMLDivElement | null>;
+  /** Internal seam: extra props for the header element, where a sheet's drag
+   * gesture starts. */
+  headerProps?: Pick<HTMLAttributes<HTMLElement>, "onPointerDown">;
 }
 
 const SCRIM = requireClass(styles.scrim, "dialog.module.css", "scrim");
@@ -47,46 +65,59 @@ const SCRIM_CLASS: Record<OverlayPanelProps["motion"], string> = {
 
 const CLASS = {
   header: requireClass(styles.header, "dialog.module.css", "header"),
+  headerWithActions: requireClass(styles.headerWithActions, "dialog.module.css", "headerWithActions"),
+  headerActions: requireClass(styles.headerActions, "dialog.module.css", "headerActions"),
   title: requireClass(styles.title, "dialog.module.css", "title"),
   body: requireClass(styles.body, "dialog.module.css", "body"),
   footer: requireClass(styles.footer, "dialog.module.css", "footer"),
-  closeButton: requireClass(styles.closeButton, "dialog.module.css", "closeButton"),
+  closeSeat: requireClass(styles.closeSeat, "dialog.module.css", "closeSeat"),
 };
 
 /**
  * Shared modal skeleton for Dialog and Sheet ("otherwise the Dialog
  * contract" - see the wave-2 plan): scrim, aria-modal dialog role labelled
  * by its title, Escape-to-close, click-the-scrim-to-close, a trapped
- * FocusScope, and a close button. The close button is placed LAST in DOM
- * order (after body and footer) rather than in the header, so a dialog
- * with focusable body content focuses that content first on open - see
- * this task's report - while CSS pins it to the header's top-right corner
- * regardless of DOM position.
+ * FocusScope, and one shared IconButton to close. Without header actions,
+ * Close comes last in DOM order so initial focus can go to the content.
+ * A sheet with header actions groups Close after those controls in the header,
+ * in visual and keyboard order.
  */
 export function OverlayPanel({
   open,
   onClose,
   title,
+  headerActions,
   children,
   footer,
   panelClassName,
   handle,
   bodyClassName,
   headerClassName,
-  style,
   motion,
+  panelRef,
+  bodyRef,
+  scrimRef,
+  headerProps,
 }: OverlayPanelProps) {
   const titleId = useId();
-  const scrimRef = useRef<HTMLDivElement>(null);
-  const { mounted, phase } = usePresence(open, scrimRef, {
+  const internalScrimRef = useRef<HTMLDivElement>(null);
+  // The scrim node has two readers: usePresence watches it for the exit, and
+  // a caller's gesture code may write its opacity. Assigning both refs from
+  // the DOM node keeps either one from going without.
+  const setScrimNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      internalScrimRef.current = node;
+      if (scrimRef !== undefined) scrimRef.current = node;
+    },
+    [scrimRef],
+  );
+  const { mounted, phase } = usePresence(open, internalScrimRef, {
     exit: motion === "slide" ? "--motion-duration-spatial-exit" : "--motion-duration-exit",
   });
   // While the layer leaves it renders what it showed when it closed: a caller
   // that clears its own state on close must not see its dialog empty out
   // mid-exit.
-  const shownRef = useRef({ title, children, footer, handle });
-  if (open) shownRef.current = { title, children, footer, handle };
-  const shown = shownRef.current;
+  const shown = useShownWhileClosing(open, { title, headerActions, children, footer, handle });
   // Radix-style pointer-down-outside semantics: the gesture that decides
   // whether this counts as "outside the panel" is where the PRESS
   // started, not where it ends. scrimPressStartedOnScrimRef records that
@@ -109,6 +140,11 @@ export function OverlayPanel({
 
   if (!mounted) return null;
   const closing = phase === "closing";
+  const hasHeaderActions = Boolean(shown.headerActions);
+  const headerClass = [CLASS.header, headerClassName, hasHeaderActions && CLASS.headerWithActions]
+    .filter(Boolean)
+    .join(" ");
+  const closeButton = <IconButton label="Close" icon={<CloseIcon />} variant="quiet" size="xs" onClick={onClose} />;
 
   function handleScrimMouseDown(event: MouseEvent<HTMLDivElement>) {
     scrimPressStartedOnScrimRef.current = event.target === event.currentTarget;
@@ -151,7 +187,7 @@ export function OverlayPanel({
     // biome-ignore lint/a11y/noStaticElementInteractions: mouse-only scrim dismiss; Escape is the keyboard path, see above
     // biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only scrim dismiss; Escape is the keyboard path, see above
     <div
-      ref={scrimRef}
+      ref={setScrimNode}
       className={SCRIM_CLASS[motion]}
       data-motion={phase}
       inert={closing}
@@ -162,24 +198,31 @@ export function OverlayPanel({
         {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole lint/a11y/noStaticElementInteractions: the dialog role and aria-modal are dropped together only while the layer leaves, inert, see above */}
         <div
           role={closing ? undefined : "dialog"}
+          tabIndex={-1}
           aria-modal={closing ? undefined : "true"}
           aria-labelledby={titleId}
           className={panelClassName}
+          ref={panelRef}
           data-motion={phase}
           onKeyDown={handleKeyDown}
-          style={style}
         >
           {shown.handle}
-          <header className={headerClassName ? `${CLASS.header} ${headerClassName}` : CLASS.header}>
+          <header className={headerClass} {...headerProps}>
             <h2 id={titleId} className={CLASS.title}>
               {shown.title}
             </h2>
+            {hasHeaderActions && (
+              <div className={CLASS.headerActions}>
+                {shown.headerActions}
+                {closeButton}
+              </div>
+            )}
           </header>
-          <div className={bodyClassName ? `${CLASS.body} ${bodyClassName}` : CLASS.body}>{shown.children}</div>
+          <div ref={bodyRef} className={bodyClassName ? `${CLASS.body} ${bodyClassName}` : CLASS.body}>
+            {shown.children}
+          </div>
           {shown.footer !== undefined && <div className={CLASS.footer}>{shown.footer}</div>}
-          <button type="button" className={CLASS.closeButton} onClick={onClose} aria-label="Close">
-            <CloseIcon />
-          </button>
+          {!hasHeaderActions && <span className={CLASS.closeSeat}>{closeButton}</span>}
         </div>
       </LayerFocusScope>
     </div>

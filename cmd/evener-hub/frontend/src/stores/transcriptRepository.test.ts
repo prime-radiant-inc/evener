@@ -5429,6 +5429,80 @@ it("a pre-cut start+wake pair over a wait-free snapshot installs nothing and kee
   owner.dispose();
 });
 
+it("overlay/end reconciliation treats a recorded quiet_yield with matching callId as covering its preview without paging older history", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  let pageCalls = 0;
+  const quietItem: ThreadItem = {
+    type: "systemMessage",
+    id: "item_quiet_41",
+    transcriptKey: "item_quiet_41",
+    turnId: "turn_1",
+    position: { entry: 41, item: 0 },
+    version: 41,
+    roundId: "r1",
+    callId: "call_q",
+    eventKind: "quiet_yield",
+    text: "Ended turn quietly",
+  };
+  const historyReply: ThreadReadResponse = {
+    ...read("quiet", 41),
+    olderCursor: "cursor-older",
+  };
+  const firstTurn = historyReply.thread.turns?.[0];
+  if (firstTurn) {
+    historyReply.thread.turns = [{ ...firstTurn, items: [quietItem] }];
+  }
+  const owner = new TranscriptRepository(fixture.cache, {
+    ref,
+    threadId,
+    historyKey,
+    identity,
+    clearEpoch: 0,
+    lifetime: 1,
+    now: () => Date.now(),
+    readHistory: async () => historyReply,
+    readHistoryPage: async ({ snapshot }) => {
+      pageCalls += 1;
+      return {
+        data: [],
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot,
+        asOf: "2026-11-08T00:00:00Z",
+        servedFrom: "live-daemon",
+      };
+    },
+  });
+  expect(owner.acceptRead(read("base"), { lifetime: 1, readId: "r0", boundary: "b0" })).toBe(true);
+  await owner.settled();
+  expect(
+    owner.accept(
+      {
+        method: "overlay/upserted",
+        params: {
+          ref,
+          threadId,
+          item: {
+            key: "preview:call_q",
+            kind: "preview",
+            turnId: "turn_1",
+            roundId: "r1",
+            callId: "call_q",
+            item: { type: "agentMessage", id: "preview:call_q", turnId: "turn_1", callId: "call_q", text: "draft" },
+          },
+        },
+      } as AnyNotification,
+      { lifetime: 1 },
+    ),
+  ).toBe(true);
+  owner.accept({ method: "overlay/end", params: { ref, threadId, roundId: "r1" } } as AnyNotification, { lifetime: 1 });
+  await vi.waitFor(() => expect(owner.getSnapshot()?.overlay?.["preview:call_q"]).toBeUndefined());
+  await owner.settled();
+  expect(pageCalls).toBe(0);
+  owner.dispose();
+});
+
 // Scenario 5: a buffered active-status + announcement pair behind a Stop the
 // snapshot already reflected must not revive the stopped turn, and the
 // buffered wait start against a wait-free snapshot installs nothing.

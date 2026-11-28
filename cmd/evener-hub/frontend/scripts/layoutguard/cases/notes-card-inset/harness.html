@@ -41,25 +41,29 @@
 </style>
 </head>
 <body>
-<!-- TopNotesPanel.tsx, expanded: the card root with its header trigger and the
-     body content inside. -->
+<!-- TopNotesPanel.tsx, expanded: the card root, the shared Disclosure's
+     details/summary trigger, and the body content inside. -->
 <div class="paneHost">
 <div class="pane" id="expandedPane">
   <div class="body" id="expandedBody" data-pane-scaffold="session:local:notes-card-inset">
   <div class="contentColumn">
     <div class="topNotesPanel" id="expandedPanel">
-      <button type="button" class="expandedHeader" aria-expanded="true">
-        <span class="summaryLeft">
-          <span class="chevron" data-open="true"><svg width="16" height="16" aria-hidden="true"></svg></span>
-          <span>Session notes</span>
-        </span>
-      </button>
-      <div class="expandedBody">
-        <div class="section">
-          <h3 class="eyebrow">Your note</h3>
-          <p class="prose">A saved note.</p>
+      <details class="disclosure-details" open>
+        <summary class="disclosure-summary expandedHeader">
+          <span class="chevron"><svg width="16" height="16" aria-hidden="true"></svg></span>
+          <span class="summaryLeft">
+            <span class="eyebrow">Session notes</span>
+          </span>
+        </summary>
+        <div class="disclosure-body">
+          <div class="expandedBody">
+            <div class="section">
+              <h3 class="eyebrow">Your note</h3>
+              <p class="prose">A saved note.</p>
+            </div>
+          </div>
         </div>
-      </div>
+      </details>
     </div>
     <div class="transcriptFill"></div>
   </div>
@@ -74,13 +78,15 @@
   <div class="body" id="collapsedBody" data-pane-scaffold="session:local:notes-card-inset">
   <div class="contentColumn">
     <div class="topNotesPanel" id="collapsedPanel">
-      <button type="button" class="summary" aria-expanded="false">
-        <span class="summaryLeft">
-          <span class="chevron" data-open="false"><svg width="16" height="16" aria-hidden="true"></svg></span>
-          <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
-          <span class="clampedText">A saved note.</span>
-        </span>
-      </button>
+      <details class="disclosure-details">
+        <summary class="disclosure-summary summary">
+          <span class="chevron"><svg width="16" height="16" aria-hidden="true"></svg></span>
+          <span class="summaryLeft">
+            <span class="sourceIcon" aria-hidden="true"><svg width="14" height="14" aria-hidden="true"></svg></span>
+            <span class="clampedText">A saved note.</span>
+          </span>
+        </summary>
+      </details>
     </div>
     <div class="transcriptFill"></div>
   </div>
@@ -103,7 +109,7 @@ function cardGeometry(bodyId, panelId) {
   const clipTop = bodyRect.top;
   const scrollPaddingTop = parseFloat(bodyStyle.paddingTop);
   const paddingBoxTop = clipTop + scrollPaddingTop;
-  const triggerRect = panel.querySelector("button").getBoundingClientRect();
+    const triggerRect = panel.querySelector("summary").getBoundingClientRect();
   return {
     // Positive: the card's top edge stands clear of the clip line, so its
     // border and corners paint.
@@ -127,14 +133,26 @@ function cardGeometry(bodyId, panelId) {
     triggerHeight: triggerRect.height,
     // The header row must not double the card's own bottom edge in the
     // collapsed state: the summary carries no edge of its own.
-    triggerBorderBottom: parseFloat(getComputedStyle(panel.querySelector("button")).borderBottomWidth),
+    triggerBorderBottom: parseFloat(getComputedStyle(panel.querySelector("summary")).borderBottomWidth),
   };
 }
 
-window.measure = () => ({
-  expanded: cardGeometry("#expandedBody", "#expandedPanel"),
-  collapsed: cardGeometry("#collapsedBody", "#collapsedPanel"),
-});
+window.measure = () => {
+  const expanded = cardGeometry("#expandedBody", "#expandedPanel");
+  const collapsed = cardGeometry("#collapsedBody", "#collapsedPanel");
+  // A reserved system edge can select the mobile shell in a wide viewport.
+  const host = document.querySelector("#collapsedPane").parentElement;
+  const panel = document.querySelector("#collapsedPanel");
+  const transcript = panel.nextElementSibling;
+  host.setAttribute("data-mobile", "");
+  const visibleTop = transcript.getBoundingClientRect().top;
+  const summaryHeight = panel.offsetHeight;
+  host.setAttribute("data-notes-hidden", "");
+  const spaceReleased = visibleTop - transcript.getBoundingClientRect().top;
+  host.removeAttribute("data-notes-hidden");
+  host.removeAttribute("data-mobile");
+  return { expanded, collapsed, summaryHeight, spaceReleased };
+};
 </script>
 </body>
 </html>

@@ -2,7 +2,7 @@ import { type ReactElement, useState } from "react";
 import { ACTIVITY_TABS, activityTabSpec } from "../../shell/activitybar/activityTabs";
 import { cadenceStateFor, SIGNAL_STATES } from "../../shell/sessionStatus";
 import type { ActivityScope, ActivityTab } from "../../shell/statusbar/statusScope";
-import { CloseIcon, IconButton, Popover, StatusDot } from "../../widgets";
+import { CloseIcon, CountButton, type CountButtonOrientation, IconButton, Popover, StatusDot } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { ActivityBodyClock } from "../session/chrome/activityTime";
@@ -14,8 +14,6 @@ const CLASS = {
   peekHead: requireClass(styles.peekHead, "zoom.module.css", "peekHead"),
   peekBody: requireClass(styles.peekBody, "zoom.module.css", "peekBody"),
   activityControls: requireClass(styles.activityControls, "zoom.module.css", "activityControls"),
-  activityChip: requireClass(styles.activityChip, "zoom.module.css", "activityChip"),
-  activityLabel: requireClass(styles.activityLabel, "zoom.module.css", "activityLabel"),
   state: requireClass(styles.state, "zoom.module.css", "state"),
   stateIndicator: requireClass(styles.stateIndicator, "zoom.module.css", "stateIndicator"),
   stateLabel: requireClass(styles.stateLabel, "zoom.module.css", "stateLabel"),
@@ -68,11 +66,24 @@ export function ActivityPeek({
   );
 }
 
-export function ScopeActivityControls({ paneId, scope }: { paneId: string; scope: ActivityScope }) {
+export function ScopeActivityControls({
+  paneId,
+  scope,
+  compact = false,
+  orientation = "row",
+}: {
+  paneId: string;
+  scope: ActivityScope;
+  /** The header and phone column drop the visible label; the accessible name
+   * still carries the category and count. */
+  compact?: boolean;
+  /** The 52px spine stacks each counter's glyph over its count. */
+  orientation?: CountButtonOrientation;
+}) {
   const [tab, setTab] = useState<ActivityTab | null>(null);
   return (
     <div className={CLASS.activityControls} data-testid="cascade-activity-controls">
-      {ACTIVITY_TABS.filter((spec) => spec.id !== "about").map((spec) => (
+      {ACTIVITY_TABS.filter((spec) => spec.glyph !== null).map((spec) => (
         <ActivityPeek
           key={spec.id}
           paneId={paneId}
@@ -81,18 +92,17 @@ export function ScopeActivityControls({ paneId, scope }: { paneId: string; scope
           open={tab === spec.id}
           onClose={() => setTab(null)}
           trigger={
-            <button
-              type="button"
-              className={CLASS.activityChip}
-              aria-label={`${spec.chipLabel(scope.counts)} - peek at ${scope.leaf.ref}`}
-              aria-expanded={tab === spec.id}
+            <CountButton
+              glyph={spec.glyph}
+              label={spec.label}
+              count={spec.chipCount(scope.counts)}
+              accessibleLabel={`${spec.chipLabel(scope.counts)} - peek at ${scope.leaf.ref}`}
+              compact={compact}
+              orientation={orientation}
+              pressed={tab === spec.id}
               aria-haspopup="dialog"
               onClick={() => setTab(tab === spec.id ? null : spec.id)}
-            >
-              <span aria-hidden="true">{spec.glyph}</span>
-              <span className={CLASS.activityLabel}>{spec.label}</span>
-              <span>{spec.chipCount(scope.counts)}</span>
-            </button>
+            />
           }
         />
       ))}

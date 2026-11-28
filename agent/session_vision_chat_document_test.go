@@ -366,7 +366,7 @@ func TestDescribeImage_ChatVisionRouteFallsBackToDocumentCapableSessionModel(t *
 		mu.Lock()
 		googleRequests++
 		mu.Unlock()
-		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"pdf-result-chat-fallback"}]},"finishReason":"STOP"}]}`))
+		_, _ = w.Write([]byte(`{"id":"int_pdf","model":"pdf-model","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"pdf-result-chat-fallback"}]}]}`))
 	}))
 	t.Cleanup(googleSrv.Close)
 

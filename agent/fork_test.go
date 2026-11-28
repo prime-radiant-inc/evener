@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
@@ -48,8 +49,8 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("second reply")),
 	}
 	for _, turn := range turns {
-		if err := tw.Append(turn); err != nil {
-			t.Fatalf("Append turn: %v", err)
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record turn: %v", err)
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -404,7 +405,12 @@ func TestForkAndAsidePreserveCheapModel(t *testing.T) {
 				return ForkSession(stateDir, parentID, 3, "edited", "")
 			},
 		},
-		{name: "aside", create: AsideSession},
+		{
+			name: "aside",
+			create: func(stateDir, parentID string) (string, error) {
+				return AsideSession(stateDir, parentID)
+			},
+		},
 	}
 	routes := []struct {
 		name         string
@@ -708,7 +714,7 @@ func TestForkSession_RestorePreservesAcceptedInputBudget(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	restored := restoreBudgetSession(t, client, childMeta, stateDir, nil)
+	restored := restoreBudgetSession(t, client, childMeta, stateDir)
 
 	restored.mu.Lock()
 	acceptedAtRestore := restored.turns
@@ -871,8 +877,8 @@ func TestForkAndAsideReplayLargeTranscriptLine(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reply")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
 	} {
-		if err := tw.Append(turn); err != nil {
-			t.Fatalf("Append turn: %v", err)
+		if _, err := tw.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record turn: %v", err)
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -907,15 +913,18 @@ func TestRootForkReusesParentSystemPromptVerbatim(t *testing.T) {
 	// The marker keeps every assertion off template prose.
 	for _, tc := range []struct {
 		name   string
+		opts   []ForkOption
 		resave func(*schema.SessionMeta)
 		resume *schema.ConfigSnapshot
 		shares bool
 	}{
 		{name: "root-to-root", shares: true},
+		{name: "same-provider-model-override", opts: []ForkOption{WithForkModel("openai", "gpt-5.4")}, shares: true},
 		{name: "manager", resave: func(m *schema.SessionMeta) { m.Manager, m.Config.Manager = true, true }},
 		{name: "delegate", resave: func(m *schema.SessionMeta) { m.IsSubagent = true }},
 		{name: "agent-reselected", resume: &schema.ConfigSnapshot{AgentName: "other-agent"}},
 		{name: "plugins-reselected", resume: &schema.ConfigSnapshot{PluginDirs: []string{"/plugins/fresh"}}},
+		{name: "cross-provider-model-override", opts: []ForkOption{WithForkModel("anthropic", "claude-opus-4-5")}, shares: false},
 	} {
 		stateDir := t.TempDir()
 		parent := newSession(t, withStateDir(stateDir), withConfig(SessionConfig{MaxSubagentDepth: 2,
@@ -933,7 +942,7 @@ func TestRootForkReusesParentSystemPromptVerbatim(t *testing.T) {
 				t.Fatalf("SaveSessionMeta(parent): %v", err)
 			}
 		}
-		childID, err := ForkSession(stateDir, parentID, 1, "forked", "")
+		childID, err := ForkSession(stateDir, parentID, 1, "forked", "", tc.opts...)
 		if tc.resume != nil {
 			childID, err = AsideSessionWithConfig(stateDir, parentID, *tc.resume)
 		}
@@ -987,8 +996,8 @@ func rewriteLegacyForkHeader(t *testing.T, stateDir, childID string, legacyPromp
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for _, entry := range entries {
-		if err := tw.Append(entry.Turn); err != nil {
-			t.Fatalf("Append: %v", err)
+		if _, err := tw.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
+			t.Fatalf("Record: %v", err)
 		}
 	}
 	if err := tw.Close(); err != nil {
@@ -1139,5 +1148,149 @@ func TestLegacyMismatchedForkRestoreDiscardsParentPromptAndPersistsChildPrompt(t
 				t.Fatalf("grandchild baseline = %+v, want %+v", grandchildMeta.LaunchEnvBaseline, savedMeta.LaunchEnvBaseline)
 			}
 		})
+	}
+}
+
+func TestForkSession_WithForkModel(t *testing.T) {
+	t.Parallel()
+	t.Run("fork session overrides child profile and model", func(t *testing.T) {
+		t.Parallel()
+		stateDir, parentID := buildParentSession(t)
+
+		childID, err := ForkSession(stateDir, parentID, 3, "second task, switched", "", WithForkModel("anthropic", "claude-opus-4-5"))
+		if err != nil {
+			t.Fatalf("ForkSession: %v", err)
+		}
+		childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta(child): %v", err)
+		}
+		if childMeta.ProfileID != "anthropic" || childMeta.Model != "claude-opus-4-5" {
+			t.Fatalf("childMeta profile/model = (%q, %q), want (%q, %q)", childMeta.ProfileID, childMeta.Model, "anthropic", "claude-opus-4-5")
+		}
+		childHeader := sessionHeader(t, stateDir, childID)
+		if childHeader.ProfileID != "anthropic" || childHeader.Model != "claude-opus-4-5" {
+			t.Fatalf("childHeader profile/model = (%q, %q), want (%q, %q)", childHeader.ProfileID, childHeader.Model, "anthropic", "claude-opus-4-5")
+		}
+		parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta(parent): %v", err)
+		}
+		if parentMeta.ProfileID != "openai" || parentMeta.Model != "gpt-5.2" {
+			t.Fatalf("parentMeta mutated: (%q, %q)", parentMeta.ProfileID, parentMeta.Model)
+		}
+	})
+
+	t.Run("fork session at user turn overrides child profile and model", func(t *testing.T) {
+		t.Parallel()
+		stateDir, parentID := buildParentSession(t)
+
+		childID, originalInput, err := ForkSessionAtUserTurn(stateDir, parentID, 3, "", WithForkModel("openai", "gpt-5.4"))
+		if err != nil {
+			t.Fatalf("ForkSessionAtUserTurn: %v", err)
+		}
+		if originalInput != "second task" {
+			t.Fatalf("originalInput = %q, want %q", originalInput, "second task")
+		}
+		childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta(child): %v", err)
+		}
+		if childMeta.ProfileID != "openai" || childMeta.Model != "gpt-5.4" {
+			t.Fatalf("childMeta profile/model = (%q, %q), want (%q, %q)", childMeta.ProfileID, childMeta.Model, "openai", "gpt-5.4")
+		}
+		childHeader := sessionHeader(t, stateDir, childID)
+		if childHeader.ProfileID != "openai" || childHeader.Model != "gpt-5.4" {
+			t.Fatalf("childHeader profile/model = (%q, %q), want (%q, %q)", childHeader.ProfileID, childHeader.Model, "openai", "gpt-5.4")
+		}
+	})
+
+	t.Run("rejects profile without model before creating child", func(t *testing.T) {
+		t.Parallel()
+		stateDir, parentID := buildParentSession(t)
+		before := sessionArtifactNames(t, stateDir)
+
+		if _, err := ForkSession(stateDir, parentID, 3, "edited", "", WithForkModel("anthropic", "")); err == nil {
+			t.Fatal("ForkSession accepted profileID without model")
+		}
+		if after := sessionArtifactNames(t, stateDir); after != before {
+			t.Fatalf("artifacts changed on error:\nbefore:\n%s\nafter:\n%s", before, after)
+		}
+	})
+}
+
+// A cross-provider fork regenerates its launch system prompt for the target
+// provider on restore instead of keeping the parent's provider-specific prompt
+// (including its surface project doc files).
+func TestCrossProviderForkRegeneratesProviderPromptOnRestore(t *testing.T) {
+	t.Parallel()
+	const claudeDocSentinel = "ANTHROPIC_CLAUDE_DOC_SENTINEL_7a2c"
+	const agentsDocSentinel = "SHARED_AGENTS_DOC_SENTINEL_4b19"
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+	writeTestFile(t, filepath.Join(workDir, "AGENTS.md"), agentsDocSentinel)
+	writeTestFile(t, filepath.Join(workDir, "CLAUDE.md"), claudeDocSentinel)
+
+	parentClient := llm.NewClient()
+	parentClient.Register(&fakeAdapter{name: "openai"})
+	parent, err := NewSession(parentClient, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
+		StateDir:    stateDir,
+		ForceRealIO: true,
+		testOnly:    testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	parent.appendTurn(schema.TurnUserInput, llm.User("start"))
+	parentID, parentPrompt := parent.ID(), parent.cachedSystemPrompt
+	parent.Close()
+	if strings.Contains(parentPrompt, claudeDocSentinel) {
+		t.Fatalf("setup: OpenAI parent prompt unexpectedly included CLAUDE.md sentinel")
+	}
+
+	childID, err := ForkSession(stateDir, parentID, 1, "continue on anthropic", "", WithForkModel("anthropic", "claude-opus-4-5"))
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	if hdr := sessionHeader(t, stateDir, childID); hdr.SystemPrompt != "" {
+		t.Fatalf("cross-provider child header inherited SystemPrompt, want empty for regenerate on restore")
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.LaunchEnvBaseline != (envctx.Snapshot{}) {
+		t.Fatalf("cross-provider child LaunchEnvBaseline = %+v, want zero", childMeta.LaunchEnvBaseline)
+	}
+
+	anthropicProfile, err := provider.Resolve(provider.EmbeddedRegistry(), "anthropic/claude-opus-4-5")
+	if err != nil {
+		t.Fatalf("provider.Resolve(anthropic): %v", err)
+	}
+	childClient := llm.NewClient()
+	childClient.Register(&fakeAdapter{name: "anthropic"})
+	restored, err := RestoreSessionFromMetaWithConfig(
+		childClient,
+		anthropicProfile,
+		execenv.NewLocalExecutionEnvironment(workDir),
+		childMeta,
+		RestoreSessionConfig{
+			StateDir: stateDir,
+			testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	if !restored.systemPromptFrozen || restored.cachedSystemPrompt == parentPrompt {
+		t.Fatalf("restored cross-provider fork did not render a fresh frozen prompt (frozen=%t)", restored.systemPromptFrozen)
+	}
+	if !strings.Contains(restored.cachedSystemPrompt, claudeDocSentinel) || !strings.Contains(restored.cachedSystemPrompt, agentsDocSentinel) {
+		t.Fatalf("restored Anthropic fork prompt did not load CLAUDE.md + AGENTS.md:\n%s", restored.cachedSystemPrompt)
+	}
+	if saved := restored.Meta(); saved.LaunchSystemPrompt != restored.cachedSystemPrompt {
+		t.Fatalf("restored child meta LaunchSystemPrompt did not persist regenerated prompt")
 	}
 }

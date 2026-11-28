@@ -28,7 +28,7 @@ import {
   useHostInstances,
 } from "../../../../stores/credentials";
 import { hostInstanceIdentity, isConfiguredHost, useHostsStore } from "../../../../stores/hosts";
-import { Button, EmptyState, InlineNotice, Skeleton } from "../../../../widgets";
+import { Button, EmptyState, InlineNotice, type InlineNoticeProps, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostPicker } from "../../HostPicker";
 import { useSettingsHost } from "../../settingsHost";
@@ -126,6 +126,16 @@ interface HostSignInEditor {
   userCode: string;
   verificationUrl: string;
   intervalSeconds: number;
+}
+
+/** A failed host read with its one way out: the Retry re-reads the host. */
+function HostRetryNotice({ host, ...notice }: Omit<InlineNoticeProps, "tone" | "action"> & { host: string }) {
+  const action = (
+    <Button size="sm" onClick={() => retryHostRead(host)}>
+      Retry
+    </Button>
+  );
+  return <InlineNotice {...notice} tone="danger" action={action} />;
 }
 
 /** RemoteHostInstances is the read-only view of one remote host's own provider
@@ -244,6 +254,7 @@ function RemoteHostInstances({
   // registry DID name keeps its verified listing when a later re-read fails,
   // because that failure leaves the registry revision where it was.
   const unverifiable = registryFailed && !verified;
+  const unverifiableTitle = `Couldn't check ${host}'s registration`;
   return (
     <>
       <section className={CLASS.remote} aria-label={title}>
@@ -261,33 +272,15 @@ function RemoteHostInstances({
             registry, when its read is what failed - see retryHostRead), so the pane
             never sits on an error with no way out. */}
         {state.error !== null && !unverifiable && (
-          <InlineNotice
-            tone="danger"
-            live="off"
-            action={
-              <Button size="sm" onClick={() => retryHostRead(host)}>
-                Retry
-              </Button>
-            }
-          >
+          <HostRetryNotice host={host} live="off">
             Couldn't read providers from {host}: {state.error}
-          </InlineNotice>
+          </HostRetryNotice>
         )}
         {unverifiable && (
-          <InlineNotice
-            tone="danger"
-            live="status"
-            data-reason="unverifiable"
-            title={`Couldn't check ${host}'s registration`}
-            action={
-              <Button size="sm" onClick={() => retryHostRead(host)}>
-                Retry
-              </Button>
-            }
-          >
+          <HostRetryNotice host={host} live="status" data-reason="unverifiable" title={unverifiableTitle}>
             The hosts list didn't load, so this host's own provider listing can't be verified as still belonging to the
             name it was selected by. Retry to read the hosts list again.
-          </InlineNotice>
+          </HostRetryNotice>
         )}
         {state.error === null && !unverifiable && pending && <Skeleton />}
         {!unverifiable && verified && !pending && state.error === null && empty && (

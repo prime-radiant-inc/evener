@@ -156,3 +156,33 @@ func TestAuth_AbandonedLoginFlowIsSweptWhenANewOneStarts(t *testing.T) {
 		t.Fatalf("flow B %q was not recorded, want the new flow kept", flowB.FlowID)
 	}
 }
+
+// TestAuth_CopilotDeviceCodeExpiresOnItsOwnClock pins that the Copilot flow's
+// expiry is the device code's, not the hub's login window: a code that says
+// two minutes expires after two minutes, is answered without a GitHub call,
+// and is dropped.
+func TestAuth_CopilotDeviceCodeExpiresOnItsOwnClock(t *testing.T) {
+	ctrl, transport, now := newCopilotDeviceTestController(t, copilotDeviceInstanceToml)
+	transport.device = `{"device_code":"device-code-1","user_code":"USER-1",` +
+		`"verification_uri":"https://github.com/login/device","expires_in":120,"interval":5}`
+	start, err := ctrl.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "work"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	if start.ExpiresInSeconds != 120 {
+		t.Fatalf("ExpiresInSeconds = %d, want the device code's 120", start.ExpiresInSeconds)
+	}
+
+	*now = now.Add(3 * time.Minute)
+	got, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: start.FlowID})
+	if err != nil || got.State != "expired" {
+		t.Fatalf("poll after the device code expired = %+v err=%v, want expired", got, err)
+	}
+	if calls := transport.callCount("/login/oauth/access_token"); calls != 0 {
+		t.Fatalf("GitHub poll calls = %d, want 0: the local expiry check must answer first", calls)
+	}
+	again, err := ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: start.FlowID})
+	if err != nil || again.State != "expired" {
+		t.Fatalf("second poll = %+v err=%v, want expired", again, err)
+	}
+}

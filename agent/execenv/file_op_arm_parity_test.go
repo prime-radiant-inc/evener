@@ -54,7 +54,7 @@ type armOp struct {
 // armOps drive the eight dispatch sites through their public entries.
 var armOps = []armOp{
 	{"read", func(env *LocalExecutionEnvironment, p string) error {
-		_, _, err := env.ReadFileAndBytesCtx(context.Background(), p, nil, nil)
+		_, _, _, err := env.ReadFileRichAndBytesCtx(context.Background(), p, nil, nil)
 		return err
 	}},
 	{"write", func(env *LocalExecutionEnvironment, p string) error {
@@ -62,7 +62,7 @@ var armOps = []armOp{
 		return err
 	}},
 	{"edit", func(env *LocalExecutionEnvironment, p string) error {
-		_, err := env.EditFileWithCtx(context.Background(), p, "old", "new", false, nil)
+		_, err := env.EditFileCtx(context.Background(), p, "old", "new", false)
 		return err
 	}},
 	{"rawRead", func(env *LocalExecutionEnvironment, p string) error {

@@ -4,10 +4,11 @@
 // above one (ruling 7), and leaves the screen under it in front, as phase 2
 // part 3's inFront does for sheets.
 import { isSheetRoute } from "../sheet/sheetRoutes";
+import { workspaceSessionRef } from "../location";
 import type { AlertScreen } from "./alertCenter";
 
-/** Phase 5's modal routes: the Hub and New session sheets. */
-const MODAL_ROUTES: ReadonlySet<string> = new Set(["Hub", "NewSession"]);
+/** Native modals cover the workspace until the person returns or chooses a share target. */
+const MODAL_ROUTES: ReadonlySet<string> = new Set(["Hub", "NewSession", "ShareTarget"]);
 
 type Route = { name: string; params?: object };
 
@@ -19,10 +20,23 @@ export function coversBanners(route: Route | undefined): boolean {
 /** The screen alerts care about, from the stack's routes up to the focused
  * one: the top route that isn't a sheet or a modal. A session screen counts
  * only for the hub it belongs to, since refs are per hub. */
-export function alertScreenFor(routes: readonly Route[], hubId: string | null): AlertScreen {
+export function alertScreenFor(
+	routes: readonly Route[],
+	hubId: string | null,
+	readingWorkspaceDocument = false,
+): AlertScreen {
 	const screen = [...routes].reverse().find((route) => !coversBanners(route));
 	if (screen?.name === "Sessions") return { kind: "board" };
-	const params = screen?.params as { hubId?: unknown; ref?: unknown } | undefined;
+	const params = screen?.params as { hubId?: unknown; ref?: unknown; path?: unknown } | undefined;
+	if (
+		screen?.name === "Workspace" &&
+		!readingWorkspaceDocument &&
+		params?.hubId === hubId &&
+		typeof params.path === "string"
+	) {
+		const ref = workspaceSessionRef(params.path);
+		if (ref) return { kind: "session", ref };
+	}
 	if (screen?.name === "Conversation" && params?.hubId === hubId && typeof params.ref === "string")
 		return { kind: "session", ref: params.ref };
 	return { kind: "other" };

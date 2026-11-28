@@ -32,8 +32,8 @@ func seenRows(t *testing.T, now time.Time, turnEnds map[string]time.Time, seen h
 		metas = append(metas, schema.SessionMeta{ID: id, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}})
 		live = append(live, hubcore.LiveEntry{PID: len(live) + 1, SessionID: id, Status: appwire.ThreadStatusIdle, LastTurnEndedAt: ended})
 	}
-	tree := hubcore.BuildTreeAt(metas, live, nil, now)
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree, SessionSeen: seen, Live: liveIDs})
+	tree := buildTreeAtResolved(metas, live, nil, now)
+	projection, err := buildNavigationProjection(t.Context(), navigationBuildInputs{GenerationID: "generation", Tree: tree, SessionSeen: seen, Live: liveIDs})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,18 +123,15 @@ func TestNavigationCaptureReadsTheSeenMarkers(t *testing.T) {
 	}
 }
 
-// A navigation build owns the seen records it captured: both clone paths copy
-// them.
+// A navigation build owns the seen records it captured: cloning copies them.
 func TestNavigationInputsCloneOwnsTheSeenRecords(t *testing.T) {
 	key := hubcore.SessionPinKey("", "01A")
 	inputs := navigationBuildInputs{SessionSeen: hubcore.SessionSeenSnapshot{Epoch: time.Now(), Records: map[hubcore.ArchiveKey]hubcore.SessionSeenRecord{key: {Unread: true}}}}
-	contextClone, err := cloneNavigationInputsContext(t.Context(), inputs)
+	clone, err := cloneNavigationInputs(t.Context(), inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, clone := range []navigationBuildInputs{cloneNavigationInputs(inputs), contextClone} {
-		delete(clone.SessionSeen.Records, key)
-	}
+	delete(clone.SessionSeen.Records, key)
 	if !inputs.SessionSeen.Records[key].Unread {
 		t.Fatal("a clone of the navigation inputs aliased the seen records")
 	}

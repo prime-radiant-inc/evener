@@ -43,16 +43,6 @@ func TestCovIsRootDelegateAttentionReceiver_NilSession(t *testing.T) {
 	}
 }
 
-// TestCovAcceptDelegateAttention_NilSession covers acceptDelegateAttention nil guard.
-func TestCovAcceptDelegateAttention_NilSession(t *testing.T) {
-	t.Parallel()
-	var s *Session
-	err := s.acceptDelegateAttention(nil)
-	if err == nil || !errors.Is(err, errDelegateStaleLease) {
-		t.Fatalf("nil session: %v", err)
-	}
-}
-
 // ---- session_queue.go ----
 
 // TestCovDrainSteering_Empty covers drainSteering on empty queue.

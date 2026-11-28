@@ -23,75 +23,27 @@
 // AppShell's initial chunk, defeating the split. Importers take ./Rail (or
 // ./RailHost) directly.
 
-import {
-  Component,
-  type CSSProperties,
-  type JSX,
-  type LazyExoticComponent,
-  lazy,
-  type ReactNode,
-  Suspense,
-  useEffect,
-  useState,
-} from "react";
+import { type CSSProperties, type JSX, type LazyExoticComponent, lazy, Suspense, useEffect } from "react";
 import { usePrefsStore } from "../../stores/prefs";
 import { Button, EmptyState } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import {
+  type ChunkFailureFallbackProps,
+  createChunkFailureBoundary,
+  createLazyChunkStore,
+  useChunkRetry,
+} from "../chunkFailureBoundary";
 import { reloadPage } from "../pageReload";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY } from "./RailResizeHandle";
 import { noteRailWrapperMounted, noteRailWrapperUnmounted } from "./railController";
+import { useRailHeaderAction } from "./railHeaderAction";
 import { isStaleRailHostChunkError, loadRailHost } from "./railHostChunk";
-
-interface RailChunkBoundaryProps {
-  // Swaps in a fresh lazy component to load the chunk again. The boundary
-  // clears its own failure state alongside it - both halves are needed, and
-  // neither is any use without the other.
-  onRetry: () => void;
-  // True once a cache-busted retry has already failed: a deploy that replaced
-  // the hashed chunk filename 404s forever under a new query param, so the
-  // second strike offers a page reload instead of another same-file fetch
-  // (the DockRegion chunk-boundary pattern).
-  reloadAvailable: boolean;
-  children: ReactNode;
-}
-
-interface RailChunkBoundaryState {
-  // The failed chunk's own message ("Failed to fetch dynamically imported
-  // module: ..."), shown verbatim the way the rail shows a tree-load error -
-  // a stated failure is worth more to whoever hits it than a generic apology.
-  failure: string | null;
-}
 
 const CLASS = {
   failureShell: requireClass(styles.rail, "Rail.module.css", "rail"),
+  fallbackHeader: requireClass(styles.fallbackHeader, "Rail.module.css", "fallbackHeader"),
 };
-
-class RailChunkBoundary extends Component<RailChunkBoundaryProps, RailChunkBoundaryState> {
-  state: RailChunkBoundaryState = { failure: null };
-
-  static getDerivedStateFromError(error: unknown): RailChunkBoundaryState {
-    // A logic bug inside the resolved chunk (module init, render) surfaces
-    // through this same boundary as a chunk-fetch failure does. Only a stale
-    // hashed-asset URL (JS or CSS) is a chunk-load failure worth a retry:
-    // anything else keeps unwinding to the next boundary above instead of
-    // being misreported - and retried - as a network fetch.
-    if (!isStaleRailHostChunkError(error)) throw error;
-    return { failure: error instanceof Error ? error.message : String(error) };
-  }
-
-  private retry = () => {
-    this.setState({ failure: null });
-    this.props.onRetry();
-  };
-
-  render(): ReactNode {
-    if (this.state.failure === null) return this.props.children;
-    return (
-      <RailFailureShell retry={this.retry} reloadAvailable={this.props.reloadAvailable} failure={this.state.failure} />
-    );
-  }
-}
 
 // The failure state stands exactly where the rail stood: the same .rail
 // flex item (authoritative flex:none width, background, right border) with
@@ -99,22 +51,16 @@ class RailChunkBoundary extends Component<RailChunkBoundaryProps, RailChunkBound
 // desktop content row keeps its width and styling and the workspace beside
 // it never stretches into the gap. A bare EmptyState here would leave the
 // row's only other child - the flex:1 workspace - to fill the window.
-function RailFailureShell({
-  retry,
-  reloadAvailable,
-  failure,
-}: {
-  retry: () => void;
-  reloadAvailable: boolean;
-  failure: string;
-}): JSX.Element {
+function RailFailure({ failure, retry, canReload }: ChunkFailureFallbackProps): JSX.Element {
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
+  const headerAction = useRailHeaderAction();
   return (
     <div
       className={CLASS.failureShell}
       style={{ [RAIL_WIDTH_PROPERTY]: `${sidebarWidth}px` } as CSSProperties}
       data-testid="rail-chunk-failure"
     >
+      {headerAction !== null && <div className={CLASS.fallbackHeader}>{headerAction}</div>}
       <EmptyState
         title="Couldn't load the sidebar"
         hint={failure}
@@ -123,11 +69,7 @@ function RailFailureShell({
             <Button size="sm" onClick={retry}>
               Retry
             </Button>
-            {/* reloadAvailable alone counts retries, so a logic bug that rode
-                in on a stale chunk URL would earn a page reload that cannot
-                fix it. The failed retry must itself name a stale hashed
-                asset (the DockRegion chunk-boundary pattern). */}
-            {reloadAvailable && isStaleRailHostChunkError(failure) && (
+            {canReload && (
               <Button size="sm" variant="quiet" onClick={reloadPage}>
                 Reload page
               </Button>
@@ -135,6 +77,16 @@ function RailFailureShell({
           </>
         }
       />
+    </div>
+  );
+}
+
+function RailLoading(): JSX.Element | null {
+  const headerAction = useRailHeaderAction();
+  if (headerAction === null) return null;
+  return (
+    <div className={CLASS.failureShell} data-testid="rail-chunk-loading">
+      <div className={CLASS.fallbackHeader}>{headerAction}</div>
     </div>
   );
 }
@@ -148,32 +100,27 @@ function lazyRailHost(cacheBust = false): RailHostChunk {
   return lazy(() => loadRailHost(cacheBust).then((m) => ({ default: m.RailHost })));
 }
 
-// Module scope, not per mount: a lazy() component caches its resolved module
-// on its own payload, so one shared component means the chunk is fetched once
-// per page load and every later mount of this host (a breakpoint crossing, a
-// drawer open/close) renders RailHost straight away instead of suspending
-// again.
-let railHost = lazyRailHost();
+// One shared payload: the chunk is fetched once per page load and every later
+// mount of this host (a breakpoint crossing, a drawer open/close) renders
+// RailHost straight away instead of suspending again.
+const railHost = createLazyChunkStore(lazyRailHost);
 
 // A payload caches its outcome for the life of the module, success or
 // failure, so one test's failed chunk would otherwise be every later test's
 // failed chunk. Mirrors the resetXForTests precedent every other module
-// singleton here follows (stores/navigation/store.ts's own note); no production code
-// should ever call it.
+// singleton here follows (stores/navigation/store.ts's own note); no
+// production code should ever call it.
 export function resetRailChunkForTests(): void {
-  railHost = lazyRailHost();
+  railHost.getState().publish(lazyRailHost());
 }
+
+const RailChunkBoundary = createChunkFailureBoundary(isStaleRailHostChunkError);
 
 export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   // A retry needs a NEW lazy component, not a re-render of the old one:
   // React.lazy stores the rejection on its payload and rethrows that same
   // error on every subsequent render, forever.
-  const [Host, setHost] = useState<RailHostChunk>(railHost);
-  // A retry re-fetches the same hashed filename over a cache-busted URL:
-  // enough for a transient failure, useless once a deploy has removed the
-  // file. Counting retries lets the boundary offer a page reload on the
-  // second strike (the DockRegion chunk-boundary pattern).
-  const [retryCount, setRetryCount] = useState(0);
+  const { Chunk: Host, retry, reloadAvailable } = useChunkRetry(railHost, lazyRailHost);
   // The wrapper's mount lifetime is the controller's only signal that a
   // handler is on its way: a reveal fired while this wrapper is mounted but
   // the chunk (and with it RailHost's handler registration) has not arrived
@@ -183,19 +130,14 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
     noteRailWrapperMounted();
     return () => noteRailWrapperUnmounted();
   }, []);
-  const retry = () => {
-    setRetryCount((count) => count + 1);
-    const nextHost = lazyRailHost(true);
-    // Publish the new payload before it resolves so an unmount/remount during
-    // the retry shares the in-flight request instead of restoring the rejected
-    // payload that caused the boundary.
-    railHost = nextHost;
-    setHost(() => nextHost);
-  };
 
   return (
-    <RailChunkBoundary onRetry={retry} reloadAvailable={retryCount > 0}>
-      <Suspense fallback={null}>
+    <RailChunkBoundary
+      onRetry={retry}
+      reloadAvailable={reloadAvailable}
+      renderFailure={(state) => <RailFailure {...state} />}
+    >
+      <Suspense fallback={<RailLoading />}>
         <Host />
       </Suspense>
     </RailChunkBoundary>

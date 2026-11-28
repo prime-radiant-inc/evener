@@ -128,7 +128,7 @@ measure rule of its own the ghosts start at the pane's raw left edge while
 every delivered message above sits clamped and centered - the same
 trailing-row rule `.intentGroup` and AskDock's `.dock` already carry. The
 horizontal-overflow scan cannot see this (nothing escapes a scroller), so
-this compares the `[data-testid="pending-message-stack"]` box against a
+this compares the `[data-testid="pending-row-stack"]` box against a
 `[data-testid="turn-block"]` box directly at 1024px. The fixture seeds its
 one ghost through the real durable outbox path (`enqueueIntent` + the shared
 projection refresh), never a direct store write.
@@ -148,6 +148,37 @@ the fixture mode disturbs nothing else.
 `held steer column ... PASS - trailing held-steer stack shares the turn content column`.
 
 **Verified:** 2026-09-27. **Expect:** fail.
+
+## First-reply skeleton column (`inspectColdStartSkeleton()`, the
+`?coldstart=1` fixture)
+
+Asserts that `ColdStartSkeleton` fills the shared reading column at the Wide
+transcript measure: its longest `skeleton-line` bar must fill the column's
+content box after `.coldStart`'s own padding, and the column must fill its
+parent's content box. The horizontal-overflow scan cannot see a narrow
+skeleton - nothing escapes a scroller, the bars simply stop short of the
+column. The fixture is an active thread with no turn and one pending send
+seeded through the real durable outbox path (`enqueueIntent` for `turn/start`
+plus the shared projection refresh).
+
+**Mutation performed:** appended `max-width: 42rem` to `.skeleton` in
+`widgets/skeleton/skeleton.module.css` - the inner cap the deleted
+`.coldStartMeasure` wrapper used to apply.
+
+**Result before restore:** FAIL -
+`cold start skeleton ... FAIL - {"measure":"wide","skeletonWidth":976,"contentWidth":944,"barWidth":672,"parentContentWidth":976}`
+(the bar held 672px inside a 944px column; the column itself stayed 976px).
+
+**Result after restore:** PASS -
+`cold start skeleton ... PASS - first-reply skeleton fills the wide reading column after its padding`
+with `measured bar 944.0px in column content 944.0px, column 976.0px of 976.0px at wide`.
+
+A cap on `.coldStart` itself is not a visible regression here: the composed
+`.measureColumn` rule is emitted after `session.module.css`, so its
+`max-width` wins the cascade (observed 2026-11-24 while mutation-testing this
+case).
+
+**Verified:** 2026-11-24. **Expect:** fail.
 
 ## Footer visibility predicate (`isElementVisible` in `src/dev/guardVisibility.ts`) — kata bsq9
 
@@ -300,6 +331,62 @@ and `"toggled":true`.
 
 **Verified:** 2026-11-16. **Expect:** fail.
 
+## Fine-pointer landscape one-line folded row and effort drop (`assertFinePointerLandscapeComposer`)
+
+The 951×669 fine-pointer landscape fixture keeps its 524px card below the old
+620px stacked threshold. Jesse's 2026-11-27 ruling replaced that fallback: the
+resting card holds ONE line at every width, and below the threshold the effort
+readout drops before the model label yields. The assertions require the field
+and control row to share one line, the model picker to stay visible with its
+label ellipsized, the editor to stay one line, and the effort readout to be
+gone at rest - and, in the editor-focus state, back: Composer.tsx's own
+ruling keeps focus from resizing the card, so the sub-threshold row must
+return the effort picker in place (statusrow's [data-composer-editing]
+exemption) rather than leaving it unreachable until content arrives. The
+card must still measure under 620px so the fixture keeps exercising the
+sub-threshold regime.
+
+**Mutation performed (row shape):** re-gated PromptCard's folded row shape
+(`widgets/promptcard/promptcard.module.css`) back inside
+`@container (min-width: 620px)`, restoring the stacked two-line card below the
+threshold.
+
+**Result before restore:** FAIL:
+`951x669 fine-pointer landscape composer safe-area=34 ... FAIL - the fine-pointer folded field and controls did not stay on one row`
+with the card measuring 278px tall (a 224px field row over a 28px control row).
+The coarse-pointer Duo landscape fixtures stayed PASS in the same run.
+
+**Mutation performed (effort drop):** moved the folded effort-drop query in
+`panes/session/chrome/statusrow.module.css` from `(width < 620px)` to
+`(width < 1px)`, so the rule never fires.
+
+**Result before restore:** FAIL:
+`951x669 fine-pointer landscape composer safe-area=34 ... FAIL - the sub-threshold folded row kept its effort readout`
+with `effortVisible: true` in the measurement; the one-row and model-picker
+assertions stayed green, isolating the failure to the dropped readout.
+
+**Mutation performed (editing exemption):** the
+`[data-composer-editing]` exemption in `statusrow.module.css` absent - the
+state the editor-focus measurement first ran against, exactly equivalent to
+deleting the rule.
+
+**Result before restore:** FAIL:
+`951x669 fine-pointer landscape composer safe-area=34 focus=editor ... FAIL - the editor-focused sub-threshold row lost its effort picker`
+with `effortVisible: false` and the card still 46px tall on one row - proving
+both the reachability loss and that focus alone does not resize the card.
+
+**Result after restore:** PASS, both states:
+`951x669 fine-pointer landscape composer safe-area=34 focus=none ... PASS - one folded row, model visible and the effort readout dropped, ...`
+`951x669 fine-pointer landscape composer safe-area=34 focus=editor ... PASS - one folded row, effort picker back for the writer, ...`.
+
+**Command:** `npm run overflowguard` (the landscape fixtures run only in the
+full sweep; `--composer-only` skips them).
+
+**Verified:** 2026-11-27. **Expect:** fail when the folded row shape is
+re-gated to a width threshold, when the folded effort-drop rule stops firing
+below it, or when the editing exemption stops returning the picker while the
+editor holds focus.
+
 ## Landscape phone folded row and single safe-area owner
 
 The real-composer fixture renders a 572px session pane inside a 951×669pt
@@ -340,13 +427,37 @@ the full matrix green: resting keeps one row and focus restores full controls,
 while both states keep the 12px composer gap and 34px status-chip clearance.
 
 The paired fine-pointer case uses the same 951×669 viewport and 572px pane with
-touch disabled. It requires the stacked controls and visible model picker. A
-mutation removing `(pointer: coarse) and (hover: none)` from
+touch disabled. It originally required the stacked controls and visible model
+picker; since 2026-11-27 it requires the one-line folded row instead (see the
+fine-pointer one-line entry above). A mutation removing `(pointer: coarse) and (hover: none)` from
 `LANDSCAPE_PHONE_QUERY` failed with `a fine-pointer landscape desktop
-incorrectly compacted its controls`, `the fine-pointer resting row lost its
-model picker`, and `the fine-pointer folded field and controls did not stay
-stacked`. Restoring those conditions passed: `951x669 fine-pointer landscape
-composer safe-area=34 ... PASS - stacked controls and visible model, footer
-gap=12px, status clearance=34px`. The safe-area assertion reads the status bar's
+incorrectly compacted its controls` and `the fine-pointer resting row lost its
+model picker`; the compacting clauses of that query remain live expectations.
+The safe-area assertion reads the status bar's
 bottom edge and chip containment because smaller fine-pointer chips are centred
 in their 30px bar rather than filling its height.
+
+## Composer action tap floor on a coarse landscape phone (`assertDuoLandscapeComposer`)
+
+The 951x669 coarse Duo landscape fixture puts a 572px pane in a viewport past
+the 899px phone boundary. Its composer content box is below 559px, so the
+container query hides the Send/Stop words and only the icon remains. The guard
+measures whichever of Send or Stop fills the primary slot and requires the 44px
+tap floor in both axes.
+
+**Mutation performed:** reverted the Send/Stop width floor in
+`panes/session/composer/composer.module.css` to its pre-fix prelude
+(`@media (max-width: 899px)`, dropping `, (any-pointer: coarse)`).
+
+**Result before restore:** FAIL:
+`951x669 Duo landscape composer safe-area=34 focus=none ... FAIL - the icon-only landscape Send/Stop is 31.0x44.0px, below the 44px tap floor`,
+and the same measurement failed for `focus=editor`. Every other footer case
+stayed PASS in that run.
+
+**Result after restore:** PASS:
+`951x669 Duo landscape composer safe-area=34 focus=none ... PASS - one folded row, Send/Stop=44.0x44.0px, footer gap=12px, status clearance=34px`,
+and the editor-focus state likewise.
+
+**Command:** `node scripts/overflowguard/run.mjs --footer-only`.
+
+**Verified:** 2026-11-22. **Expect:** fail when the coarse-pointer arm is removed.

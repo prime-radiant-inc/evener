@@ -13,11 +13,27 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
+
+type restoreToolsHookStrategy struct {
+	tools func() []tool.RegisteredTool
+}
+
+func (s restoreToolsHookStrategy) Name() string { return "restore-tools-hook" }
+
+func (s restoreToolsHookStrategy) Tools() []tool.RegisteredTool { return s.tools() }
+
+func (restoreToolsHookStrategy) ManageContext(context.Context, *[]schema.Turn, int, func(events.EventKind, events.EventData)) error {
+	return nil
+}
+
+func (restoreToolsHookStrategy) AfterAction(context.Context, []schema.Turn, *llm.Client) error {
+	return nil
+}
 
 // The hook boundary observes actual construction and teardown. It does not
 // replace any session, delegate controller, writer or lifecycle operation.
@@ -218,7 +234,6 @@ func TestTranscriptFrontierBindingFailedConstructors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		meta.Config.ContextStrategy = "invalid-frontier-strategy"
 		r := &frontierBindingRecorder{}
 		recorded := make(chan events.ExecutionFrontier, 1)
 		earlyPublication := make(chan events.SessionEvent, 1)
@@ -236,9 +251,13 @@ func TestTranscriptFrontierBindingFailedConstructors(t *testing.T) {
 				earlyPublication <- ev
 			}
 		}
-		cfg.OnRestoredTranscript = func(_ transcript.Header, entries []transcript.Entry, _ bool) {
+		cfg.testOnly.contextStrategyOverride = restoreToolsHookStrategy{tools: func() []tool.RegisteredTool {
+			onDisk, err := readTranscriptFull(context.Background(), original.TranscriptPath(), original.stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
 			foundFailure := false
-			for _, entry := range entries {
+			for _, entry := range onDisk.Entries {
 				foundFailure = foundFailure || entry.Turn.Kind == schema.TurnFailure && entry.Turn.TurnID == start.Turn.ID
 			}
 			if !foundFailure {
@@ -258,7 +277,8 @@ func TestTranscriptFrontierBindingFailedConstructors(t *testing.T) {
 			case <-tripwireCtx(t).Done():
 				t.Fatal("constructor recovery callback did not sample")
 			}
-		}
+			return w3init_badToolStrategy{}.Tools()
+		}}
 		sess, err := RestoreSessionFromMetaWithConfig(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, cfg)
 		if err == nil || sess != nil {
 			t.Fatalf("invalid strategy did not fail restored constructor: session=%p error=%v", sess, err)

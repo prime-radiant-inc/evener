@@ -1015,7 +1015,7 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	sendRes, sendErr := s.jobManager.configureWatch(watchArgs{
 		Target:      failRec.JobID,
 		OutputMatch: "exit 3",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if sendErr != nil {
 		t.Fatalf("send catch-up must not error: %v", sendErr)

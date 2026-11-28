@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -211,7 +212,7 @@ func TestDelegate_PerDelegateSandboxCleansScratchOnSpawnFailure(t *testing.T) {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
-			sandboxProber:       sandbox.FakeProber{Facts: facts},
+			sandboxProber:       sandboxtest.FakeProber{Facts: facts},
 			childClientFactory:  func() *llm.Client { return nil },
 		},
 	}))
@@ -255,7 +256,7 @@ func TestParentCloseKeepsPerDelegateSandboxScratch(t *testing.T) {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
-			sandboxProber:       sandbox.FakeProber{Facts: facts},
+			sandboxProber:       sandboxtest.FakeProber{Facts: facts},
 		},
 	}))
 
@@ -445,7 +446,7 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 			childClientFactory: func() *llm.Client {
 				return childClient
 			},
-			sandboxProber: sandbox.FakeProber{Facts: host},
+			sandboxProber: sandboxtest.FakeProber{Facts: host},
 		},
 	}))
 	eventsDone := make(chan struct{})
@@ -509,7 +510,7 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
-			sandboxProber:       sandbox.FakeProber{Facts: facts},
+			sandboxProber:       sandboxtest.FakeProber{Facts: facts},
 		},
 	}))
 
@@ -581,7 +582,7 @@ func TestDelegate_PerDelegateSandboxWithoutIsolationDoesNotMutateParent(t *testi
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
 			noSyncJobStore:      true,
-			sandboxProber:       sandbox.FakeProber{Facts: facts},
+			sandboxProber:       sandboxtest.FakeProber{Facts: facts},
 		},
 	}))
 

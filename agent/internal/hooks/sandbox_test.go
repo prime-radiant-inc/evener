@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 )
 
 // TestHookCommandEnvScrubsSecrets covers reconciliation #5: hook commands built
@@ -70,7 +71,7 @@ func TestHookCommandConfined(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".ssh", "id"), []byte(secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cwd := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	cwd := sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout)
 	w := realBwrapWrapper(t, home, cwd, t.TempDir())
 
 	hook := plugin.RegisteredHook{
@@ -95,7 +96,7 @@ func TestHookCommandConfined(t *testing.T) {
 // naming an unserved external cache has to fall back to the session scratch
 // (#4542 review).
 func TestHookCommandFloorUsesTheConfinedWorktreeDir(t *testing.T) {
-	worktree := sandbox.MaterializeWorkspace(t, sandbox.MainCheckout)
+	worktree := sandboxtest.MaterializeWorkspace(t, sandbox.MainCheckout)
 	packageDir := filepath.Join(worktree, "packages", "foo")
 	packageCache := filepath.Join(t.TempDir(), "package-npm")
 	rootCache := filepath.Join(t.TempDir(), "root-npm")

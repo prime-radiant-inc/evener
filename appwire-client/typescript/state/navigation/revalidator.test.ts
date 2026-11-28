@@ -1,15 +1,11 @@
 import { expect, test, vi } from "vitest";
+import { deferred as d } from "../../testing/deferred";
 import { navigationInvalidatedNotification } from "../../testing/notifications";
 import type { NormalizedResource } from "./codec";
 import { applyNavigationInvalidation, NavigationRevalidator } from "./revalidator";
 import { keyID, NavigationBaseInvalidError, type NavigationResponse, type ResourceKey } from "./types";
 
 const key: ResourceKey = { kind: "project", projectKey: "p" };
-const d = <T>() => {
-  let resolve!: (v: T) => void;
-  const promise = new Promise<T>((r) => (resolve = r));
-  return { promise, resolve };
-};
 
 test("a superseded load awaits its trailing retry instead of failing", async () => {
   const first = d<NavigationResponse>();
@@ -775,4 +771,100 @@ test("invalidation waiter is cancellable and ignores unrelated typed events", as
   waiter.cancel();
   await pending;
   expect(resolved).toBe(false);
+});
+
+test("repeat same-revision invalidation retries after a failed read", async () => {
+  const manifestKey: ResourceKey = { kind: "manifest" };
+  const r = new NavigationRevalidator("g");
+  let calls = 0;
+  const request = vi.fn(async () => {
+    calls++;
+    if (calls === 1) {
+      return {
+        status: 200,
+        generationID: "g",
+        revision: 2,
+        etag: "m-2",
+        data: { sources: [{ id: "remote", online: false }] },
+      };
+    }
+    if (calls <= 3) throw new Error("transport failure");
+    return {
+      status: 200,
+      generationID: "g",
+      revision: 2,
+      etag: "m-2-ok",
+      data: { sources: [{ id: "remote", online: true }] },
+    };
+  });
+  await r.load(manifestKey, request);
+  expect(r.get(manifestKey)).toMatchObject({ stale: false, error: null, loadedRevision: 2, targetRevision: 2 });
+
+  r.invalidate({ kind: "manifest", revision: 2 });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(calls).toBe(2);
+  expect(r.get(manifestKey)).toMatchObject({
+    stale: true,
+    loading: false,
+    targetRevision: 2,
+    data: { sources: [{ id: "remote", online: false }] },
+  });
+  expect(r.get(manifestKey)?.error).not.toBeNull();
+
+  r.invalidate({ kind: "manifest", revision: 2 });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(calls).toBe(3);
+  expect(r.get(manifestKey)?.error).not.toBeNull();
+
+  r.invalidate({ kind: "manifest", revision: 2 });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(calls).toBe(4);
+  expect(r.get(manifestKey)).toMatchObject({
+    stale: false,
+    loading: false,
+    error: null,
+    loadedRevision: 2,
+    targetRevision: 2,
+    data: { sources: [{ id: "remote", online: true }] },
+  });
+});
+
+test("duplicate same-revision invalidation coalesces while loading without error, then retries after failure", async () => {
+  const inFlight = d<NavigationResponse>();
+  const failing = d<NavigationResponse>();
+  const r = new NavigationRevalidator("g");
+  let calls = 0;
+  const request = vi.fn(() => {
+    calls++;
+    if (calls === 1) return Promise.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "seed" });
+    if (calls === 2) return inFlight.promise;
+    if (calls === 3) return failing.promise;
+    return Promise.resolve({ status: 200, generationID: "g", revision: 3, etag: "c", data: "recovered" });
+  });
+  await r.load(key, request);
+
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  expect(calls).toBe(2);
+  expect(r.get(key)).toMatchObject({ loading: true, stale: true, error: null, targetRevision: 2 });
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  expect(calls).toBe(2);
+  inFlight.resolve({ status: 200, generationID: "g", revision: 2, etag: "b", data: "fresh" });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(calls).toBe(2);
+  expect(r.get(key)).toMatchObject({ loading: false, stale: false, error: null, data: "fresh" });
+
+  r.invalidate({ kind: "project", projectKey: "p", revision: 3 });
+  expect(calls).toBe(3);
+  r.invalidate({ kind: "project", projectKey: "p", revision: 3 });
+  expect(calls).toBe(3);
+  failing.reject(new Error("timeout"));
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(calls).toBe(3);
+  expect(r.get(key)).toMatchObject({ loading: false, stale: true, targetRevision: 3, data: "fresh" });
+  expect(r.get(key)?.error).not.toBeNull();
+
+  r.invalidate({ kind: "project", projectKey: "p", revision: 3 });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(calls).toBe(4);
+  expect(r.get(key)).toMatchObject({ loading: false, stale: false, error: null, loadedRevision: 3, data: "recovered" });
 });

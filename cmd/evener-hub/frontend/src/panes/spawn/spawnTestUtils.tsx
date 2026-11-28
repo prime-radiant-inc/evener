@@ -11,7 +11,7 @@ import type {
 } from "@evener/appwire-client";
 import type { ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
@@ -80,8 +80,59 @@ export function seedSources(
 // The working directory is changed through an explicit-confirmation picker.
 export const LAST_WORKING_DIR_KEY = "evener-hub.spawn-defaults.global.last-working-dir";
 
+/** The label the test manifests seed for their local source. */
+export function localHostLabel(): string {
+  return "Local";
+}
+
+/** The host picker's quiet disclosure row, the same control the plugin row uses. */
+export function hostTrigger(): HTMLElement {
+  const summary = screen.getByTestId("spawn-host-summary").closest("summary");
+  if (!(summary instanceof HTMLElement)) throw new Error("host disclosure summary is missing");
+  return summary;
+}
+
+/** The host the disclosure currently displays, e.g. "Host: buildbox". */
+export function selectedHost(): string {
+  return `Host: ${screen.getByTestId("spawn-host-value").textContent ?? ""}`;
+}
+
+/** Opens the host disclosure's one host list and returns it. */
+export function openHostPicker(): HTMLElement {
+  fireEvent.click(hostTrigger());
+  return screen.getByRole("group", { name: "Host options" });
+}
+
+/** Chooses an online host through the disclosure's host list, by the row's
+ * visible label. Async so the host-switch discovery it starts is flushed before
+ * the test's next assertion, exactly as the old native select's user-event step
+ * was. */
+export async function chooseHost(label: string): Promise<void> {
+  const panel = openHostPicker();
+  fireEvent.click(within(panel).getByRole("button", { name: label }));
+  await act(async () => {});
+}
+
 export function workingDir(): HTMLElement {
-  return screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" });
+  return screen.getByTestId("spawn-cwd-value");
+}
+
+/** The working-directory quiet row's trigger: one click opens the shared
+ * directory dialog. */
+export function cwdRowTrigger(): HTMLElement {
+  return screen.getByTestId("spawn-cwd-trigger");
+}
+
+/** The working-directory row's trigger, which opens the directory dialog. */
+export function openWorkingDir(): HTMLElement {
+  return cwdRowTrigger();
+}
+
+/** The access-mode quiet row's disclosure summary. */
+export function accessRowTrigger(): HTMLElement {
+  const summary = screen.getByTestId("spawn-access-summary").closest("summary");
+  if (!(summary instanceof HTMLElement)) throw new Error("access-mode disclosure summary is missing");
+  return summary;
 }
 
 // The DESKTOP Model control lives in the prompt card's own control row (the
@@ -130,7 +181,7 @@ export function expectWorkingDir(path: string): void {
 }
 
 export async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: string): Promise<void> {
-  await user.click(workingDir());
+  await user.click(openWorkingDir());
   const input = await screen.findByRole("textbox", { name: "Path" });
   await user.clear(input);
   await enterText(user, input, path);
@@ -171,7 +222,7 @@ export function setupUser() {
  * it renders unconditionally. */
 export async function settled(): Promise<void> {
   await act(async () => {});
-  screen.getByText("Advanced options");
+  screen.getByText("Advanced");
 }
 
 export async function visitSpawnURL(url: string): Promise<void> {
@@ -270,13 +321,14 @@ export function pastePngInto(el: HTMLElement, name = "shot.png"): void {
 }
 
 // Mirrors Composer.test.tsx's own installCanvasStubs - the same
-// useAttachments/reencodeToPng pipeline underlies both panes' image staging.
+// useAttachments/encodeImage pipeline underlies both panes' image staging.
 export function installCanvasStubs(): void {
   HTMLCanvasElement.prototype.getContext = (() => ({
     drawImage() {},
+    fillRect() {},
   })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
-  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
-    callback(new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" }));
+  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback, type?: string): void => {
+    callback(new Blob([new Uint8Array([9, 9, 9])], { type: type ?? "image/png" }));
   };
   class FakeImage {
     onload: (() => void) | null = null;

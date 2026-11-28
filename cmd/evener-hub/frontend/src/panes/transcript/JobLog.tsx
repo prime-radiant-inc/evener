@@ -7,6 +7,7 @@ import { useStore } from "zustand";
 import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { workspaceStore } from "../../shell/workspace";
 import {
+  AnsiLineContent,
   Button,
   EmptyState,
   InlineNotice,
@@ -16,7 +17,6 @@ import {
   VirtualList,
   type VirtualListHandle,
 } from "../../widgets";
-import { AnsiLineContent } from "../../widgets/codeblock/ansiLine";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { isAtBottom } from "../session/transcript/flow/scrollMetrics";
 import { type JobLogReader, type JobLogScrollCapture, retainedJobLogReader } from "./jobLogReader";
@@ -390,6 +390,7 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
         <div
           className={CLASS.joblog}
           data-testid="joblog-content"
+          data-reading-scroll-host=""
           data-joblog-older-bytes={older?.bytes.length ?? 0}
           data-joblog-live-bytes={live?.bytes.length ?? 0}
           data-joblog-source-bytes={sourceBytes}

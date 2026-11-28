@@ -326,18 +326,12 @@ func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d delive
 }
 
 func (s *Session) finishNotificationNoop() {
-	// No turn ran, so a needs_response rest the wake interrupted still stands,
-	// and the drain loop then treats the input as awaiting, holding notifications
-	// and goal turns as that rest did. A rest still owed was cancelled by the wake's turn
-	// start; the drain-loop settle arms it again, from the end reason the
-	// turn start reset.
+	// No turn ran, so a filtered notification does not replace the rest.
 	rest := SessionIdle
 	s.mu.Lock()
 	if s.restBeforeInput == SessionAwaiting {
 		rest = SessionAwaiting
 	}
-	s.comm.endReason = s.endReasonBeforeInput
-	s.resumeQuietRest = s.quietRestBeforeInput
 	s.mu.Unlock()
 	s.finishProcessingAtBoundary(context.Background(), rest)
 	s.suppressSessionEnd()

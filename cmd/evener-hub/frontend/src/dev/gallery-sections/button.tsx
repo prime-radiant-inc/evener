@@ -1,6 +1,6 @@
 import { Button, type ButtonVariant } from "../../widgets/button";
+import { GallerySection } from "../GallerySection";
 import styles from "../gallery-section.module.css";
-import { ThemeFlip } from "../ThemeFlip";
 
 const VARIANTS: ButtonVariant[] = ["primary", "quiet", "danger", "dangerQuiet"];
 
@@ -65,17 +65,31 @@ function WrapRow() {
   );
 }
 
+function BlockRow() {
+  return (
+    <div className={styles.row}>
+      <p className={styles.rowLabel}>block</p>
+      <div className={styles.narrowColumn}>
+        <Button variant="secondary" block>
+          + New session
+        </Button>
+        <Button variant="quiet" block>
+          Test credentials
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function ButtonGallerySection() {
   return (
-    <section>
-      <h2>Button</h2>
-      <ThemeFlip>
-        {VARIANTS.map((variant) => (
-          <VariantRow key={variant} variant={variant} />
-        ))}
-        <WrapRow />
-        <LinkRow />
-      </ThemeFlip>
-    </section>
+    <GallerySection title="Button">
+      {VARIANTS.map((variant) => (
+        <VariantRow key={variant} variant={variant} />
+      ))}
+      <WrapRow />
+      <BlockRow />
+      <LinkRow />
+    </GallerySection>
   );
 }

@@ -1,0 +1,120 @@
+/*
+ * Layout and chrome only: CountButton renders with button.module.css's own
+ * base + quiet classes (imported directly, not duplicated), so it inherits
+ * Button's colors, disabled/refusal treatment, press transform and focus ring.
+ * This file adds the activity-counter geometry and the two chrome treatments
+ * the two call sites already had.
+ */
+
+.root {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+  white-space: nowrap;
+}
+
+.glyph {
+  display: inline-flex;
+  align-items: center;
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- compact / orientation ------------------------------------------
+ * compact drops the visible label (the accessible name keeps it); the
+ * cascade spine's column orientation stacks the glyph over the count. Both
+ * are reported as data attributes, so the caller expresses the shape rather
+ * than a stylesheet reaching into this widget's DOM.
+ */
+.root[data-compact="true"] .label {
+  display: none;
+}
+
+.root[data-orientation="column"] {
+  flex-direction: column;
+  gap: 0;
+}
+
+/* --- chrome ---------------------------------------------------------
+ * wash: Button's quiet transparent ground with its hover fill. pill: the
+ * status bar's --surface-canvas pill. Both keep --ink-mid at rest and
+ * --ink-hi under hover/open, as the two original chips did.
+ */
+.root[data-chrome="wash"] {
+  padding: var(--space-1);
+  background: transparent;
+  color: var(--ink-mid);
+}
+
+.root[data-chrome="wash"]:hover,
+.root[data-chrome="wash"][data-pressed="true"] {
+  background: var(--hover-1);
+  color: var(--ink-hi);
+}
+
+/* Keep the open wash rather than stepping to Button quiet's pressed fill. */
+.root[data-chrome="wash"]:active:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--hover-1);
+}
+
+.root[data-chrome="pill"] {
+  padding: var(--space-half) var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--surface-canvas);
+  color: var(--ink-mid);
+}
+
+.root[data-chrome="pill"]:hover {
+  background: var(--hover-2);
+  color: var(--ink-hi);
+}
+
+.root[data-chrome="pill"] .glyph {
+  color: var(--ink-low);
+}
+
+/* The phone's own activity line carries the compact pill on a bare strip, so
+ * it keeps the old zero vertical padding rather than the desktop pill's. */
+.root[data-compact="true"][data-chrome="pill"] {
+  padding-block: 0;
+}
+
+/* The status bar's own width container used to collapse these chips: names
+ * drop first at 600px, then glyphs at 320px. The widget owns that now so no
+ * caller styles its internals, but the queries stay named: a phone composer
+ * is also an inline-size container at 320px, and an unnamed query there would
+ * hide the glyphs on the activity line that keeps them instead. A surface
+ * without the statusbar container (the zoom columns) uses the
+ * compact/orientation props instead. */
+@container statusbar (max-width: 600px) {
+  .label {
+    display: none;
+  }
+}
+
+@container statusbar (max-width: 320px) {
+  .glyph {
+    display: none;
+  }
+
+  .root {
+    gap: 0;
+    padding-inline: 1px;
+  }
+}
+
+/* Every chip is a thumb target on a phone or any coarse pointer, as both
+ * originals' status-bar copy was. */
+@media (max-width: 899px), (any-pointer: coarse) {
+  .root {
+    min-height: var(--tap-min);
+    min-width: var(--tap-min);
+  }
+}

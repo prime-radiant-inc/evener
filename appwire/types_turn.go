@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 type Turn struct {
@@ -152,6 +153,11 @@ const (
 	// clients show their text. The web and native renderers own presenting
 	// each as a collapsed steering-style notification.
 	ThreadItemEventKindMemoryContext ThreadItemEventKind = "memory-context"
+	// ThreadItemEventKindQuietYield marks the systemMessage item emitted for a
+	// successful quiet communicate({}) turn. When the paired assistant response
+	// also emitted companion commentary prose, it is demoted out of agentMessage
+	// chat bubbles and stored under Raw as {"commentary":"..."}.
+	ThreadItemEventKindQuietYield ThreadItemEventKind = "quiet_yield"
 )
 
 // AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
@@ -178,6 +184,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindInterrupted),
 	string(ThreadItemEventKindApprovalDecision),
 	string(ThreadItemEventKindMemoryContext),
+	string(ThreadItemEventKindQuietYield),
 }
 
 type ThreadItem struct {
@@ -311,8 +318,6 @@ type InputItem struct {
 type ThreadListParams struct {
 	Cursor           string   `json:"cursor,omitempty"`
 	Limit            int      `json:"limit,omitempty"`
-	SortKey          string   `json:"sortKey,omitempty"`
-	SortDirection    string   `json:"sortDirection,omitempty"`
 	SearchTerm       string   `json:"searchTerm,omitempty"`
 	Statuses         []string `json:"statuses,omitempty"`
 	SourceIDs        []string `json:"sourceIds,omitempty"`
@@ -866,11 +871,40 @@ type ThreadStartParams struct {
 	// reach. It is a start-time property, not a setting: the daemon persists it
 	// with the session, so a resume keeps it and nothing can turn it off.
 	Manager bool `json:"manager,omitempty"`
+	// Optional caller-generated idempotency key (1 to 128 UTF-8 bytes, no
+	// surrounding whitespace or ASCII control bytes). Empty runs keyless.
+	ClientMutationID string `json:"clientMutationId,omitempty"`
 }
 
 type ThreadStartResponse struct {
-	Thread Thread `json:"thread"`
-	Turn   Turn   `json:"turn"`
+	Thread           Thread              `json:"thread"`
+	Turn             Turn                `json:"turn"`
+	ClientMutationID string              `json:"clientMutationId,omitempty"`
+	Disposition      MutationDisposition `json:"disposition,omitempty"`
+}
+
+// ValidateOptionalClientMutationID validates an optional caller-generated
+// idempotency key (empty, or 1 to 128 valid UTF-8 bytes with no surrounding
+// whitespace or ASCII control bytes).
+func ValidateOptionalClientMutationID(id string) error {
+	if id == "" {
+		return nil
+	}
+	if len(id) > 128 {
+		return InvalidParams("clientMutationId must be at most 128 bytes").NotAccepted("")
+	}
+	if !utf8.ValidString(id) {
+		return InvalidParams("clientMutationId must be valid UTF-8").NotAccepted("")
+	}
+	if strings.TrimSpace(id) != id {
+		return InvalidParams("clientMutationId must not have surrounding whitespace").NotAccepted("")
+	}
+	for i := range len(id) {
+		if id[i] < 0x20 || id[i] == 0x7f {
+			return InvalidParams("clientMutationId must not contain control characters").NotAccepted("")
+		}
+	}
+	return nil
 }
 
 type ThreadResumeParams struct {

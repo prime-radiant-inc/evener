@@ -61,7 +61,7 @@ func newSweepFixture(t *testing.T) *sweepFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("the first searchable line"))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("the first searchable line")), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -90,7 +90,7 @@ func (f *sweepFixture) appendUserTurn(t *testing.T, text string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User(text))); err != nil {
+	if _, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User(text)), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {

@@ -65,7 +65,7 @@ func TestJobOutputPage_NilSession(t *testing.T) {
 // validation error (line 77-78).
 func TestLoadSessionJobOutputPage_InvalidSessionID(t *testing.T) {
 	t.Parallel()
-	_, _, err := LoadSessionJobOutputPage(t.TempDir(), "../escaped", "job1", nil, 0)
+	_, _, err := LoadSessionJobOutputPage(t.TempDir(), "../escaped", "job1", nil, 0, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid session ID")
 	}
@@ -75,7 +75,7 @@ func TestLoadSessionJobOutputPage_InvalidSessionID(t *testing.T) {
 // (line 82-83).
 func TestLoadSessionJobOutputPage_NoJobsFile(t *testing.T) {
 	t.Parallel()
-	_, found, err := LoadSessionJobOutputPage(t.TempDir(), "sess123", "job1", nil, 0)
+	_, found, err := LoadSessionJobOutputPage(t.TempDir(), "sess123", "job1", nil, 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestLoadSessionJobOutputPage_ReadError(t *testing.T) {
 	jobsPath := filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl")
 	os.MkdirAll(filepath.Dir(jobsPath), 0o755)
 	os.WriteFile(jobsPath, []byte("not valid jsonl\n"), 0o644)
-	_, _, err := LoadSessionJobOutputPage(dir, sessionID, "job1", nil, 0)
+	_, _, err := LoadSessionJobOutputPage(dir, sessionID, "job1", nil, 0, nil)
 	if err == nil {
 		t.Fatal("expected error for malformed jobs.jsonl")
 	}

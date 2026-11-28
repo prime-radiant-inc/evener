@@ -47,6 +47,7 @@ type RelayLifecycleHooks struct {
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr                   string
+	LocalHostName             string                   // this hub machine's hostname; empty falls back to "this host" in the picker
 	AuthToken                 string                   // capability token gating every non-exempt route
 	PublicURL                 string                   // optional external origin used for mobile pairing QR codes
 	HubStateRoot              string                   // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
@@ -56,6 +57,8 @@ type WebConfig struct {
 	TranscriptDisplayStoreErr error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
 	KeybindingsStore          *KeybindingsStore        // hub-authoritative user keybinding overrides; nil → load from HubStateRoot
 	KeybindingsStoreErr       error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
+	CreationStore             *CreationStore           // durable thread/start idempotency journal; nil → load from HubStateRoot
+	CreationStoreErr          error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
 	DaemonProcesses           daemonprocess.Controller // nil selects verified native process operations
 	RunDir                    string                   // run directory where rendezvous files live
 	SpawnTimeout              time.Duration            // how long the Hub waits for a spawned daemon to report ready; surfaced in settings
@@ -175,11 +178,9 @@ type WebConfig struct {
 	// ServerInfo, SourceID, Features) captured when a remote host's channel
 	// attached, ONLY while a live channel is installed, without dialing. In
 	// production it is a closure over component 04's Manager.ChannelIfAttached
-	// with the client-identity guard at the call site, not
-	// Manager.HandshakeIfAttached (which has no production caller). It takes
-	// client — the exact generation attach dialed — and reports false when the
-	// installed channel is a different one. nil leaves those fields
-	// zero-valued (tests).
+	// with the client-identity guard at the call site. It takes client — the
+	// exact generation attach dialed — and reports false when the installed
+	// channel is a different one. nil leaves those fields zero-valued (tests).
 	RemoteHostHandshake func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
 	// RemoteHostOnline reports whether the controller's channel to host is
 	// currently attached (component 06). Nil leaves every remote host online
@@ -225,6 +226,11 @@ type WebConfig struct {
 	// Connect path) refuses the same way" as every other lifecycle path. Nil
 	// answers "no remnant".
 	HostRemnantFence func(name string) (string, bool)
+	// ForgetAttachedHost drops the durable startup-reconnect record for name
+	// once a host change retires its registration. It is installed by buildWeb
+	// over the attached-host persister; nil leaves the record in place (tests,
+	// embedders without one).
+	ForgetAttachedHost func(name string)
 	// HubBootID identifies this controller process incarnation for the durable
 	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2).
 	// Empty disables probe-epoch persistence, and a plan refuses `probe-failed`
@@ -246,6 +252,13 @@ type WebConfig struct {
 	// archived session whose daemon is not running, off the caller's path.
 	// Nil when not wired (e.g. in tests that construct a WebServer directly).
 	ScratchReconcile func()
+
+	// ReapSessionJobs ends the surviving background shell job process groups of
+	// a session whose owning daemon is gone and of the delegate sessions under
+	// it, skipping every session the predicate names as one a daemon has taken
+	// back, and reports how many groups it signaled (see
+	// agent.ReapSessionBackgroundJobs). Nil when not wired.
+	ReapSessionJobs func(stateDir, sessionID string, skip func(sessionID string) bool) int
 
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 
@@ -275,6 +288,12 @@ type WebConfig struct {
 	// MobileRouteAddrs supplies the local addresses used by outbound routes.
 	// nil asks the OS through UDP sockets without sending packets.
 	MobileRouteAddrs func() []netip.Addr
+}
+
+// CreationIdempotencyAvailable reports whether the creation store opened cleanly
+// and can accept keyed thread/start mutations.
+func (c WebConfig) CreationIdempotencyAvailable() bool {
+	return c.CreationStore != nil && c.CreationStoreErr == nil
 }
 
 // Spawner forks a evener serve subprocess and waits for its rendezvous file to appear.
@@ -325,6 +344,16 @@ type ResumeRequest struct {
 	// child exit, or caller/Stop cancellation instead of guessing its duration.
 	CompletionOwned bool
 	ActiveResume    *ActiveResume // hub-owned launch lifetime; never serialized on AppWire
+	// PendingLaunch is the per-session in-flight claim this launch owns. The
+	// spawner settles it when the child registers, dies, or is reaped, unless it
+	// has handed the child to a detached supervisor first. Never serialized.
+	PendingLaunch *PendingLaunch
+	// Caller is the request context exactly as it arrived, before registration
+	// replaced it with the launch's cancellable context. A launch may keep its
+	// child alive only when THIS context ended; Force Stop cancels the launch
+	// context too, and a deliberate stop must still reap the child. Nil when the
+	// launcher has no caller context to offer.
+	Caller context.Context
 }
 
 // DaemonTarget is the daemon a rendezvous entry names, as the process verifier

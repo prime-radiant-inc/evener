@@ -36,7 +36,7 @@ type probeDaemonConfig struct {
 func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rendezvous.Entry) {
 	t.Helper()
 	srv := server.NewServer(server.ServerConfig{HubToken: cfg.hubToken})
-	srv.SetAppIdentity("local", cfg.sessionID)
+	setAppIdentity(t, srv, "local", cfg.sessionID)
 	srv.SetState(cfg.state)
 	srv.SetThreadEnvelopeSource(cfg.source)
 	if cfg.setup != nil {
@@ -142,7 +142,7 @@ func fuzzScenarioStatusProber_BadJSON(t *testing.T) {
 func fuzzScenarioStatusProberSendsHubTokenBearer(t *testing.T) {
 	const token = "secret-token"
 	srv := server.NewServer(server.ServerConfig{HubToken: token})
-	srv.SetAppIdentity("local", "01SESS001")
+	setAppIdentity(t, srv, "local", "01SESS001")
 	srv.SetState(appwire.ThreadStatusIdle)
 	gotAuth := make(chan string, 1)
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -409,4 +409,19 @@ func TestProbeKeepsAQuotaWaitingFinishedDelegateWorking(t *testing.T) {
 	if got := result.RunningSubagentStates["child-quiet"]; got != appwire.ThreadStatusIdle {
 		t.Fatalf("idle delegate state = %q, want the lifecycle's idle", got)
 	}
+}
+
+// setAppIdentity prepares and installs an empty-history AppWire identity for
+// srv, failing the test if PrepareAppIdentityForRef rejects the inputs.
+func setAppIdentity(t testing.TB, srv *server.Server, sourceID, threadID string) {
+	t.Helper()
+	if sourceID == "" {
+		sourceID = appwire.LocalSourceID
+	}
+	ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+	prepared, err := server.PrepareAppIdentityForRef(sourceID, threadID, ref, "")
+	if err != nil {
+		t.Fatalf("PrepareAppIdentityForRef(%q, %q, %q): %v", sourceID, threadID, ref, err)
+	}
+	srv.ReplaceAppIdentity(prepared, nil)
 }

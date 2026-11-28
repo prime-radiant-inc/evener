@@ -14,7 +14,7 @@ import (
 // facet (S1d). A session that has written no message carries no key.
 func TestThreadSnapshotsCarryTheLastMessage(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "root")
+	setAppIdentity(t, srv, "local", "root")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "root"}})
 	raw, err := json.Marshal(listedRootEvener(t, srv))
 	if err != nil {

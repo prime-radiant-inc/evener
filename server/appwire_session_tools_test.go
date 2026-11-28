@@ -20,7 +20,7 @@ func TestSessionToolsRealConnectionBinding(t *testing.T) {
 	t.Parallel()
 	session := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", session.ID())
+	setAppIdentity(t, srv, "local", session.ID())
 	srv.SetSessionTools(func() *agent.Session { return session })
 	client := dialServerAppWire(t, srv)
 	binding := appwire.SessionBinding{Ref: "local:" + session.ID(), InstanceID: session.ID(), HubID: "hub-test", BindingID: "connection-test"}
@@ -49,7 +49,7 @@ func TestSessionToolsPublishesRegistryWithFirstBinding(t *testing.T) {
 	t.Parallel()
 	session := newNotesTestSession(t)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", session.ID())
+	setAppIdentity(t, srv, "local", session.ID())
 	srv.SetSessionTools(func() *agent.Session { return session })
 	published := make(chan int, 1)
 	srv.SetTestOnlySessionToolsPublished(func(registry *runtimeHubClients) {
@@ -84,7 +84,7 @@ func TestSessionToolsLiveBindingCannotBeDisplaced(t *testing.T) {
 	}
 	t.Cleanup(session.Close)
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", session.ID())
+	setAppIdentity(t, srv, "local", session.ID())
 	srv.SetSessionTools(func() *agent.Session { return session })
 	httpServer := httptest.NewServer(srv)
 	t.Cleanup(httpServer.Close)
@@ -184,7 +184,7 @@ func (a *bindingProbeAdapter) Complete(_ context.Context, request llm.Request) (
 	}
 	name, args := "job_list", json.RawMessage(`{"hub":{"mode":"discovery"}}`)
 	if a.toolCalls.Add(1) > 1 {
-		name, args = "communicate", json.RawMessage(`{"message":"done","end_turn":true}`)
+		name, args = "communicate", json.RawMessage(`{"message":"done","next":"send_and_end_turn"}`)
 	}
 	call := llm.ToolCallData{ID: name, Name: name, Arguments: args, Type: "function"}
 	return llm.Response{Provider: a.Name(), Model: request.Model, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}, nil

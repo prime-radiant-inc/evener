@@ -2,6 +2,7 @@
 
 import type { AnyNotification, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
+import { askUserArgs } from "@evener/appwire-client/testing/askUserFixtures";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, describe, expect, test } from "vitest";
@@ -16,7 +17,7 @@ import {
 import { connectReadyFakeClient } from "../../../../testing/connectionTestUtils";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../../threadTestUtils";
 import { askDockStore, resetAskDockStoreForTests } from "./askDockStore";
-import { ackAskUserCall, askArgs, askPendingStatusChanged, ONE_QUESTION } from "./askDockTestUtils";
+import { ackAskUserCall, askPendingStatusChanged, ONE_QUESTION } from "./askDockTestUtils";
 
 // --- fixtures (mirrors stores/threads.test.ts's own harness) -------------
 
@@ -111,7 +112,7 @@ function ackAskUserCallWith(
   turnId: string,
   itemId: string,
   callId: string,
-  questions: Array<Record<string, unknown>>,
+  questions: readonly unknown[],
 ): void {
   for (const status of ["inProgress", "completed"] as const) {
     fake.emitNotification({
@@ -130,7 +131,7 @@ function ackAskUserCallWith(
             toolName: "ask_user",
             callId,
             status,
-            argumentsJson: askArgs(questions),
+            argumentsJson: askUserArgs(questions),
           },
         ],
       },
@@ -172,7 +173,7 @@ describe("reconciliation from the live ThreadModel", () => {
                 toolName: "ask_user",
                 callId: "call_1",
                 status: "completed",
-                argumentsJson: askArgs(ONE_QUESTION),
+                argumentsJson: askUserArgs(ONE_QUESTION),
               },
             ],
           },
@@ -601,7 +602,7 @@ describe("activation epochs", () => {
       toolName: "ask_user",
       callId,
       status: "completed",
-      argumentsJson: askArgs(ONE_QUESTION),
+      argumentsJson: askUserArgs(ONE_QUESTION),
     };
   }
   function userItem(id: string): Record<string, unknown> {

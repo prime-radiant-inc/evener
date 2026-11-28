@@ -420,7 +420,7 @@ func buildRPCSessionWithWorkingDir(t *testing.T, stateDir, parentID, workingDir 
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
 	} {
-		if err := writer.Append(turn); err != nil {
+		if _, err := writer.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -513,7 +513,7 @@ func newTestCredentialsStore(t *testing.T) *credentials.Store {
 
 // newHubRPCTestServerWithWeb behaves like newHubRPCTestServer but also
 // returns the constructed *WebServer, for tests that need to wire an
-// onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
+// change hook on one of its cfg stores (e.g. past.SetOnRootChange, mirroring
 // runMain's composed evener/tree/changed wiring in main.go) before the server
 // starts serving requests.
 // rosterOverRunDir is the roster a test hub gets when it names a rendezvous

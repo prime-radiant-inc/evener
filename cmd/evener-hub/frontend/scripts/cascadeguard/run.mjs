@@ -4,11 +4,20 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
-import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
+import {
+  evaluate,
+  navigateTo,
+  queryAccessibilityTree,
+  REFUSED_BUTTON_SELECTOR,
+  withTimeout,
+} from "../browserGuardCdp.mjs";
 import { revealControlStep, revealReadyExpr } from "./revealControl.mjs";
+import { pressRowExpr } from "./pressRow.mjs";
 import { retainsNewerReadingPoint } from "./releaseRetained.mjs";
 import { attentionJourney } from "./attention.mjs";
 import { isHistoryReadMethod } from "../lib/historyMethods.mjs";
+import { readerWheelDelta, repositionReader } from "./nativeWheel.mjs";
+import { uncoveredCenter } from "../lib/pressPoint.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -59,6 +68,13 @@ const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[da
 const wait = (expression, label, options = {}) => {
   new Function(`return (${expression})`);
   return driver.waitPage(expression, { label, ...options });
+};
+// A repositioning stage may spend only the hard slice of the retry budget that
+// remains to it. Pass that slice as both the floor and the cap: load-derived
+// widening still applies to every other wait, but cannot stretch this one.
+const hardWait = (expression, label, remaining) => {
+  const timeoutMs = remaining();
+  return wait(expression, label, { timeoutMs, hardTimeoutMs: timeoutMs });
 };
 const read = (expression) => evaluate(driver.send, expression);
 const scope = (ref) => `${inspectorRoot} [data-scope-ref=${q(ref)}]`;
@@ -275,8 +291,18 @@ async function settledReadingContinuity(before, portExpr, label) {
   })()`, `${label}, actual source reading position finishes restoration`);
 }
 
-async function nativeReaderWheel(portExpr, deltaY) {
-  const point = await wait(`(() => {
+// A repositioning stage passes `remaining`, and every wait and dispatch is
+// hard-capped to the slice it returns. The standalone interruption probe
+// passes nothing and keeps the driver's load-scaled waits.
+async function nativeReaderWheel(portExpr, deltaY, { remaining } = {}) {
+  const stageWait = remaining
+    ? (expression, label) => hardWait(expression, label, remaining)
+    : (expression, label) => wait(expression, label);
+  const dispatch = (params, label) =>
+    remaining
+      ? withTimeout(driver.send("Input.dispatchMouseEvent", params), remaining(), label)
+      : driver.send("Input.dispatchMouseEvent", params);
+  const point = await stageWait(`(() => {
     const port = ${portExpr};
     if (!port || port.clientWidth <= 0 || port.clientHeight <= 0) return null;
     const r = port.getBoundingClientRect();
@@ -298,15 +324,16 @@ async function nativeReaderWheel(portExpr, deltaY) {
       portBox:box(port), intendedAtMeasure:port.contains(target), viewport:innerWidth,
       hitSurface:target?.closest('[data-pane-scaffold]')?.dataset.paneScaffold };
   })()`, "native wheel midpoint actually hits its intended reader");
+  const delta = typeof deltaY === "function" ? deltaY(point) : deltaY;
   const observation = { kind:"wheel-target", point };
   readingPoints.push(observation);
-  await driver.send("Input.dispatchMouseEvent", { type:"mouseMoved", x:point.x, y:point.y });
-  await driver.send("Input.dispatchMouseEvent", { type:"mouseWheel", deltaX:0, deltaY, x:point.x, y:point.y });
-  const observed = await wait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page");
+  await dispatch({ type:"mouseMoved", x:point.x, y:point.y }, "native wheel mouseMoved");
+  await dispatch({ type:"mouseWheel", deltaX:0, deltaY:delta, x:point.x, y:point.y }, "native wheel dispatch");
+  const observed = await stageWait(`window.__cascadeReaderWheels[${point.eventIndex}]`, "native wheel event reaches the page");
   observation.observed = observed;
   assert.equal(observed.trusted, true, "reader movement uses genuine native wheel input");
   assert.equal(observed.intended, true, "native wheel targets its intended reader");
-  await wait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader");
+  await stageWait(`(${portExpr})?.scrollTop !== ${point.scrollTop}`, "native wheel actually moves its intended reader");
 }
 
 // The interruption and reflow measurements need a reading point inside a tall
@@ -317,13 +344,15 @@ function insideUsefulTallEntry(point) {
 }
 
 async function readInsideTallEntry(portExpr, label) {
-  await nativeReaderWheel(portExpr, -900);
-  return wait(`(() => {
-    const point = ${readingPointExpr(portExpr)};
-    window.__cascadeReadingAttempt = { label:${q(label)}, point };
-    ${insideUsefulTallEntry.toString()}
-    return point?.useful && insideUsefulTallEntry(point) ? point : null;
-  })()`, `${label}, native wheel selects useful content inside a tall entry`);
+  return repositionReader({
+    wheel: (remaining) => nativeReaderWheel(portExpr, readerWheelDelta, { remaining }),
+    tallEntry: (remaining, attempt) => hardWait(`(() => {
+      const point = ${readingPointExpr(portExpr)};
+      window.__cascadeReadingAttempt = { label:${q(label)}, attempt:${attempt}, point };
+      ${insideUsefulTallEntry.toString()}
+      return point?.useful && insideUsefulTallEntry(point) ? point : null;
+    })()`, `${label}, native wheel selects useful content inside a tall entry`, remaining),
+  });
 }
 
 async function widthOnlyReflow(portExpr, width, height, label) {
@@ -1278,6 +1307,36 @@ async function assertOverlap(ref, text, label) {
   assert.equal(typeof editedAt, 'number', `${label}, draft record carries its write stamp`);
 }
 
+async function verifyExifRotatedJpegStaging(ref) {
+  await driver.clearComposerDraft(ref);
+  await upload('exif-rotated.jpg');
+  await wait("document.querySelector('button[aria-label=\"View exif-rotated.jpg\"] img')?.src.startsWith('data:image/jpeg;base64,')", 'EXIF-rotated JPEG encoded to JPEG thumbnail');
+  const decoded = await read(`(async () => {
+    const src = document.querySelector('button[aria-label="View exif-rotated.jpg"] img')?.src;
+    if (!src) throw new Error('missing exif-rotated.jpg thumbnail');
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('thumbnail decode failed'));
+      img.src = src;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const left = Array.from(ctx.getImageData(Math.floor(canvas.width * 0.25), Math.floor(canvas.height * 0.5), 1, 1).data);
+    const right = Array.from(ctx.getImageData(Math.floor(canvas.width * 0.75), Math.floor(canvas.height * 0.5), 1, 1).data);
+    return { width: img.naturalWidth, height: img.naturalHeight, left, right };
+  })()`);
+  assert.equal(decoded.width, 1024, 'EXIF Orientation=6 landscape 2400x1200 rotates and downscales to 1024px portrait width');
+  assert.equal(decoded.height, 2048, 'EXIF Orientation=6 landscape 2400x1200 rotates and downscales to 2048px portrait height');
+  assert.ok(decoded.left[2] > 200 && decoded.left[0] < 60, `rotated left pixel should be blue, got ${JSON.stringify(decoded.left)}`);
+  assert.ok(decoded.right[0] > 200 && decoded.right[2] < 60, `rotated right pixel should be red, got ${JSON.stringify(decoded.right)}`);
+  await driver.click('button[aria-label="Remove exif-rotated.jpg"]');
+  await wait(`document.querySelector('button[aria-label="Remove exif-rotated.jpg"]') === null`, 'EXIF test tile removed');
+}
+
 async function mixedSourceJourney() {
   const ref = fixture.rootRef;
   await driver.clearComposerDraft(ref);
@@ -1295,7 +1354,7 @@ async function mixedSourceJourney() {
   await driver.typeText(ref, ' /cascade-overlap');
   await completeOverlap(ref, 'skill');
   await upload('mixed-last.png');
-  await wait("document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')", 'last real overlap image');
+  await wait(`document.querySelector('[role="img"][aria-label=${q('mixed-last.png (still processing)')}]') !== null`, 'last real overlap image queued pending while middle encode is held');
   await driver.focusComposer(ref);
   await driver.typeText(ref, ' /cascade-overlap');
   await key('Escape', 27);
@@ -1305,16 +1364,18 @@ async function mixedSourceJourney() {
   assert.equal(new Set(markers).size, 3, 'retained source allocates unique image markers');
   const [firstMarker, failedMarker, lastMarker] = markers;
   await assertOverlap(ref, before.text, 'before mounted image settlement');
-  const imageBytes = await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)");
+  const firstImageBytes = await read("document.querySelector('button[aria-label=\"View mixed-first.png\"] img').src");
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await read('window.__cascadeEncode.release(false)');
   await wait(`${driver.toastExpr()}.includes('mixed-failure.png (image decode failed)')`, 'actual failed decode settles while source editor stays mounted');
   await returnToSource();
+  await wait("document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')", 'last real overlap image settles after middle decode fails');
   const settledText = before.text.replace(failedMarker, '');
   await assertOverlap(ref, settledText, 'after mounted image settlement and Return');
   assert.equal((await driver.composerState(ref)).tiles, 2, 'only failed middle image is removed');
-  assert.deepEqual(await read("['mixed-first.png','mixed-last.png'].map(name => document.querySelector(`button[aria-label=\"View ${name}\"] img`).src)"), imageBytes, 'exact retained PNG bytes');
+  assert.equal(await read("document.querySelector('button[aria-label=\"View mixed-first.png\"] img').src"), firstImageBytes, 'exact retained first PNG bytes');
+  assert.ok(await read("document.querySelector('button[aria-label=\"View mixed-last.png\"] img')?.src.startsWith('data:image/png;base64,')"), 'last real overlap image settled as PNG');
   driver.milestone('mixed-mounted-image-return', { recipient:ref, mentions:overlapMentions(settledText) });
 
   await holdStorageAcknowledgement(ref, settledText);
@@ -1348,6 +1409,7 @@ async function mixedSourceJourney() {
   assert.equal(requests[0].params.ref, ref);
   driver.milestone('mixed-held-storage-return', { recipient:ref, clientMutationId:held.clientMutationId, mentions:overlapMentions(cleaned) });
   await capture('mixed-held-storage-return');
+  await verifyExifRotatedJpegStaging(ref);
 }
 
 const layoutExpr = "JSON.parse(localStorage.getItem('evener.workspace.layout.v2') || 'null')";
@@ -1717,15 +1779,29 @@ async function reloadAndMobileJourney() {
   await readInsideTallEntry(sourcePortExpr, "phone source");
   await widthOnlyReflow(sourcePortExpr, 430, 844, "phone-reader-width-reflow");
   await widthOnlyReflow(sourcePortExpr, 390, 844, "phone-reader-width-return");
-  await driver.click(`${driver.composerSelector(fixture.rootRef)} [data-testid="session-chrome-inline"] button[aria-haspopup="menu"]`);
-  const overview = await wait(`(() => {
-    const button = [...document.querySelectorAll('[role="menuitem"]')].find(node => node.textContent.trim().startsWith('Overview'));
-    if (!button) return null; const r = button.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  })()`, "existing phone Overview menu action");
-  await driver.clickAt(overview.x, overview.y);
-  await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
+  const phoneOverview = await wait(`(() => {
+    const button = document.querySelector(${q(`[data-session-overview-ref=${q(fixture.rootRef)}][data-pane-id=${q(fixture.sourcePaneId)}]`)})?.closest('button[aria-label="Overview"]');
+    return button ? (${uncoveredCenter})(button, "nearest") : null;
+  })()`, "phone Overview button is scoped and hit-testable");
+  await driver.clickAt(phoneOverview.x, phoneOverview.y);
+  await wait(sidebarEntranceSettled, "phone Overview entrance settled before tab selection");
+  const agentsTab = await wait(`(() => {
+    const tab = document.querySelector('[data-testid="activity-sidebar"] [role="tab"][aria-label^="Agents"]');
+    if (!tab) return null;
+    if (tab.getAttribute('aria-selected') === 'true') return { selected: true };
+    const point = (${uncoveredCenter})(tab, "center");
+    return point ? { selected: false, point } : null;
+  })()`, "phone Overview Agents tab is hit-testable");
+  if (!agentsTab.selected) {
+    await driver.clickAt(agentsTab.point.x, agentsTab.point.y);
+  }
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
-  await driver.click(mobileRow);
+  const mobileRowPoint = await driver.settleExpression(`(() => {
+    const row = document.querySelector(${q(mobileRow)});
+    const button = row?.matches('button') ? row : row?.querySelector('button');
+    return button ? (${uncoveredCenter})(button, "center") : null;
+  })()`, { label: "phone child row is settled and hit-testable before physical tap" });
+  await driver.clickAt(mobileRowPoint.x, mobileRowPoint.y);
   await wait(`(() => {
     const scope = ${driver.paneScopeExpr(fixture.childRef)};
     return document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1
@@ -1835,7 +1911,10 @@ async function reconnect({ expectRefs } = {}) {
 async function drill(edge, level) {
   await wait(sidebarEntranceSettled, `sidebar entrance settled before drill ${level}`);
   const selector = await reveal(edge, '[data-testid="activity-sidebar"]');
-  await driver.click(selector);
+  // Press the row reveal returned, in one page turn (see pressRowExpr): a
+  // press measured separately can land on a neighbour once the Overview
+  // restores its retained scroll anchor (#7314).
+  await wait(pressRowExpr(selector), `drill ${level}'s row for ${edge.delegateId} is exposed and pressed`);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
   const track = drilledTrack(level);
   await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(track.columns))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(track.spines))}`, `exact column and spine sets ${level}`);

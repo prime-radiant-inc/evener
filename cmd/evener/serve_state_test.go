@@ -833,7 +833,7 @@ func newClearServeDeps(t *testing.T) (serveDeps, *clearTestState, []string) {
 	deps.bridge = func(_ serveServer, sess *agent.Session, observer func(events.SessionEvent), onDrained func()) {
 		go func() {
 			defer onDrained()
-			server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
+			bridgeSessionEventsForTest(state.srv.Server, sess.Events(), observer)
 		}()
 	}
 	deps.subscriberCount = func(_ serveServer, id string) int {
@@ -907,7 +907,7 @@ func runClearAttempt(t *testing.T, deps serveDeps, state *clearTestState, args [
 		if err != nil {
 			t.Fatalf("open the old transcript: %v", err)
 		}
-		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(oldClearInputMarker))); err != nil {
+		if _, err := writer.Record(schema.NewTurn(schema.TurnUserInput, llm.User(oldClearInputMarker)), transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("record the old thread's turn: %v", err)
 		}
 		if err := writer.Close(); err != nil {
@@ -1179,7 +1179,7 @@ func TestRunServeClearSuccessClosesOldStreamAndInstallsPreparedIdentity(t *testi
 			Data:      events.SessionEndData{Reason: "clear", State: "closed"},
 		}
 		close(stale)
-		server.BridgeWithObserver(state.srv.Server, stale, nil)
+		bridgeSessionEventsForTest(state.srv.Server, stale, nil)
 		status := state.srv.GetStatus()
 		lateStatus = status.State
 		read := clearThreadRead(t, state.srv)
@@ -1297,7 +1297,7 @@ func TestClearSeedsTheReplacementEnvelopeBeforeItsBridgeRuns(t *testing.T) {
 		}
 		go func() {
 			defer onDrained()
-			server.BridgeWithObserver(state.srv.Server, sess.Events(), observer)
+			bridgeSessionEventsForTest(state.srv.Server, sess.Events(), observer)
 		}()
 	}
 
@@ -1376,5 +1376,11 @@ func TestStartupSeedsTheEnvelopeBeforeTheBridgeRuns(t *testing.T) {
 	}
 	if !diagnostics {
 		t.Fatal("the first thread/read carries no diagnostics: the daemon installed its identity without seeding the envelope")
+	}
+}
+
+func bridgeSessionEventsForTest(srv *server.Server, eventCh <-chan events.SessionEvent, observer func(events.SessionEvent)) {
+	for ev := range eventCh {
+		server.BridgeEvent(srv, ev, observer)
 	}
 }

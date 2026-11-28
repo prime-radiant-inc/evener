@@ -1,24 +1,7 @@
-/* Notes panel: the session's shared notes as their own surface. Three stacked
- * cards (yours / agent / links) on the details section rhythm, so the panel
- * reads as one family with DetailsPanel while giving the human textarea the
- * room a popover never had. Token colors and spacing only. */
-
-.section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding-block-end: var(--space-4);
-  border-block-end: 1px solid var(--edge);
-}
-
-.section:last-child {
-  padding-block-end: 0;
-  border-block-end: none;
-}
-
-.section + .section {
-  padding-block-start: var(--space-4);
-}
+/* Notes panel: the session's shared notes as their own surface. Two stacked
+ * cards (yours / agent) inside PanelSection's shared section rhythm,
+ * so the panel reads as one family with DetailsPanel while giving the human
+ * textarea the room a popover never had. Token colors and spacing only. */
 
 /* The editor and the one-line save status under it (saving, saved, the
  * idle-wake cost, or the failure). */
@@ -26,21 +9,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-
-/* The human note's writing surface claims the card's full width; autoGrow
- * (not a fixed rows count) lets a long note breathe without a scrollbar
- * appearing at an arbitrary line. The widget sets no width of its own (a
- * bare textarea defaults to ~20 columns), so the host claims it here -
- * the same `.form textarea` precedent spawn.module.css sets. */
-.editor {
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.editor textarea {
-  width: 100%;
-  box-sizing: border-box;
 }
 
 /* Read-only note prose: the agent's words and a finished session's human
@@ -53,31 +21,4 @@
   color: var(--ink-hi);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-/* Links list: one row per entry, label link leading and the quiet Remove
- * trailing. Long URLs wrap at a separator rather than overflowing the card. */
-.linkList {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.linkRow {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  color: var(--ink-hi);
-  overflow-wrap: anywhere;
-}
-
-.linkUrl {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }

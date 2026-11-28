@@ -71,10 +71,8 @@ test("classifyJobStatus maps protocol synonyms to presentation states", () => {
 });
 
 test("resolveRowKey gives durable identities precedence over call identities", () => {
-  expect(resolveRowKey("dlg_1", undefined, "fallback")).toBe("dlg:dlg_1");
-  expect(resolveRowKey(undefined, "job_1", "fallback")).toBe("job:job_1");
-  expect(resolveRowKey(undefined, undefined, "call_1")).toBe("call:call_1");
-  expect(resolveRowKey("dlg_1", "job_1", "call_1")).toBe("dlg:dlg_1");
+  expect(resolveRowKey("dlg_1", "fallback")).toBe("dlg:dlg_1");
+  expect(resolveRowKey(undefined, "call_1")).toBe("call:call_1");
 });
 
 test("upsertSubagentRow migrates a call-keyed placeholder to its durable delegate key", () => {

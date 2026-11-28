@@ -26,6 +26,10 @@ func (s *Session) SteerWithImages(msg string, images []ImageAttachment) error {
 	return err
 }
 
+func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) (bool, error) {
+	return s.trySteerWithImagesAndProvenance(msg, images, nil, "")
+}
+
 // SteerFromUser queues a text-only steering message sent by the human user
 // mid-turn (the UI steer action). Unlike daemon/system nudges queued via
 // Steer, it is marked Source "user" so UIs render it as a user message

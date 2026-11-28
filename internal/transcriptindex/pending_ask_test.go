@@ -21,7 +21,7 @@ func TestVoicePendingAsk_IndexedMatchedOrigin(t *testing.T) {
 	defer writer.Close()
 	origin := &schema.ConversationOutputProvenance{Version: 1, InstanceID: "instance", RunGeneration: 7, RequestID: "actual-request", FrontierID: "actual-frontier"}
 	call := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnAssistant, TurnID: "execution", TurnKind: schema.TurnSpanExecution, RoundID: "round", ConversationProvenance: origin, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "exact-call", Name: "ask_user", Arguments: json.RawMessage(`{"question":"original"}`)}}}}}
-	if err := writer.Append(call); err != nil {
+	if _, err := writer.Record(call, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	index, err := Open(path, dir)
@@ -39,7 +39,7 @@ func TestVoicePendingAsk_IndexedMatchedOrigin(t *testing.T) {
 	opener := initial.Candidates[0].Item.ID
 	canonical := json.RawMessage(`{"version":1,"questions":[{"question":"executed","options":[{"label":"2","detail":"d2"},{"label":"1","detail":"d1"}]}]}`)
 	result := schema.Turn{Format: schema.TurnFormatIdentity, Kind: schema.TurnToolResults, TurnID: "execution", TurnKind: schema.TurnSpanExecution, RoundID: "round", Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{Name: "ask_user", ToolCallID: "exact-call", Content: "ack", ToolState: canonical}}}}}
-	if err := writer.Append(result); err != nil {
+	if _, err := writer.Record(result, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 		t.Fatal(err)
 	}
 	// Reopen after append exercises persisted indexed projection, then repeat the

@@ -9,22 +9,19 @@
   min-width: 0;
 }
 
-/* The steering diamond leads the summary in the content column, at the
- * ambient 50% every kind glyph shares. */
+/* The steering diamond seats in the shared icon rail beside the body-sized
+ * summary text, at the ambient 50% every kind glyph shares. */
 .railIcon {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  opacity: 0.5;
+  composes: seat from "../../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: ambient from "../../../../styles/railseat.module.css";
+  composes: gutterPull from "../../../../styles/railseat.module.css";
+  align-self: center;
+  font-size: var(--font-size-body);
 }
 
 .body {
+  composes: railBody from "../../../../styles/surface.module.css";
   margin: 0;
-  padding: var(--space-2);
-  border-left: 2px solid var(--edge);
   white-space: pre-wrap;
-  overflow-wrap: break-word;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-body);
-  color: var(--ink-mid);
 }

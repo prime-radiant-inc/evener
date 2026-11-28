@@ -56,8 +56,7 @@ func (s *testNavigationSource) Capture(ctx context.Context, generation string, n
 		default:
 		}
 	}
-	inputs := cloneNavigationInputs(s.inputs)
-	inputs.Tree = s.inputs.Tree.Snapshot()
+	inputs, cloneErr := cloneNavigationInputs(ctx, s.inputs)
 	inputs.GenerationID = generation
 	inputs.Revision = 0
 	next := s.nextBoundary
@@ -71,6 +70,9 @@ func (s *testNavigationSource) Capture(ctx context.Context, generation string, n
 			return navigationSourceSnapshot{}, ctx.Err()
 		case <-release:
 		}
+	}
+	if cloneErr != nil {
+		return navigationSourceSnapshot{}, cloneErr
 	}
 	if err != nil {
 		return navigationSourceSnapshot{}, err
@@ -322,6 +324,9 @@ func hasNavigationTarget(targets []appwire.NavigationInvalidationTarget, kind ap
 		if target.Kind != kind {
 			continue
 		}
+		if kind == appwire.NavigationTargetManifest {
+			return true
+		}
 		if kind == appwire.NavigationTargetProject && target.ProjectKey == selector {
 			return true
 		}
@@ -330,6 +335,39 @@ func hasNavigationTarget(targets []appwire.NavigationInvalidationTarget, kind ap
 		}
 	}
 	return false
+}
+
+// A source-state hint must reach manifest readers even when the rebuilt
+// manifest is unchanged: the hub's projection can already carry the new
+// online state while a client's cached manifest predates it, so a fingerprint
+// delta alone would leave that client stale.
+func TestNavigationServiceSourceHintPublishesManifestWithoutDelta(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.readV3(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Control: a forced rebuild with no hint and no source change publishes
+	// nothing, so the manifest target below comes from the hint.
+	noop, err := service.Refresh(t.Context(), navigationChangeHint{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(noop.Targets) != 0 || len(service.DrainPublications()) != 0 {
+		t.Fatalf("empty hint published %+v", noop.Targets)
+	}
+
+	mutation, err := service.Refresh(t.Context(), navigationChangeHint{Sources: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasNavigationTarget(mutation.Targets, appwire.NavigationTargetManifest, "") {
+		t.Fatalf("source hint targets = %+v, want manifest", mutation.Targets)
+	}
+	publications := service.DrainPublications()
+	if len(publications) != 1 || !hasNavigationTarget(publications[0].Targets, appwire.NavigationTargetManifest, "") {
+		t.Fatalf("source hint publications = %+v, want one manifest target", publications)
+	}
 }
 
 func TestNavigationServiceReusesRetainedProjectionAcrossResourceMisses(t *testing.T) {
@@ -2420,14 +2458,14 @@ func TestNavigationProjectionAndLogicalFingerprintTraversalCheckContextInternall
 	inputs.Tree.Projects[0].Current = rows
 	inputs.GenerationID = "0123456789abcdef0123456789abcdef"
 	projectionCtx := &cancelAfterChecksContext{Context: context.Background(), limit: 25}
-	if _, err := buildNavigationProjectionContext(projectionCtx, inputs); !errors.Is(err, context.Canceled) {
+	if _, err := buildNavigationProjection(projectionCtx, inputs); !errors.Is(err, context.Canceled) {
 		t.Fatalf("projection error = %v, want internal cancellation", err)
 	}
 	if got := projectionCtx.checks.Load(); got > projectionCtx.limit+2 {
 		t.Fatalf("projection continued after cancellation: %d checks", got)
 	}
 
-	projection, err := buildNavigationProjection(inputs)
+	projection, err := buildNavigationProjection(t.Context(), inputs)
 	if err != nil {
 		t.Fatal(err)
 	}

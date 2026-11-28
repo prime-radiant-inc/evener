@@ -341,3 +341,39 @@ func TestAsideSession_RejectsMissingParent(t *testing.T) {
 		t.Errorf("aside created artifacts for a missing parent: %v", entries)
 	}
 }
+
+func TestAsideSession_WithForkModel(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildAsideParentSession(t)
+
+	childID, err := AsideSession(stateDir, parentID, WithForkModel("anthropic", "claude-opus-4-5"))
+	if err != nil {
+		t.Fatalf("AsideSession: %v", err)
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.ProfileID != "anthropic" || childMeta.Model != "claude-opus-4-5" {
+		t.Fatalf("childMeta profile/model = (%q, %q), want (%q, %q)", childMeta.ProfileID, childMeta.Model, "anthropic", "claude-opus-4-5")
+	}
+	if childMeta.Config.Sandbox != "workspace-write" {
+		t.Fatalf("childMeta sandbox = %q, want inherited %q", childMeta.Config.Sandbox, "workspace-write")
+	}
+	childHeader, entries, _, err := readTranscript(context.Background(), schema.SessionTranscriptPath(stateDir, childID), "")
+	if err != nil {
+		t.Fatalf("readTranscript(child): %v", err)
+	}
+	if childHeader.ProfileID != "anthropic" || childHeader.Model != "claude-opus-4-5" {
+		t.Fatalf("childHeader profile/model = (%q, %q), want (%q, %q)", childHeader.ProfileID, childHeader.Model, "anthropic", "claude-opus-4-5")
+	}
+	if childHeader.SystemPrompt != "" {
+		t.Fatalf("cross-provider aside childHeader.SystemPrompt = %q, want empty", childHeader.SystemPrompt)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("aside entries = %d, want 4", len(entries))
+	}
+	if parentMeta, err := schema.LoadSessionMeta(stateDir, parentID); err != nil || parentMeta.ProfileID != "openai" || parentMeta.Model != "gpt-5.2" {
+		t.Fatalf("parentMeta mutated or unloadable: %+v, err=%v", parentMeta, err)
+	}
+}

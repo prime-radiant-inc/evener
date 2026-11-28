@@ -43,6 +43,7 @@ import (
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // BuildVersion is recorded in each session's metadata (SessionMeta.BuildVersion).
@@ -849,7 +850,6 @@ type RestoreSessionConfig struct {
 	LLMRetryPolicy          *llm.RetryPolicy
 	LLMSleep                llm.SleepFunc
 	spawn                   spawnConfig
-	resumeHistory           []schema.Turn
 	deferRestoreSideEffects bool
 	// sandboxProvisioned is set only by the stable-delegate restore path after it
 	// has re-resolved and enabled the descriptor's complete sandbox policy. That
@@ -907,20 +907,6 @@ type RestoreSessionConfig struct {
 	// never called discovery leaves.
 	StartupMCPProjectEvidence *mcpconfig.LayerEvidence
 
-	// OnRestoredTranscript, when set, receives the transcript this resume
-	// validated: the header (its SessionID already checked against the
-	// session's id), the final decoded entry list after every restore-time
-	// append, and whether a transcript was opened at all (true for a
-	// header-only one). It exists so serve can project its app identity from
-	// the one strict decode restore already did instead of re-reading the
-	// file. The session itself keeps no reference to the entries: a
-	// transcript can decode to more memory than the file holds, and a
-	// restored session -- a delegate child, a one-shot run -- would otherwise
-	// carry it for its whole life. The entries alias the slice restore goes
-	// on to fold for the delegate attention rearm right after the call, so
-	// the receiver must not mutate them.
-	OnRestoredTranscript func(header transcript.Header, entries []transcript.Entry, opened bool)
-
 	// ForceRealIO carries through to the restored Session's SessionConfig.
 	// See SessionConfig.ForceRealIO's own comment (session_config.go) - the
 	// same exported escape valve for a black-box/live test in another
@@ -954,6 +940,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// so validate before meta.ID is joined into any transcript path below.
 	if err := schema.ValidateSessionID(meta.ID); err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
+	}
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
+		return nil, err
 	}
 	restoreComplete := false
 	ownershipAcquired := false
@@ -1057,6 +1046,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// belongs to this delegate; the first inherited input belongs to its parent.
 		cfg.spawn.subagentTask = meta.OriginalPrompt
 	}
+	savedModelFallbacks := restoreCfg.ModelFallbacks == nil && len(cfg.ModelFallbacks) > 0
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
 	}
@@ -1109,9 +1099,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
 	var restoredTranscriptHeader transcript.Header
-	// opened flag for OnRestoredTranscript; captured at the open so the
-	// refresh below can't flip it.
-	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
 		tpath := schema.SessionTranscriptPath(cfg.StateDir, meta.ID)
 		var openErr error
@@ -1122,7 +1109,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if resumeTranscript != nil {
 			restoredTranscriptHeader = resumeTranscript.Header()
 		}
-		restoredTranscriptOpened = openErr == nil
 	}
 	// A fork's copied prefix names turns this session's store never reserved;
 	// its own turns are named above them.
@@ -1148,12 +1134,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
-	// Restore the cheap/fast model routing from the persisted meta. On resume the
-	// caller's profile carries no cheap model (the launch arg is intentionally
-	// not re-passed), so this is the only place it is re-applied.
-	if meta.CheapModel != "" {
-		profile = provider.WithCheapModel(profile, meta.CheapModel)
-	}
 
 	// Reconcile the typed compaction handoff receipts from ALL decoded
 	// transcript entries into the persisted lifecycle snapshot BEFORE
@@ -1168,19 +1148,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
 	var repairInsertions []int
-	// Where each reopened turn's latest attempt begins in resumeHistory: the
-	// restored state reads an end reason from that attempt alone.
-	var attemptStarts map[string]int
 	// The superseded attention identities the history build and the
 	// coordinate mappers below share: the transcript folds for them once,
 	// not once per reopen marker and boundary they map.
 	var superseded map[string]bool
-	if restoreCfg.resumeHistory != nil {
-		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
-	} else if len(transcriptEntries) > 0 {
+	if len(transcriptEntries) > 0 {
 		superseded = supersededDelegateAttentionIDs(transcriptEntries)
 		resumeHistory, repairInsertions = resumeHistoryIndexedWithSuperseded(transcriptEntries, superseded)
-		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions, superseded)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1196,7 +1170,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// transcript, and a compacted transcript resumes partway through it, so the
 	// bound shifts by where the retained history begins.
 	divergenceTurn := meta.DivergenceTurn
-	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 {
+	if len(transcriptEntries) > 0 {
 		// The resumed history starts at the retained window, leaves out the
 		// transcript-only entries, and repair insertions before the fork
 		// boundary shift it right by one each (resumedDivergence carries the
@@ -1245,6 +1219,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		client:                   client,
 		profile:                  profile,
 		resolveProfile:           cfg.ResolveProfile,
+		savedModelFallbacks:      savedModelFallbacks,
 		depth:                    cfg.spawn.depth,
 		delegationAllowance:      delegationAllowance,
 		jobActivityClock:         jobClock,
@@ -1256,7 +1231,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		stateDir:                 cfg.StateDir,
 		installID:                resolveInstallationID(cfg, cfg.StateDir),
 		state:                    SessionIdle,
-		loopEffortEscalated:      meta.ReasoningEffortEscalated,
 		events:                   make(chan events.SessionEvent, 256),
 		history:                  resumeHistory,
 		frontierStartupPending:   true,
@@ -1310,7 +1284,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		},
 		meta, restoredTranscriptHeader.SystemPrompt,
 	)
-	persistFallbackPrompt := validSavedSystemPrompt(restoredTranscriptHeader.SystemPrompt) == "" || validSavedSystemPrompt(meta.LaunchSystemPrompt) != "" || ignoreLaunchBaseline
+	persistFallbackPrompt := schema.ValidSavedSystemPrompt(restoredTranscriptHeader.SystemPrompt) == "" || schema.ValidSavedSystemPrompt(meta.LaunchSystemPrompt) != "" || ignoreLaunchBaseline
 	s.envTracker = envctx.NewTracker(envctx.State{})
 	s.envContextState = nil
 	if !ignoreLaunchBaseline {
@@ -1343,6 +1317,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
+	defer func() {
+		if !restoreComplete {
+			_ = s.closeOwnedDelegateStore()
+		}
+	}()
 	// Delegate reconciliation is durable, local startup work. Complete it before
 	// any provider metadata access so caller-delivery crash replay cannot depend
 	// on provider availability or latency.
@@ -1368,13 +1347,36 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	} else {
 		profile, selectedModels = resolveStartupModelProfileWithReuse(client, profile, s.id, *s.providerAdapterTimeout(), restoreCfg.StartupModelListing)
 	}
+	if err := validateVertexInteractionsModel(client, profile); err != nil {
+		return nil, err
+	}
 	s.profile = profile
-	s.captureModelAvailability(selectedModels)
-	defer func() {
-		if !restoreComplete {
-			_ = s.closeOwnedDelegateStore()
+	// Restore the cheap/fast model routing from the persisted meta, pruning any
+	// retired provider (e.g. google-vertex-express) or unsupported Vertex model.
+	if meta.CheapModel != "" {
+		candidate := provider.WithCheapModel(s.profile, meta.CheapModel)
+		if err := s.googleMigrationCheapModelError(candidate); err != nil {
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
+				Message: fmt.Sprintf("restore: ignored saved cheap_model %q: %v", meta.CheapModel, err),
+			})
+		} else {
+			s.profile = candidate
 		}
-	}()
+	}
+	if savedModelFallbacks {
+		kept := make([]string, 0, len(s.cfg.ModelFallbacks))
+		for _, fbModel := range s.cfg.ModelFallbacks {
+			if err := s.googleMigrationFallbackError(fbModel); err != nil {
+				s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
+					Message: fmt.Sprintf("restore: pruned saved model_fallbacks entry %q: %v", fbModel, err),
+				})
+				continue
+			}
+			kept = append(kept, fbModel)
+		}
+		s.cfg.ModelFallbacks = kept
+	}
+	s.captureModelAvailability(selectedModels)
 	s.subagents = newSubagentManager(cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore || testSpeedIO(cfg) {
@@ -1394,7 +1396,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Restore daemon steering before restore side effects can enqueue a
 	// restart-owned notification. Loading it later would overwrite that new
 	// notification with the pre-restart snapshot.
-	if steering, _, err := loadQueues(s.stateDir, s.id); err != nil {
+	if steering, err := loadQueues(s.stateDir, s.id); err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
 	} else {
 		s.steeringQueue = daemonSourcedSteering(steering)
@@ -1525,7 +1527,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// entries that no longer validate against the picked profile drop per
 	// entry, before initSessionState's all-or-nothing check can strand a valid
 	// pick. An ordinary resume revalidates nothing and keeps the strict check.
-	if modelChanged {
+	if modelChanged && savedModelFallbacks {
 		s.mu.Lock()
 		dropped := s.revalidateModelFallbacksLocked()
 		s.lastDroppedModelFallbacks = dropped
@@ -1560,9 +1562,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 
-	// Seed context manager with the meta's token count.
-	if meta.LastInputTokens > 0 && s.contextMgr != nil {
-		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
+	// Seed the persisted measurement only when this resume restored the target
+	// that produced it and the history still holds the measured prefix. A meta
+	// written before the measured length existed has no prefix to check, and its
+	// count is not trusted rather than charged to the restored history's length.
+	if s.contextMgr != nil && meta.LastInputMeasuredLen != nil {
+		s.contextMgr.RestoreInputMeasurement(meta.LastInputTokens, *meta.LastInputMeasuredLen, meta.LastInputAnchor, meta.LastInputTarget, s.history)
 	}
 
 	// Seed persisted cumulative token totals before the first autosave can
@@ -1603,11 +1608,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.attachTranscript(tw, transcriptEntries)
 	// refreshFromDisk re-reads the transcript file whenever a restore-time
-	// replay appended turns it did not decode: the retained entry list would
-	// otherwise end at the last pre-append entry, and serve (which projects
-	// exactly this list) would seed its turn snapshot and live-turn-id fence
-	// one turn behind the file. Both refresh triggers share it so there is
-	// one refresh, not two mechanisms.
+	// replay appended turns it did not decode, so later restore steps
+	// (crash closure, skill reconciliation, delegate attention rearm, and
+	// SessionStart TranscriptEntries) see the full file.
 	refreshFromDisk := func(reason string) error {
 		refreshed, err := readTranscriptFull(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
@@ -1617,7 +1620,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return fmt.Errorf("refresh transcript after %s: header session %q does not match %q", reason, refreshed.Header.SessionID, s.id)
 		}
 		transcriptEntries = refreshed.Entries
-		restoredTranscriptHeader = refreshed.Header
 		return nil
 	}
 	// An execution the crashed process left open ended when it died: record
@@ -1666,19 +1668,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// survived but whose admission did not (a metadata save failure or a
 	// crash between the input turn and the obligation persist). It runs over
 	// ALL decoded entries — after the catalog is discovered and the
-	// transcript is attached, before OnRestoredTranscript receives the
+	// transcript is attached, before the delegate attention rearm folds the
 	// final entry list — and never repeats a covered invocation.
 	if s.reconcilePendingSkillSelections(context.Background(), transcriptEntries) && tw != nil {
 		if err := refreshFromDisk("skill selection reconciliation"); err != nil {
 			return nil, err
 		}
 	}
-	// OnRestoredTranscript and the attention rearm both run after every
-	// restore-time transcript append, so serve and the fold see the same
-	// final entry list the file holds.
-	if restoreCfg.OnRestoredTranscript != nil {
-		restoreCfg.OnRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
-	}
+	// Run the attention rearm after every restore-time transcript append so
+	// the fold sees the same final entry list the file holds.
 	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
@@ -1699,29 +1697,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, err
 	}
 
-	// Re-derive the at-rest state from the restored history's tail: an
-	// unanswered ask_user call, or a last input that ended on needs_response,
-	// rests awaiting (deriveRestoredState's own doc comment has the full
-	// walk). NewSession never runs this scan — a fresh session always starts
-	// idle. steeringOrigins() gives the boundary its durable steering
-	// provenance, so a kindless legacy human-note turn is still read as a
-	// note rather than an answering steer.
-	// divergenceTurn (computed above for escapeHistoryWithSessionProvenance,
-	// and still in the same units s.history uses since escaping never
-	// changes its length) scopes the provenance to this session's own turns
-	// alone, so a forked child's inherited prefix is never decided by a
-	// reused client mutation id in the child's OWN journal.
+	// Only an unanswered ask can restore awaiting. The divergence scopes
+	// steering provenance to this session's own turns, never its inherited prefix.
 	steeringProvenance := s.clientMutations.steeringOrigins()
-	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance, attemptStarts)
-	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
-	// spec §2): deriveRestoredState alone only re-derives that the session
-	// rests awaiting, but every hold keyed on askPending itself — the entry
-	// gate, the goal engine's arm-don't-kick paths, Compact's guard — stays
-	// inert after a restart unless the set is repopulated too.
-	// isAskRound distinguishes "nothing was pending" from "an ask was pending
-	// but none of its arguments parsed"; only the latter warrants a warning,
-	// and neither may ever fail the restore.
-	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history, divergenceTurn, steeringProvenance)
+	restoredState, restoredAskPending, isAskRound := deriveRestoredState(s.history, divergenceTurn, steeringProvenance)
 	if isAskRound && len(restoredAskPending) == 0 {
 		s.emit(events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
@@ -1733,16 +1712,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// maintains the invariant, restore included.
 	s.setAskPendingLocked(restoredAskPending)
 	s.mu.Unlock()
-	// Settle before the session start announces the state.
-	if !restoreCfg.deferRestoreSideEffects {
-		s.recomputeRestoredState(divergenceTurn, attemptStarts)
-	}
 	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
 		Restored:          true,
 		Turns:             s.modelResponses,
-		LastInputTokens:   meta.LastInputTokens,
+		LastInputTokens:   s.contextMgr.LastInputTokens(),
 		ContextWindowSize: profile.ContextWindowSize(),
 		State:             s.WireState(),
 		// TranscriptEntries is the exact count OpenWriterForSession validated
@@ -1775,6 +1750,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			// durability.
 			s.maybeAutoSave()
 		}
+		// The transcript header of a role- or plugin-changing fork records no
+		// prompt, so the session meta is the only place a reader can find the one this
+		// session launched with. Persist a freshly rendered one now, before the
+		// restored session is exposed: a history index opened on the first read
+		// computes its prelude once, at open, so a periodic or first-turn save
+		// would arrive too late for that handle.
+		if s.persistFallbackPrompt && s.systemPromptFrozen && s.cachedSystemPrompt != meta.LaunchSystemPrompt {
+			s.maybeAutoSave()
+		}
 	}
 	restoreComplete = true
 	return s, nil
@@ -1801,7 +1785,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// resolution over two saved fields can land on either one. Clearing it here
 	// keeps the render below the only way such a session gets a prompt, and keeps
 	// the --system-prompt read asked for below.
-	restoredPrompt = validSavedSystemPrompt(restoredPrompt)
+	restoredPrompt = schema.ValidSavedSystemPrompt(restoredPrompt)
 	s.cheap = cheapmodel.New(s.client)
 	s.cheap.AdapterTimeout = s.providerAdapterTimeout()
 	env := s.currentEnv()
@@ -1827,6 +1811,11 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// snapshot: both are the launch-time environment snapshot, and a test whose
 	// contract sits below that layer must not fork for either.
 	if !s.cfg.testOnly.skipGitSnapshot {
+		// The fork is refused when a test moved the config home the `go env`
+		// probe would write its telemetry sidecar into (session_capabilities.go).
+		if err := snapshotConfigHomeForkError(); err != nil {
+			return nil, err
+		}
 		s.capabilities = probeCapabilities(env, ei.WorkingDir)
 	}
 
@@ -1884,7 +1873,19 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		Plugins:       sources,
 	})
 	s.skills.Diagnostics = append(diagnostics, s.skills.Diagnostics...)
+	s.skillCollisions = nil
 	for _, diagnostic := range s.skills.Diagnostics {
+		// A collision is about which source an invocation resolves to, so it is
+		// reported when a genuine activation resolves that name, not at startup.
+		// Other diagnostics still describe discovery problems the user should
+		// see immediately.
+		if diagnostic.Category == "collision" {
+			if s.skillCollisions == nil {
+				s.skillCollisions = make(map[string][]skill.Diagnostic)
+			}
+			s.skillCollisions[diagnostic.Name] = append(s.skillCollisions[diagnostic.Name], diagnostic)
+			continue
+		}
 		s.pendingHookWarnings = append(s.pendingHookWarnings, skillDiagnosticWarning(diagnostic))
 	}
 	s.pluginCommands = make(map[string]plugin.Command)
@@ -1942,7 +1943,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		for _, name := range effectiveAllowedToolNames {
 			allowed[name] = true
 		}
-		s.reg.RestrictKeepingResultTool(allowed, s.resultToolName())
+		s.reg.Restrict(allowed, s.resultToolName())
 	}
 	for _, name := range s.cfg.spawn.deniedToolNames {
 		s.reg.Remove(name)
@@ -1988,7 +1989,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		// Stable delegates freeze a capability ceiling before their durable start.
 		// Apply the final intersection after NewSession has added every intrinsic
 		// tool so neither the live registry nor its model-facing cache can widen it.
-		s.reg.RestrictKeepingResultTool(ceiling, s.resultToolName())
+		s.reg.Restrict(ceiling, s.resultToolName())
 	}
 	// Only the coordinator writes the session URL list, and a subagent cannot
 	// ask the human (#6080, ask_user). This gate is the last removal, after the
@@ -2000,6 +2001,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		}
 	}
 	s.filterUnavailableMemoryTools()
+	// Ceremony tools come out after the result tool's collision check and after
+	// all allowed/denied/ceiling/protected filters so --result-tool-name still
+	// refuses them and oneShotOmittedTools records only policy-eligible names.
+	omitOneShotCeremonyTools(s.reg, s)
 	// A role preload is prepared on the creating parent and a frozen descriptor
 	// replays the body frozen at creation; drop what this session cannot follow
 	// before the permanent prompt and inventory carry it.
@@ -2074,6 +2079,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 			s.launchEnvBaseline = s.envRuntimeSnapshot(envctx.Snapshot{})
 			s.launchEnvBaseline.GitBranch = cmp.Or(s.launchEnvBaseline.GitBranch, s.envInfo.GitBranch)
 			s.envTracker.SeedRuntime(s.launchEnvBaseline)
+		} else if !restoredPromptHasLegacyCommunicateGuidance(restoredPrompt, s.resultToolName()) {
+			s.launchEnvBaseline.CommunicateContract = cmp.Or(s.launchEnvBaseline.CommunicateContract, s.communicateContractLine())
+			s.envTracker.SeedRuntime(envctx.Snapshot{CommunicateContract: s.launchEnvBaseline.CommunicateContract})
 		}
 	}
 	if warning := s.commitProvenanceWarning(); warning != "" {
@@ -2089,6 +2097,18 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.acquireSessionLivelock()
 
 	return s.promptSourceLog, nil
+}
+
+func restoredPromptHasLegacyCommunicateGuidance(prompt, resultTool string) bool {
+	if prompt == "" || strings.Contains(prompt, schema.CommunicateNextLogQuietlyAndEndTurn) {
+		return false
+	}
+	if resultTool == "" {
+		resultTool = tool.DefaultResultToolName
+	}
+	return strings.Contains(prompt, "end_turn") ||
+		strings.Contains(prompt, "communicate({})") ||
+		strings.Contains(prompt, resultTool+"({})")
 }
 
 func (s *Session) validateModelFallbacks() error {
@@ -2111,13 +2131,28 @@ func (s *Session) validateModelFallbacks() error {
 func (s *Session) validateModelFallbackEntry(fbModel string) error {
 	parts := strings.SplitN(fbModel, "/", 2)
 	if len(parts) != 2 || !s.profile.CrossProviderRef(fbModel) {
-		// A ref reaching this point is same-instance. resolveProfileForRef only
-		// invokes the injected resolver for cross-instance refs, so a
-		// same-instance ref is a direct WithModel projection.
+		if s.profile != nil {
+			fbProfile := s.profile.WithModel(fbModel)
+			if err := validateVertexInteractionsModel(s.client, fbProfile); err != nil {
+				return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+			}
+		}
 		return nil
 	}
 	fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
 	if err != nil {
+		if s.savedModelFallbacks && errors.Is(err, registry.ErrModelDisabled) {
+			reg := s.profile.Registry()
+			if reg == nil && s.client != nil {
+				reg = s.client.Registry()
+			}
+			if reg != nil {
+				if res, ferr := reg.ResolveInstanceModelFacts(parts[0], parts[1]); ferr == nil && res.Surface != s.profile.Surface() {
+					return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), res.Surface)
+				}
+			}
+			return nil
+		}
 		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 	}
 	if !crossProvider {
@@ -2128,6 +2163,9 @@ func (s *Session) validateModelFallbackEntry(fbModel string) error {
 	}
 	if fbProfile.Surface() != s.profile.Surface() {
 		return fmt.Errorf("model_fallbacks entry %q switches surface from %q to %q; cross-surface fallbacks are not supported because prompt/tool surfaces differ", fbModel, s.profile.Surface(), fbProfile.Surface())
+	}
+	if err := validateVertexInteractionsModel(s.client, fbProfile); err != nil {
+		return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 	}
 	return nil
 }
@@ -2160,6 +2198,12 @@ func modelFallbackEligible(err error, policy llm.RetryPolicy) bool {
 	// here rather than left to llm.Classify, which would walk into the wrapped
 	// attempt error and land wherever that happens to classify.
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); ok {
+		return false
+	}
+	// A response discarded by the per-response tool-call cap indicts the shape
+	// of that one response. Replaying the same request against a fallback model
+	// would let the runaway loose again.
+	if _, ok := errors.AsType[*responseToolCallLimitError](err); ok {
 		return false
 	}
 	switch llm.Classify(err) {
@@ -2760,6 +2804,18 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 		pluginName, shown, event)
 }
 
+// skillCollisionWarning summarizes one catalog name's collision history for the
+// copy the session actually resolved to.
+func skillCollisionWarning(name, winner string, shadowed []string) events.WarningData {
+	return skillDiagnosticWarning(skill.Diagnostic{
+		Name:        name,
+		Category:    "collision",
+		Source:      winner,
+		OtherSource: strings.Join(shadowed, ", "),
+		Message:     "higher-precedence skill replaces earlier sources",
+	})
+}
+
 func skillDiagnosticWarning(d skill.Diagnostic) events.WarningData {
 	target := d.Source
 	if d.Field != "" {
@@ -2777,6 +2833,9 @@ func skillDiagnosticWarning(d skill.Diagnostic) events.WarningData {
 		warning.Code = events.WarningCodePluginCompatibility
 		warning.Title = "Skill compatibility"
 		warning.Hint = fmt.Sprintf("Review %s when convenient. The source file was left unchanged.", target)
+	case "collision":
+		warning.Message += "; displaced: " + d.OtherSource
+		warning.Hint = fmt.Sprintf("Review %s and %s. This session resolves to the copy at %s; source changes are picked up on the next catalog discovery or session startup. Other skills remain usable.", d.Source, d.OtherSource, d.Source)
 	case "unverified_cache_root":
 		warning.Title = "Skill cache fallback"
 		warning.Hint = "Set TMPDIR to a directory this process can verify, or keep using the fallback named in the message. Other skills remain usable."

@@ -122,7 +122,7 @@ func watpAttachSidecar(t *testing.T, r *watpReader) {
 	result, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "needle",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe " + label},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		t.Fatalf("configure sidecar attach watch: %v", err)
@@ -161,7 +161,7 @@ func watpTerminalCatchup(t *testing.T, r *watpReader) {
 	sendResult, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "needle",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "terminal observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		t.Fatalf("configure terminal sidecar catch-up: %v", err)

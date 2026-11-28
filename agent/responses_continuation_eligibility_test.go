@@ -1,13 +1,81 @@
 package agent
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// Path 4 of #6734: a Responses full-history request planned before /compact
+// publishes a new boundary lands with the boundary it was planned against. It
+// must not anchor a delta that would omit the newly installed checkpoint.
+func TestResponsesContinuationRejectsAPreFoldInFlightResponse(t *testing.T) {
+	t.Parallel()
+	client := llm.NewClient()
+	client.Register(&agenttest.FakeAdapter{
+		Provider: "openai",
+		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+			return phase4DIContinuationPlan(req), nil
+		},
+	})
+	sess := newPhase9ContinuationSession(t, t.TempDir(), client)
+	t.Cleanup(sess.Close)
+	preFold := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("before the fold")),
+		phase9MatchingAnchor("resp_in_flight"),
+	}
+	req := llm.Request{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		Messages: []llm.Message{llm.System("system"), llm.User("in flight")},
+	}
+	planned, _, _ := sess.planResponsesContinuation(context.Background(), sess.currentProfile(), sess.priceRoundRoute(sess.currentProfile(), req), req, preFold, false, false)
+	if planned.Continuation == nil {
+		t.Fatalf("planned request carries no continuation metadata: %+v", planned)
+	}
+	if got := planned.Continuation.ContextBoundary; got != contextBoundaryNone {
+		t.Fatalf("planned against a history with no boundary; recorded %q", got)
+	}
+
+	// The folded response lands after /compact installed a summary.
+	landed := phase9MatchingAnchor("resp_in_flight")
+	landed.ResponseContextBoundary = planned.Continuation.ContextBoundary
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("before the fold")),
+		phase9MatchingAnchor("resp_older"),
+		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nfresh checkpoint")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("after the fold")),
+		landed,
+		schema.NewTurn(schema.TurnUserInput, llm.User("next")),
+	}
+	_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeFullHistory || decision.Reason != "continuation_anchor_boundary_stale" {
+		t.Fatalf("decision = %+v, want full history from a stale boundary", decision)
+	}
+}
+
+// A response planned against the boundary history still holds anchors a delta,
+// so the new check costs one full-history request, not the continuation.
+func TestResponsesContinuationAcceptsAnAnchorFromTheCurrentBoundary(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\ncurrent")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("after")),
+		responsesContinuationEligibleAssistantTurn("resp_current"),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next")),
+	}
+	history[2].ResponseContextBoundary = responsesContinuationBoundaryIdentity(history)
+
+	anchor, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeResponsesDelta || anchor.TurnIndex != 2 {
+		t.Fatalf("decision = %+v anchor = %+v, want the current-boundary anchor", decision, anchor)
+	}
+}
 
 func TestResponsesContinuationAnchorCandidateRequiresMetadata(t *testing.T) {
 	t.Parallel()
@@ -311,6 +379,7 @@ func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testi
 		schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nrestored state")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("post-restore user")),
 	}
+	seedTestTranscript(t, stateDir, meta, restoredHistory...)
 
 	sess, err := RestoreSessionFromMetaWithConfig(
 		client,
@@ -318,8 +387,7 @@ func TestResponsesContinuationAnchorCandidateUsesRestoredActiveBoundary(t *testi
 		execenv.NewLocalExecutionEnvironment(dir),
 		meta,
 		RestoreSessionConfig{
-			StateDir:      stateDir,
-			resumeHistory: restoredHistory,
+			StateDir: stateDir,
 		},
 	)
 	if err != nil {

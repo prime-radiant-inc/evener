@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/llm"
 )
 
@@ -19,12 +20,12 @@ import (
 // anchor needs a resolvable home. BwrapPath points nowhere so an accidental
 // wrapper exec fails here too, not only in CI.
 func unsandboxedProber(home string) sandbox.Prober {
-	return sandbox.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/nonexistent/bwrap", BwrapCapable: false}}
+	return sandboxtest.FakeProber{Facts: sandbox.HostFacts{OS: "linux", Home: home, BwrapPath: "/nonexistent/bwrap", BwrapCapable: false}}
 }
 
 // TestTypedSubagentPolicyKeepsIntrinsicTools pins the policy half of #2645: a
 // typed role's tools: frontmatter is an allowlist handed to
-// RestrictKeepingResultTool, which DELETES every registered tool the list omits.
+// Restrict, which DELETES every registered tool the list omits.
 // A role that never named the job tools (the bundled explorer, the
 // coordinator-workflow implementer) used to lose them, so a long foreground
 // command promoted to a background job became work the delegate could await

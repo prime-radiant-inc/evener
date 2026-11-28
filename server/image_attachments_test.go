@@ -3,7 +3,7 @@ package server
 // Wire-level tests for image attachment round-trip (kata t5j6). Each test
 // exercises an appwire entry point on the daemon side and asserts that an
 // InputItem with type=image arrives at the session boundary as an
-// ImageAttachment (which the session then translates into an llm.ContentImage
+// agent.ImageAttachment (which the session then translates into an llm.ContentImage
 // part via buildUserInputMessage — covered by existing agent tests).
 
 import (
@@ -28,11 +28,11 @@ var pngSig = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
 // deliver the bytes to the active queue handler.
 func TestServerAppWireTurnQueueImageItemReachesQueueHandler(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_qimg")
+	setAppIdentity(t, srv, "local", "th_qimg")
 	srv.SetProcessing(true) // Exercise an in-flight turn.
 
 	var gotText string
-	var gotImages []ImageAttachment
+	var gotImages []agent.ImageAttachment
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Queue: func(params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 			gotText, gotImages = inputFromItems("", params.Input)
@@ -103,7 +103,7 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 	}
 
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", sess.ID())
+	setAppIdentity(t, srv, "local", sess.ID())
 	srv.SetProcessing(true)
 	srv.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Queue: sess.AcceptClientMutationQueue,
@@ -191,58 +191,4 @@ func (a *blockingServerAdapter) Complete(ctx context.Context, req llm.Request) (
 }
 func (a *blockingServerAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
-}
-
-// TestServerAppWireTurnStartImageItemReachesInputCh exercises Path 2: a
-// turn/start request with an InputItem of type "image" must put the
-// matching ImageAttachment on the daemon's InputCh, so ProcessInput can
-// build the ContentImage user-message part.
-func TestServerAppWireTurnStartImageItemReachesInputCh(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_img1")
-	installProjectedMutationCallbacksForTest(srv, RetrySafeTurnFunctions{})
-
-	conn := srv.AppServer().NewConnection("test")
-	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	if init.Kind() != appwire.MessageResponse {
-		t.Fatalf("init=%v", init.Kind())
-	}
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: "th_img1",
-		Ref: "local:th_img1",
-		Input: append([]appwire.InputItem{{Type: "text", Text: "describe this"}}, appwire.InputItem{
-			Type:      "image",
-			MediaType: "image/png",
-			Data:      pngSig,
-			Name:      "shot.png",
-		}),
-	}))
-	if resp.Kind() != appwire.MessageResponse {
-		// Surface the wire error so a regression in handler signature is obvious.
-		if raw, err := json.Marshal(resp); err == nil {
-			t.Fatalf("turn/start response=%s", raw)
-		}
-		t.Fatalf("turn/start kind=%v", resp.Kind())
-	}
-
-	select {
-	case msg := <-srv.InputCh():
-		if msg.Text != "describe this" {
-			t.Errorf("text=%q, want %q", msg.Text, "describe this")
-		}
-		if len(msg.Images) != 1 {
-			t.Fatalf("images: got %d, want 1", len(msg.Images))
-		}
-		img := msg.Images[0]
-		if img.MediaType != "image/png" {
-			t.Errorf("media_type=%q, want image/png", img.MediaType)
-		}
-		if !bytes.Equal(img.Data, pngSig) {
-			t.Errorf("data mismatch: got %x, want %x", img.Data, pngSig)
-		}
-		if img.Name != "shot.png" {
-			t.Errorf("name=%q, want shot.png", img.Name)
-		}
-	default:
-		t.Fatal("InputCh was not signaled; image-bearing turn/start did not deliver an InputMessage")
-	}
 }

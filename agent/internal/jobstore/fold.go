@@ -182,7 +182,6 @@ func IsJobRecordEvent(kind EventKind) bool {
 	switch kind {
 	case EventJobStarted,
 		EventJobFinished,
-		EventJobMessageSent,
 		EventJobNotificationPending,
 		EventJobNotificationDelivered,
 		EventJobNotificationConsumed:
@@ -359,6 +358,8 @@ func applyEvent(r *JobRecord, e Event) {
 		r.OriginItemID = e.OriginItemID
 		r.Provenance = provenance.Clone(e.Provenance)
 		r.OutputPath = e.OutputPath
+		r.ProcessGroupID = e.ProcessGroupID
+		r.ProcessStartTime = clonePtr(e.ProcessStartTime)
 		if e.StartedAt != nil {
 			r.StartedAt = *e.StartedAt
 		}
@@ -398,8 +399,6 @@ func applyEvent(r *JobRecord, e Event) {
 			r.Provenance = provenance.Clone(e.Provenance)
 		}
 		r.TerminalGen = e.TerminalGen
-	case EventJobMessageSent:
-		// No record-field mutation; message events are diagnostic/history.
 	case EventJobNotificationPending:
 		if !notificationMatchesTerminalGeneration(r, e) {
 			return

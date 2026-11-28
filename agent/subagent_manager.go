@@ -19,12 +19,10 @@ import (
 // manager mutex is never held while calling into a child's *Session (e.g.
 // teardownChildSession), which would deadlock against the child's own locking.
 type subagentManager struct {
-	mu                       sync.Mutex
-	subs                     map[string]*subagent
-	reconstructing           map[string]*subagentReconstruction
-	closing                  bool
-	activeRestoreSideEffects int
-	restoreSideEffectsCond   *sync.Cond
+	mu             sync.Mutex
+	subs           map[string]*subagent
+	reconstructing map[string]*subagentReconstruction
+	closing        bool
 	// testBeforeReconstructionWait observes the exact parent-close join boundary.
 	// Nil in production.
 	testBeforeReconstructionWait func()
@@ -40,20 +38,16 @@ const defaultMaxRetainedTerminal = 2048
 
 var errSubagentManagerClosing = errors.New("session is closed")
 
-var restoreSideEffectsWait = (*sync.Cond).Wait
-
 // newSubagentManager creates a manager. limit bounds retained terminal records; limit <= 0 selects the default (defaultMaxRetainedTerminal).
 func newSubagentManager(limit int) *subagentManager {
 	if limit <= 0 {
 		limit = defaultMaxRetainedTerminal
 	}
-	m := &subagentManager{
+	return &subagentManager{
 		subs:                map[string]*subagent{},
 		reconstructing:      map[string]*subagentReconstruction{},
 		maxRetainedTerminal: limit,
 	}
-	m.restoreSideEffectsCond = sync.NewCond(&m.mu)
-	return m
 }
 
 type subagentReconstruction struct {
@@ -148,14 +142,6 @@ func (m *subagentManager) admitReconstructed(sub *subagent, bind func(*subagent)
 	return tracked, inserted, nil
 }
 
-func (m *subagentManager) waitForReconstructionSideEffects() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for m.activeRestoreSideEffects > 0 {
-		restoreSideEffectsWait(m.restoreSideEffectsCond)
-	}
-}
-
 func (m *subagentManager) waitForReconstructions() {
 	m.mu.Lock()
 	pending := make([]*subagentReconstruction, 0, len(m.reconstructing))
@@ -240,15 +226,6 @@ func (m *subagentManager) drainForClose() []*subagent {
 		delete(m.subs, id)
 	}
 	return subs
-}
-
-// closeOrRestoreResiduePending reports whether the manager has begun closing
-// or restore side effects are still settling on its children. Retirement
-// refuses on it, and the idle-release pre-gate refuses on it for the same
-// reason: a teardown through either would race the close or abandon a
-// settling side effect. Callers must hold m.mu.
-func (m *subagentManager) closeOrRestoreResiduePending() bool {
-	return m.closing || m.activeRestoreSideEffects != 0
 }
 
 // hasRunningChildren reports whether any tracked child has unfinished work:

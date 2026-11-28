@@ -39,7 +39,6 @@ test('registers "welcome" as a singleton pane with a constant title', () => {
   expect(descriptor.id).toBe("welcome");
   expect(descriptor.singleton).toBe(true);
   expect(descriptor.title({}, {})).not.toBe("");
-  expect(descriptor.title({ note: "note-from-params" }, {})).toBe(descriptor.title({}, {}));
 });
 
 test("the registered component renders the welcome pane", async () => {

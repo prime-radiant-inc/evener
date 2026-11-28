@@ -14,6 +14,8 @@
 // header. A modal has no detents, but keeps the same shape.
 import type { ReactElement, ReactNode } from "react";
 import { Text, View } from "react-native";
+import { GlassControlGroup } from "../design/GlassControlGroup";
+import { useSystemGlass } from "../design/systemGlass";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { HeaderButton } from "./HeaderButton";
 
@@ -42,13 +44,18 @@ export interface SheetProps {
 
 export function Sheet({ title, onCancel, cancelDisabled = false, done, accessory, children }: SheetProps) {
 	const { palette } = useColors();
+	const glass = useSystemGlass();
 	const scale = useTextScale();
 	return (
 		<>
 			<View collapsable={false} style={{ backgroundColor: palette.canvas }}>
 				<View style={{ minHeight: 56, flexDirection: "row", alignItems: "center", paddingHorizontal: 8 }}>
 					<View style={{ flex: 1, alignItems: "flex-start" }}>
-						{onCancel ? <HeaderButton label="Cancel" disabled={cancelDisabled} onPress={onCancel} /> : null}
+						{onCancel ? (
+							<GlassControlGroup glass={glass} palette={palette}>
+								<HeaderButton label="Cancel" disabled={cancelDisabled} onPress={onCancel} />
+							</GlassControlGroup>
+						) : null}
 					</View>
 					{title ? (
 						<Text
@@ -72,13 +79,15 @@ export function Sheet({ title, onCancel, cancelDisabled = false, done, accessory
 					) : null}
 					<View style={{ flex: 1, alignItems: "flex-end" }}>
 						{done ? (
-							<HeaderButton
-								label={done.label ?? "Done"}
-								strong
-								disabled={done.disabled}
-								busy={done.busy}
-								onPress={done.onPress}
-							/>
+							<GlassControlGroup glass={glass} palette={palette}>
+								<HeaderButton
+									label={done.label ?? "Done"}
+									strong
+									disabled={done.disabled}
+									busy={done.busy}
+									onPress={done.onPress}
+								/>
+							</GlassControlGroup>
 						) : null}
 					</View>
 				</View>

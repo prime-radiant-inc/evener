@@ -128,7 +128,7 @@ func TestDescendantHistoryAndResyncCarryTheBootGeneration(t *testing.T) {
 // generation from it.
 func serveRootWithoutHistory(t *testing.T, srv *Server, threadID string) {
 	t.Helper()
-	prepared, err := PrepareAppIdentity("local", threadID, "")
+	prepared, err := PrepareAppIdentityForRef("local", threadID, "local:"+threadID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestAThreadHistoryWithNoBootGenerationFailsLoudly(t *testing.T) {
 	}()
 	srv := NewServer(ServerConfig{})
 	t.Cleanup(srv.Close)
-	prepared, err := PrepareAppIdentity("local", "root", writeDelegateTranscript(t, "root", "r"))
+	prepared, err := PrepareAppIdentityForRef("local", "root", "local:root", writeDelegateTranscript(t, "root", "r"))
 	if err != nil {
 		t.Fatal(err)
 	}

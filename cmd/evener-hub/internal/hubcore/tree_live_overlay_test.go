@@ -37,7 +37,7 @@ func TestBuildTreeLiveOverlayPaths(t *testing.T) {
 		{SessionID: "01WITHMETA", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, CurrentModel: "model-a", LastMessage: "hello"},
 		{SessionID: "01NOMETA", Status: appwire.ThreadStatusSystemError, CurrentModel: "model-b", StartedAt: started},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 
 	t.Run("project row of a session with a meta", func(t *testing.T) {
 		var node TreeNode

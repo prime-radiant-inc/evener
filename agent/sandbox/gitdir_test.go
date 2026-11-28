@@ -36,16 +36,16 @@ func TestClassifyWorkspaceStopsAtCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	layout, err := ClassifyWorkspaceWithCeilings(work, []string{root})
+	layout, err := ClassifyWorkspace(work, []string{root})
 	if err != nil {
-		t.Fatalf("ClassifyWorkspaceWithCeilings: %v", err)
+		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
 	if layout.Kind != NonGit || layout.WorktreeRoot != work {
 		t.Fatalf("layout = %+v, want NonGit rooted at %q", layout, work)
 	}
 
 	// Without the ceiling the same directory belongs to the enclosing checkout.
-	layout, err = ClassifyWorkspace(work)
+	layout, err = ClassifyWorkspace(work, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestClassifyMainCheckout(t *testing.T) {
 	root := clean(t.TempDir())
 	gittest.Run(t, root, "init", "-q")
 
-	got, err := ClassifyWorkspace(root)
+	got, err := ClassifyWorkspace(root, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestClassifyLinkedWorktree(t *testing.T) {
 	gittest.Run(t, main, "worktree", "add", "-q", wt)
 	wt = clean(wt)
 
-	got, err := ClassifyWorkspace(wt)
+	got, err := ClassifyWorkspace(wt, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestClassifySubmodule(t *testing.T) {
 	gittest.Run(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "sub")
 
 	subWT := clean(filepath.Join(super, "sub"))
-	got, err := ClassifyWorkspace(subWT)
+	got, err := ClassifyWorkspace(subWT, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestClassifyNestedSubmodule(t *testing.T) {
 	gittest.Run(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "libs/foo")
 
 	subWT := clean(filepath.Join(super, "libs", "foo"))
-	got, err := ClassifyWorkspace(subWT)
+	got, err := ClassifyWorkspace(subWT, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestClassifyMainCheckoutWithSubmoduleProtectsModuleConfig(t *testing.T) {
 	gittest.Run(t, super, "commit", "-q", "--allow-empty", "-m", "init")
 	gittest.Run(t, super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "sub")
 
-	got, err := ClassifyWorkspace(super)
+	got, err := ClassifyWorkspace(super, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestClassifyMainCheckoutProtectsPerWorktreeConfig(t *testing.T) {
 	gittest.Run(t, wt, "config", "extensions.worktreeConfig", "true")
 	gittest.Run(t, wt, "config", "--worktree", "core.hooksPath", "/tmp/evil-hooks")
 
-	got, err := ClassifyWorkspace(main)
+	got, err := ClassifyWorkspace(main, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace(main): %v", err)
 	}
@@ -332,7 +332,7 @@ func TestClassifySymlinkedGitProtectsRealConfig(t *testing.T) {
 	}
 	wt = clean(wt)
 
-	got, err := ClassifyWorkspace(wt)
+	got, err := ClassifyWorkspace(wt, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestClassifySymlinkedGitProtectsRealConfig(t *testing.T) {
 func TestClassifyLinkedWorktreeProtectsGitPointer(t *testing.T) {
 	t.Parallel()
 	wt := linkedWorktreeRepo(t)
-	got, err := ClassifyWorkspace(wt)
+	got, err := ClassifyWorkspace(wt, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestClassifyProtectsConfigIncludeUnderWorktree(t *testing.T) {
 	// <root>/.git, so ../included.cfg resolves to <root>/included.cfg — writable.
 	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = ../included.cfg\n")
 
-	got, err := ClassifyWorkspace(root)
+	got, err := ClassifyWorkspace(root, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestClassifyFollowsChainedConfigIncludes(t *testing.T) {
 	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = ../mid.cfg\n")
 	appendFile(t, filepath.Join(root, "mid.cfg"), "[include]\n\tpath = deep.cfg\n")
 
-	got, err := ClassifyWorkspace(root)
+	got, err := ClassifyWorkspace(root, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestClassifyFollowsChainedConfigIncludes(t *testing.T) {
 func TestClassifyNonGit(t *testing.T) {
 	t.Parallel()
 	dir := clean(t.TempDir())
-	got, err := ClassifyWorkspace(dir)
+	got, err := ClassifyWorkspace(dir, nil)
 	if err != nil {
 		t.Fatalf("ClassifyWorkspace: %v", err)
 	}

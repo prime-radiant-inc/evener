@@ -11,6 +11,7 @@ import {
 } from "./workspace";
 
 beforeAll(async () => {
+  await import("../panes/doc/openDoc");
   await import("../panes/session");
   await import("../panes/transcript");
   await import("../panes/zoom");
@@ -61,6 +62,21 @@ test("ordinary session links focus a presented match after an earlier parked mat
   openSessionByRef("local:child");
   expect(workspaceStore.getState().focusedPaneId).toBe(fresh);
   expect(parked.pane.slot).toBe("parked");
+});
+
+test("an explicit iPhone share target refocuses its session beneath an open document", () => {
+  const session = workspaceStore.getState().openPane("session", { ref: "local:shared" });
+  const document = workspaceStore.getState().openPane("doc", {
+    session: "local:shared",
+    path: "notes.md",
+    kind: "text",
+  });
+  workspaceStore.getState().focusPane(document);
+  expect(workspaceStore.getState().focusedPaneId).toBe(document);
+
+  openSessionByRef("local:shared");
+
+  expect(workspaceStore.getState().focusedPaneId).toBe(session);
 });
 
 describe("openTopLevelSession", () => {

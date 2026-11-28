@@ -83,7 +83,9 @@ function setRows(needsYou: NavigationSessionSummary[] = [], live: NavigationSess
 
 test("shows the empty state when no session is open", () => {
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
-  expect(screen.getByTestId("empty-state")).toBeTruthy();
+  const emptyState = screen.getByTestId("empty-state");
+  expect(emptyState).toBeTruthy();
+  expect(emptyState.querySelector('[data-slot="hint"]')).toBeNull();
 });
 
 test('offers a "New session" action', () => {
@@ -108,20 +110,6 @@ test('clicking "New session" navigates to /new', async () => {
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
   await user.click(screen.getByRole("button", { name: "New session" }));
   expect(window.location.pathname).toBe("/new");
-});
-
-function emptyStateHint(): Element | null {
-  return screen.getByTestId("empty-state").querySelector('[data-slot="hint"]');
-}
-
-test("shows params.note as a hint when provided", () => {
-  render(<Welcome params={{ note: "note-from-params" }} paneId="welcome" focused={true} />);
-  expect(emptyStateHint()?.textContent).toBe("note-from-params");
-});
-
-test("shows no hint when params.note is absent", () => {
-  render(<Welcome params={{}} paneId="welcome" focused={true} />);
-  expect(emptyStateHint()).toBeNull();
 });
 
 test("WelcomeContent does not render example prompts", () => {
@@ -157,13 +145,6 @@ test('offers "Jump back in" to the first needs-you session when one exists', () 
   setRows([node({ ref: "local:ny1", title: "Fix the thing", project: "myrepo" })]);
   render(<Welcome params={{}} paneId="welcome" focused={true} />);
   expect(screen.getByRole("button", { name: /Jump back in.*Fix the thing/s })).toBeTruthy();
-});
-
-test('can hide "Jump back in"', () => {
-  setRows([], [node({ ref: "local:live1", title: "Refactor auth", project: "myrepo" })]);
-  render(<WelcomeContent showResume={false} />);
-
-  expect(screen.queryByRole("button", { name: /Jump back in/ })).toBeNull();
 });
 
 test("falls back to the first live session when nothing needs you", () => {

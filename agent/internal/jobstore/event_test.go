@@ -67,7 +67,6 @@ func TestEventKindsAreStable(t *testing.T) {
 	want := map[EventKind]string{
 		EventJobStarted:               "job_started",
 		EventJobFinished:              "job_finished",
-		EventJobMessageSent:           "job_message_sent",
 		EventJobNotificationPending:   "job_notification_pending",
 		EventJobNotificationDelivered: "job_notification_delivered",
 		EventWatchSendPending:         "watch_send_pending",

@@ -55,6 +55,15 @@
   box-sizing: border-box;
 }
 
+/* An authored display rule (a flex card, a composer strip) outranks the UA
+ * stylesheet's [hidden] { display: none }, so a component that can both lay
+ * out and hide an element would keep painting it. Assert the attribute's
+ * meaning once here rather than re-declaring it in each module. */
+[hidden] {
+  /* biome-ignore lint/complexity/noImportantStyles: [hidden] has to beat any authored display rule; see the comment above */
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--surface-0);
@@ -76,6 +85,10 @@ body {
    * own scale included, so the engine's guess only ever departs from it. */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  /* Disable CoreText stem thickening on macOS so light ink on dark surfaces
+   * renders at its designed weights and open counterforms instead of heavier. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 ::selection {

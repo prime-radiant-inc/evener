@@ -19,7 +19,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
+func TestWithIntentParameter_AdvertisesIntentPropertyWithDescription(t *testing.T) {
 	td := WithIntentParameter(llm.ToolDefinition{Name: "demo"})
 	props, _ := td.Parameters["properties"].(map[string]any)
 	if props == nil {
@@ -32,17 +32,6 @@ func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
 	desc, _ := intent["description"].(string)
 	if desc == "" {
 		t.Fatalf("intent property has no description: %#v", intent)
-	}
-	// The description should steer the model toward a verb-first gerund phrase
-	// that states the expected outcome, not merely the action being taken.
-	if !strings.Contains(desc, "gerund") {
-		t.Errorf("description lacks gerund-form guidance: %q", desc)
-	}
-	if !strings.Contains(desc, "desired outcome") {
-		t.Errorf("description lacks desired-outcome guidance: %q", desc)
-	}
-	if !strings.Contains(desc, "Reading config to identify the active profile") {
-		t.Errorf("description lacks an example with an explicit outcome: %q", desc)
 	}
 }
 
@@ -700,6 +689,46 @@ func TestToolRegistry_SearchTruncationMarkersAreNotes(t *testing.T) {
 	}
 }
 
+// TestToolRegistry_IsTruncatedOutput pins the text predicate doctor's
+// transcript health uses to the output each truncation strategy really emits
+// through a Registry dispatch. Plain text is not counted, including
+// apply_patch's own compacted-diff note, which is not a registry limit.
+func TestToolRegistry_IsTruncatedOutput(t *testing.T) {
+	cases := []struct {
+		name  string
+		limit schema.ToolOutputLimit
+	}{
+		{"tail_chars", schema.ToolOutputLimit{MaxChars: 200, Strategy: schema.TruncTail}},
+		{"head_tail_chars", schema.ToolOutputLimit{MaxChars: 200, Strategy: schema.TruncHeadTail}},
+		{"head_tail_lines", schema.ToolOutputLimit{MaxChars: 100_000, MaxLines: 10, Strategy: schema.TruncHeadTail}},
+		{"head_count_lines", schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 10, Strategy: schema.TruncHeadCount}},
+		{"head_count_chars", schema.ToolOutputLimit{MaxChars: 200, MaxLines: 20, Strategy: schema.TruncHeadCount}},
+	}
+	body := strings.Repeat("body\n", 400)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewRegistry()
+			registerTextResultTool(t, reg, TextResult{Output: body}, tc.limit)
+			got := executeTestTool(t, reg)
+			if !got.Truncated {
+				t.Fatal("expected Truncated")
+			}
+			if !IsTruncatedOutput(got.Output) {
+				t.Fatalf("IsTruncatedOutput(%q) = false, want true", got.Output)
+			}
+		})
+	}
+
+	for _, plain := range []string{"", "file contents\n", "  ... 3 more lines omitted\n", "narrow the pattern to see the rest"} {
+		if IsTruncatedOutput(plain) {
+			t.Errorf("IsTruncatedOutput(%q) = true, want false", plain)
+		}
+	}
+	if !IsTruncatedOutput("[WARNING: Tool output was truncated. First 100 characters were removed.]") {
+		t.Error("legacy truncation wording is not recognized")
+	}
+}
+
 func TestToolRegistry_TruncatedMarkerCollisionsStillReportLimiting(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -872,7 +901,7 @@ func TestToolRegistry_TruncationLines_UsesHeadTailAndOmittedMarker(t *testing.T)
 	}
 }
 
-func TestToolRegistry_Unregister(t *testing.T) {
+func TestToolRegistry_Remove(t *testing.T) {
 	r := NewRegistry()
 	_ = r.Register(RegisteredTool{
 		Definition: llm.ToolDefinition{Name: "foo", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
@@ -880,9 +909,9 @@ func TestToolRegistry_Unregister(t *testing.T) {
 			return "ok", nil
 		},
 	})
-	r.Unregister("foo")
+	r.Remove("foo")
 	if r.Get("foo") != nil {
-		t.Fatal("expected nil after Unregister")
+		t.Fatal("expected nil after Remove")
 	}
 }
 
@@ -988,7 +1017,7 @@ func TestTruncateChars_UTF8Aware(t *testing.T) {
 	}
 
 	// Truncate to 3 characters (runes), not 3 bytes.
-	result := truncateChars(input, 3, schema.TruncHeadTail)
+	result, _ := truncateChars(input, 3, schema.TruncHeadTail)
 	// Should contain valid UTF-8 (no broken characters).
 	if !utf8.ValidString(result) {
 		t.Error("truncated result must be valid UTF-8")
@@ -1003,75 +1032,12 @@ func TestTruncateChars_UTF8Aware(t *testing.T) {
 	}
 
 	// schema.TruncTail: keep last 3 characters
-	result2 := truncateChars(input, 3, schema.TruncTail)
+	result2, _ := truncateChars(input, 3, schema.TruncTail)
 	if !utf8.ValidString(result2) {
 		t.Error("schema.TruncTail result must be valid UTF-8")
 	}
 	if !strings.Contains(result2, "😂🤣😃") {
 		t.Error("schema.TruncTail should keep last 3 emojis")
-	}
-}
-
-func TestToolRegistry_Middleware_CalledBeforeExecution(t *testing.T) {
-	reg := NewRegistry()
-	if err := reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{
-			Name:        "test_tool",
-			Description: "test",
-			Parameters:  map[string]any{"type": "object"},
-		},
-		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			return "executed", nil
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	var middlewareCalled bool
-	reg.Use(func(ctx context.Context, name string, args map[string]any) error {
-		middlewareCalled = true
-		return nil
-	})
-
-	result := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "test_tool", ID: "c1"})
-	if !middlewareCalled {
-		t.Error("middleware must be called before execution")
-	}
-	if result.IsError {
-		t.Errorf("expected success, got error: %s", result.Output)
-	}
-}
-
-func TestToolRegistry_Middleware_CanBlockExecution(t *testing.T) {
-	reg := NewRegistry()
-	var execCalled bool
-	if err := reg.Register(RegisteredTool{
-		Definition: llm.ToolDefinition{
-			Name:        "test_tool",
-			Description: "test",
-			Parameters:  map[string]any{"type": "object"},
-		},
-		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			execCalled = true
-			return "executed", nil
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	reg.Use(func(ctx context.Context, name string, args map[string]any) error {
-		return errors.New("permission denied: tool blocked by policy")
-	})
-
-	result := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "test_tool", ID: "c1"})
-	if !result.IsError {
-		t.Error("middleware rejection should produce error result")
-	}
-	if !strings.Contains(result.Output, "permission denied") {
-		t.Errorf("expected 'permission denied' in output, got: %s", result.Output)
-	}
-	if execCalled {
-		t.Error("tool should not have been executed when middleware blocked")
 	}
 }
 
@@ -1344,8 +1310,8 @@ func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 		strategy schema.TruncationStrategy
 	}
 	cases := []want{
-		{tool: "read_file", chars: 50_000, lines: 0, strategy: schema.TruncHeadTail},
-		{tool: "shell", chars: 30_000, lines: 512, strategy: schema.TruncHeadTail},
+		{tool: "read_file", chars: 50_000, lines: 0, strategy: schema.TruncHead},
+		{tool: "shell", chars: 6_000, lines: 120, strategy: schema.TruncHeadTail},
 		{tool: "grep", chars: 20_000, lines: 200, strategy: schema.TruncHeadCount},
 		{tool: "glob", chars: 20_000, lines: 500, strategy: schema.TruncHeadCount},
 		{tool: "edit_file", chars: 10_000, lines: 0, strategy: schema.TruncTail},
@@ -1605,10 +1571,9 @@ func TestToolRegistry_ExecuteCall_AskUserShorthandPreservesIntent(t *testing.T) 
 // TestRegistry_MarksPreExecutionRejections proves Rejected names exactly the
 // calls a pre-execution gate refused: the breaker park, unknown tool,
 // ValidateRawArguments, invalid arguments JSON, the ask_user shorthand
-// normalization, NormalizeArgs, PreValidate, schema validation, and a
-// middleware refusal — the nine gates ExecResult.Rejected's doc names. A tool
-// that RAN and returned an error is not a rejection, so the hook partition can
-// tell a refusal from a failure.
+// normalization, NormalizeArgs, PreValidate, and schema validation — the eight
+// gates ExecResult.Rejected's doc names. A tool that RAN and returned an error
+// is not a rejection, so the hook partition can tell a refusal from a failure.
 //
 // This is the only test asserting Rejected at the unknown-tool gate;
 // TestToolRegistry_UnknownTool_ReturnsErrorResult covers that gate's error
@@ -1714,14 +1679,6 @@ func TestRegistry_MarksPreExecutionRejections(t *testing.T) {
 		reg := NewRegistry()
 		calls := registerProbe(t, reg, "probe", probeOpts{})
 		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{}`)})
-		assertRejectedRefusal(t, res, calls)
-	})
-
-	t.Run("middleware_refusal", func(t *testing.T) {
-		reg := NewRegistry()
-		calls := registerProbe(t, reg, "probe", probeOpts{})
-		reg.Use(func(context.Context, string, map[string]any) error { return errors.New("middleware refused") })
-		res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "probe", ID: "id", Arguments: json.RawMessage(`{"path":"x"}`)})
 		assertRejectedRefusal(t, res, calls)
 	})
 

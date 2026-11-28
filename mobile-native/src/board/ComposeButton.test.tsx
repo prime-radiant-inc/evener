@@ -27,7 +27,7 @@ function compose(over: { disabled?: boolean; onPress?: () => void } = {}) {
 	return { tree, onPress, button };
 }
 
-it("draws a New session button as an accent-filled circle with a pencil symbol", () => {
+it("draws a New session button as an accent-filled circle with a plus symbol", () => {
 	const { button } = compose();
 	expect(button.props.style({ pressed: false })).toMatchObject({
 		width: 56,
@@ -37,7 +37,7 @@ it("draws a New session button as an accent-filled circle with a pencil symbol",
 		opacity: 1,
 	});
 	expect(button.findByType("SymbolView" as never).props).toMatchObject({
-		name: "square.and.pencil",
+		name: "plus",
 		size: 24,
 		tintColor: palette.onFill,
 	});

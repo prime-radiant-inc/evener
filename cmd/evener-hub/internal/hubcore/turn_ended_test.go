@@ -50,7 +50,7 @@ func fuzzScenarioBuildTree_EveryRowCarriesTheTurnEndedTime(t *testing.T) {
 		{PID: 1, SessionID: "01LIVE", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, LastTurnEndedAt: ended},
 		{PID: 2, SessionID: "01NOMETA", Status: appwire.ThreadStatusAwaiting, PendingAsk: true, LastTurnEndedAt: ended},
 	}
-	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	tree := buildTreeAtResolved(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01LIVE")
 	if !inLive || !inProject || !liveRow.TurnEndedAt.Equal(ended) || !projectRow.TurnEndedAt.Equal(ended) {
 		t.Fatalf("Live row %v (%v), project row %v (%v): both must carry %v", liveRow.TurnEndedAt, inLive, projectRow.TurnEndedAt, inProject, ended)

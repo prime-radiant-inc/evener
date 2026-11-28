@@ -24,7 +24,7 @@
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   color: var(--ink-hi);
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
 }
 
 .headSpacer {
@@ -50,11 +50,6 @@
 
 .metaSeg:first-child {
   padding-left: 0;
-}
-
-.metaSep {
-  color: var(--edge-strong);
-  user-select: none;
 }
 
 .metaK {
@@ -93,62 +88,11 @@
   border-top: 1px solid var(--edge);
 }
 
-/* --- Environment: meta table idiom (design system §10) --- */
-.envRows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.envRow {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-3);
-  font-size: var(--font-size-caption);
-  line-height: var(--line-height-body);
-}
-
-.envK {
-  width: 88px;
-  flex-shrink: 0;
-  color: var(--ink-low);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-}
-
-.envV {
-  color: var(--ink-hi);
-  font-size: var(--font-size-caption);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.envVmono {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-}
-
-.envVmuted {
-  color: var(--ink-mid);
-}
-
 /* --- Available tools --- */
 .toolsChips {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
-}
-
-.toolChip {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-  background: var(--surface-inset);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-chip);
-  padding: 0 var(--space-2);
 }
 
 /* --- Footer --- */

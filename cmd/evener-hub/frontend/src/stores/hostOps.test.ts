@@ -2125,9 +2125,11 @@ describe("the refusal vocabulary is bound to appwire/errors.go", () => {
     "utf8",
   );
 
-  // Each HostOpRefusalKind the UI classifies, keyed by the Go ErrorInfo
+  // Each HostOpRefusalKind the hub still mints, keyed by the Go ErrorInfo
   // constant that mints its discriminator. A Go-side rename leaves the client
-  // reading the discriminator as "unknown" and fails here instead.
+  // reading the discriminator as "unknown" and fails here instead. The legacy
+  // "cursor-invalidated" and "cursor-too-large" kinds have no Go constant left
+  // (the hub retired them), so they are covered by their wire-value tests.
   const GO_CONSTANT_TO_KIND = {
     ErrorTokenMissing: "token-missing",
     ErrorTokenMismatched: "token-mismatched",
@@ -2142,8 +2144,6 @@ describe("the refusal vocabulary is bound to appwire/errors.go", () => {
     ErrorHostBusyTransient: "host-busy-transient",
     ErrorTeardownUnknownKey: "teardown-unknown-key",
     ErrorInvalidParams: "invalid-params",
-    ErrorCursorInvalidated: "cursor-invalidated",
-    ErrorCursorTooLarge: "cursor-too-large",
   } as const;
 
   test("each Go discriminator classifies as the kind that names it", () => {

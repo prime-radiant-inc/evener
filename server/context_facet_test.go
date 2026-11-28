@@ -157,8 +157,8 @@ func newContextFacetFixture(t testing.TB) *contextFacetFixture {
 	userText := contextFacetFixtureText(contextFacetFixtureUserText)
 	assistantText := contextFacetFixtureText(contextFacetFixtureAssistantText)
 	callArgs, err := json.Marshal(map[string]any{
-		"message":  assistantText,
-		"end_turn": true,
+		"message": assistantText,
+		"next":    "send_and_end_turn",
 		"output": map[string]any{
 			"message":   "",
 			"data":      map[string]any{},
@@ -170,7 +170,7 @@ func newContextFacetFixture(t testing.TB) *contextFacetFixture {
 	}
 	resultOutput, err := json.Marshal(map[string]any{
 		"accepted": true,
-		"end_turn": true,
+		"next":     "send_and_end_turn",
 		"inbox":    []string{},
 	})
 	if err != nil {
@@ -258,7 +258,7 @@ func newContextFacetFixture(t testing.TB) *contextFacetFixture {
 	}
 
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	srv.SetAppIdentity("local", "th_context_fixture")
+	setAppIdentity(t, srv, "local", "th_context_fixture")
 	src := &contextFacetEnvelopeSource{sess: sess}
 	srv.SetThreadEnvelopeSource(src)
 	srv.refreshFacets(facetContext)

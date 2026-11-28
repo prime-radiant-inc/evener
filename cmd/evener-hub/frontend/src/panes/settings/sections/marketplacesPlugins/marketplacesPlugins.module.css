@@ -1,41 +1,25 @@
-/* Shared across MarketplacesSection/BrowseSection/InstalledSection/index -
- * one CSS Modules file, imported by each (CSS Modules classnames are keyed
- * by this file's own identity, not by which .tsx imports it, so this is
- * safe and avoids duplicating the same "settings-collection" visual
- * language 3-4 times). */
+/* Shared across the marketplaces and plugins sections and their index - one
+ * CSS Modules file, imported by each (CSS Modules classnames are keyed by
+ * this file's own identity, not by which .tsx imports it, so this is safe
+ * and avoids duplicating the same "settings-collection" visual language
+ * 3-4 times). */
 
 .page {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
+  composes: stack5 from "../../../../styles/surface.module.css";
 }
 
 .section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.heading {
-  margin: 0;
-  color: var(--ink-hi);
-  font-size: var(--font-size-pane-title);
-  font-weight: var(--font-weight-semibold);
+  composes: stack2 from "../../../../styles/surface.module.css";
 }
 
 .help {
-  margin: 0;
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
+  composes: helpUi from "../../../../styles/help.module.css";
 }
 
 .list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin: 0;
-  padding: 0;
-  list-style: none;
+  composes: stack1 from "../../../../styles/surface.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: listReset from "../../../../styles/surface.module.css";
 }
 
 /* The layout inside a row's outlined Card. */
@@ -62,12 +46,10 @@
 }
 
 .rowMeta {
-  overflow: hidden;
+  composes: truncate from "../../../../styles/text.module.css";
   color: var(--ink-mid);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .rowActions {
@@ -78,9 +60,7 @@
 
 /* The layout inside the add form's outlined Card. */
 .addForm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../../styles/surface.module.css";
 }
 
 .formActions {
@@ -107,21 +87,14 @@
   gap: var(--space-1);
 }
 
-.treeCount {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
 .treeChildren {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  composes: stack1 from "../../../../styles/surface.module.css";
   margin: 0 0 0 var(--space-5);
   padding: 0;
   list-style: none;
 }
 
-/* PluginDetailSheet body layout (Segmented Workspace redesign). */
+/* Plugin detail body layout (Segmented Workspace redesign). */
 .sheetDesc {
   margin: 0;
   color: var(--ink-hi);
@@ -137,32 +110,24 @@
 }
 
 .metaList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  composes: stack2 from "../../../../styles/surface.module.css";
   margin: var(--space-4) 0;
 }
 
 .switchRows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../../styles/surface.module.css";
 }
 
-/* MarketplaceSheet body (the sheet is the editor, spec 2026-09-07 §3): the
- * form above the meta table, then Refresh, then the danger zone under a
- * divider - the same shape as the provider sheet. */
+/* The marketplace editor's body and actions (spec 2026-09-07 §3): the form
+ * above the meta table, then Refresh, then the danger zone under a divider -
+ * the same shape as the provider editor. */
 .sheetForm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  composes: stack3 from "../../../../styles/surface.module.css";
   margin-bottom: var(--space-4);
 }
 
 .sheetActions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  composes: stack1 from "../../../../styles/surface.module.css";
 }
 
 .sheetDivider {
@@ -171,8 +136,8 @@
   border-top: 1px solid var(--edge);
 }
 
-/* The inline detail body a row's expansion mounts under it (the slide-out
-   sheet is gone), indented to read as that row's details. */
+/* The inline detail body a row's expansion mounts under it, indented to read
+   as that row's details. */
 .detail {
   margin: var(--space-1) 0 var(--space-3) var(--space-5);
 }

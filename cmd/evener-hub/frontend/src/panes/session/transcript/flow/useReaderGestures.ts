@@ -5,6 +5,11 @@ import { isAtBottom, type ScrollMetrics } from "./scrollMetrics";
 import { DRAG_BUTTON_BITS, MIDDLE_BUTTON_BIT, verticalInputCanMovePort } from "./scrollPredicates";
 import type { PendingViewAnchor } from "./viewAnchor";
 
+// Opening offsets and corrections opposite a finger's travel can both look
+// like a reversal. The mobile header needs the last admitted touch direction
+// through momentum, until another input takes over.
+export const readerScrollInput = new WeakMap<Element, "opening" | "followingEnd" | 1 | -1>();
+
 export interface UseReaderGesturesOptions {
   listRef: RefObject<VirtualListHandle | null>;
   measure: (el: HTMLElement) => ScrollMetrics;
@@ -76,6 +81,7 @@ export function useReaderGestures({
     (readerIntent = true, beforeOffset?: number, frames = 1) => {
       const el = listRef.current?.getScrollElement();
       if (readerIntent && el) {
+        readerScrollInput.delete(el);
         pendingViewAnchorRef.current = null;
         pendingBottomJumpRef.current = null;
         readerCallbacksRef.current.onReaderIntent?.();
@@ -270,7 +276,19 @@ export function useReaderGestures({
       const port = listRef.current?.getScrollElement();
       if (!port || event.currentTarget !== port) return;
       const metrics = measure(port);
-      if (!verticalInputCanMovePort(port, metrics, event.target, event.deltaY > 0 ? 1 : -1)) return;
+      const previous = lastScrollGeometryRef.current;
+      const direction = event.deltaY > 0 ? 1 : -1;
+      // A passive wheel handler can run after the compositor has already
+      // scrolled the port from a positive offset to 0, before the scroll event
+      // lands. Use the pre-wheel sample for the movement check when heights held.
+      const reachedTopBeforeHandler =
+        direction === -1 &&
+        metrics.scrollTop <= 0 &&
+        previous.scrollTop > 0 &&
+        metrics.scrollHeight === previous.scrollHeight &&
+        metrics.clientHeight === previous.clientHeight;
+      if (!verticalInputCanMovePort(port, reachedTopBeforeHandler ? previous : metrics, event.target, direction))
+        return;
       // An upward wheel from the end is the reader leaving it, and says so
       // before the browser's own scroll event reaches the listener. Record the
       // position the previous measurement saw, not the live offset: the
@@ -280,9 +298,9 @@ export function useReaderGestures({
       // keeps the ordinary one-frame marker. The compositor can have applied
       // the wheel before this passive handler runs, so the previous measurement
       // being at the bottom also counts.
-      if (event.deltaY < 0 && (isAtBottom(metrics) || isAtBottom(lastScrollGeometryRef.current)))
-        readerCallbacksRef.current.onReaderAway?.(lastScrollGeometryRef.current.scrollTop);
-      markGesture(true, lastScrollGeometryRef.current.scrollTop);
+      if (event.deltaY < 0 && (isAtBottom(metrics) || isAtBottom(previous)))
+        readerCallbacksRef.current.onReaderAway?.(previous.scrollTop);
+      markGesture(true, previous.scrollTop);
     },
     [listRef, markGesture, measure],
   );
@@ -300,8 +318,10 @@ export function useReaderGestures({
       const port = listRef.current?.getScrollElement();
       if (!port || event.currentTarget !== port) return;
       // A finger moving UP - clientY decreasing - pushes content down.
-      if (!verticalInputCanMovePort(port, measure(port), event.target, y < last ? 1 : -1)) return;
+      const direction = y < last ? 1 : -1;
+      if (!verticalInputCanMovePort(port, measure(port), event.target, direction)) return;
       markGesture();
+      readerScrollInput.set(port, direction);
     },
     [listRef, markGesture, measure],
   );

@@ -63,7 +63,7 @@ func TestFoldIgnoresWatchSendEventsForJobRecords(t *testing.T) {
 			e.VisibleToSession = "S1"
 			e.StartedAt = &start
 		}),
-		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Message: "pending"}},
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Frame: "pending"}},
 	}
 
 	recs := Fold(events)

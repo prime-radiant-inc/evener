@@ -2,13 +2,14 @@ import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig, projectThread, WarningCodeMCPReconnected } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { readModuleCss } from "../../../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../../../styles/cssBlock";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { itemRendererFor } from "../types";
 import { SystemNoticeItem } from "./SystemNoticeItem";
+import styles from "./systemnoticeitem.module.css";
 
 afterEach(() => {
   cleanup();
@@ -627,4 +628,77 @@ test("MCP recovery overlay stays quiet at full detail", () => {
   );
   expect(screen.getByTestId("system-notice-line")).toBeTruthy();
   expect(screen.queryByTestId("warning-item")).toBeNull();
+});
+
+test("a clean quiet_yield notice renders in agent-message prose tokens with no disclosure, distinct from lifecycle lines", () => {
+  const quiet = item("qy1", { eventKind: "quiet_yield", text: "quiet-line-sentinel" });
+  const { container } = renderTurnTools(turnWith([quiet]));
+  const quietLine = screen.getByTestId("system-notice-line");
+  expect(quietLine.textContent).toBe("quiet-line-sentinel");
+  expect(quietLine.className).toBe(styles.quietYield);
+  expect(quietLine.className).not.toBe(styles.line);
+  expect(quietLine.getAttribute("data-message-body")).toBe("");
+  expect(container.querySelector("details")).toBeNull();
+
+  const css = readModuleCss(import.meta.url, "systemnoticeitem.module.css");
+  const summaryBody = topRuleBlock(css, ".quietYieldSummary");
+  expect(summaryBody).toMatch(/font-family:\s*var\(--font-prose\)/);
+  expect(summaryBody).toMatch(/font-size:\s*var\(--font-size-prose\)/);
+  expect(summaryBody).toMatch(/line-height:\s*var\(--line-height-prose\)/);
+  expect(summaryBody).toMatch(/color:\s*var\(--ink-low\)/);
+  const quietYieldBody = topRuleBlock(css, ".quietYield");
+  expect(quietYieldBody).toMatch(/composes:\s*quietYieldSummary;/);
+  expect(quietYieldBody).toMatch(/padding:\s*var\(--rhythm-line\)\s+0/);
+  const lineBody = topRuleBlock(css, ".line");
+  expect(lineBody).toMatch(/font-family:\s*var\(--font-sans\)/);
+  expect(lineBody).toMatch(/font-size:\s*var\(--font-size-caption\)/);
+
+  cleanup();
+  renderTurnTools(turnWith([item("regular_1", { text: "model switched" })]));
+  expect(screen.getByTestId("system-notice-line").className).toBe(styles.line);
+});
+
+test("a quiet_yield notice with demoted commentary renders collapsed by default even at full and opens to show commentary", () => {
+  const quiet = item("qy2", {
+    eventKind: "quiet_yield",
+    text: "quiet-line-sentinel",
+    raw: { commentary: "demoted-commentary-sentinel" },
+  });
+  renderTurnFull(turnWith([quiet]));
+  const disclosure = screen.getByTestId("system-notice-quiet-yield") as HTMLDetailsElement;
+  expect(disclosure.open).toBe(false);
+  expect(disclosure.dataset.variant).toBe("quiet");
+  expect(screen.queryByTestId("system-notice-quiet-yield-body")).toBeNull();
+  expect(screen.queryByText("demoted-commentary-sentinel")).toBeNull();
+
+  const summary = disclosure.querySelector(":scope > summary");
+  if (!summary) throw new Error("missing summary");
+  const summarySpan = summary.querySelector("span");
+  expect(summarySpan?.className).toBe(styles.quietYieldSummary);
+  fireEvent.click(summary);
+
+  expect(disclosure.open).toBe(true);
+  expect(screen.getByTestId("system-notice-quiet-yield-body").textContent).toContain("demoted-commentary-sentinel");
+});
+
+test("a quiet_yield notice arriving after the Full baseline is active starts collapsed and preserves explicit opens", () => {
+  const { rerender } = renderTurnFull(turnWith([item("initial_1")]));
+  const quiet = item("qy_late", {
+    eventKind: "quiet_yield",
+    text: "quiet-line-sentinel",
+    raw: { commentary: "late-commentary-sentinel" },
+  });
+  rerender(
+    <TranscriptRenderProvider config={fullConfig} surface="readOnly" disclosureScope="sni:full">
+      <TurnBlock turn={turnWith([item("initial_1"), quiet])} />
+    </TranscriptRenderProvider>,
+  );
+  const disclosure = screen.getByTestId("system-notice-quiet-yield") as HTMLDetailsElement;
+  expect(disclosure.open).toBe(false);
+  expect(screen.queryByTestId("system-notice-quiet-yield-body")).toBeNull();
+
+  const summary = disclosure.querySelector(":scope > summary");
+  if (!summary) throw new Error("missing summary");
+  fireEvent.click(summary);
+  expect(disclosure.open).toBe(true);
 });

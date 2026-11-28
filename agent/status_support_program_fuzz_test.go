@@ -34,8 +34,7 @@ import (
 //   - pull metrics agree with the directly owned Session/context-manager state;
 //   - exported ATIF remains valid JSON for valid transcripts and failures stay
 //     confined to their supplied paths; and
-//   - the Gemini-only web-search request contains the input query, no tools,
-//     and a scripted response.
+//   - deterministic session status and ATIF export across arbitrary tokens.
 func FuzzStatusSupportProgram(f *testing.F) {
 	for _, seed := range [][]byte{
 		{},
@@ -50,7 +49,6 @@ func FuzzStatusSupportProgram(f *testing.F) {
 		token := statusSupportToken(data)
 		statusSupportStatusAndMetrics(t, token)
 		statusSupportATIF(t, token)
-		statusSupportWebSearch(t, token)
 	})
 }
 
@@ -147,11 +145,6 @@ func statusSupportStatusAndMetrics(t *testing.T, token string) {
 		t.Fatalf("canceled response side effects = %v", err)
 	}
 	host.Emit(events.EventWarning, events.WarningData{Message: "status fixture " + token})
-
-	permission := &PermissionDeniedError{Tool: "status_" + token, Message: "denied"}
-	if !errors.Is(permission, ErrPermissionDenied) || !strings.Contains(permission.Error(), permission.Tool) {
-		t.Fatalf("permission error contract = %q", permission)
-	}
 }
 
 func statusSupportATIF(t *testing.T, token string) {
@@ -173,21 +166,6 @@ func statusSupportATIF(t *testing.T, token string) {
 	}
 	if err := exportATIF(filepath.Join(dir, "missing.jsonl"), out, ""); err == nil {
 		t.Fatal("missing transcript export succeeded")
-	}
-}
-
-func statusSupportWebSearch(t *testing.T, token string) {
-	t.Helper()
-	query := "status search " + token
-	s, _ := statusSupportSession(t, newGeminiProfile("gemini-status"), "google", func(req llm.Request) llm.Response {
-		if !req.WebSearch || len(req.Tools) != 0 || req.Provider != "google" || req.Model != "gemini-status" || len(req.Messages) != 1 || !strings.Contains(req.Messages[0].Text(), query) {
-			t.Fatalf("web search request = %#v", req)
-		}
-		return llm.Response{Message: llm.Assistant("result " + token)}
-	})
-	result, err := s.webSearch(context.Background(), query)
-	if err != nil || result != "result "+token {
-		t.Fatalf("webSearch = (%#v, %v)", result, err)
 	}
 }
 

@@ -420,7 +420,7 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append root task: %v", err)
 	}
-	if err := rootTaskStore.Update([]taskpkg.TaskUpdate{{ID: rootTasks[0].ID, Status: taskpkg.TaskInProgress}}); err != nil {
+	if _, err := rootTaskStore.Update([]taskpkg.TaskUpdate{{ID: rootTasks[0].ID, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start root task: %v", err)
 	}
 

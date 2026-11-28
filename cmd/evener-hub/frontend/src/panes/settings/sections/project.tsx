@@ -1,18 +1,23 @@
 // Contextual project configuration: repository review and local overrides.
 // The directory comes from ?cwd=; the selected host comes from the settings route.
 
-import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
+import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { friendlyErrorMessage, LOCAL_HOST } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
+import surfaceStyles from "../../../styles/surface.module.css";
 import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
 import { RepositoryConfigSection } from "./inrepo";
-import type { LaunchFormPaths } from "./launchShared/fields";
+import { type LoadState, launchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import styles from "./project.module.css";
+import { RefreshErrorNotice } from "./sectionGate";
 import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
+
+const PANE_HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingPaneTitle}`;
+const BODY_HEADING = `${surfaceStyles.settingsSectionHeading} ${surfaceStyles.settingsSectionHeadingBody}`;
 
 const CLASS = {
   root: requireClass(styles.root, "project.module.css", "root"),
@@ -34,11 +39,6 @@ function useQueryCwd(): string {
   }, []);
   return cwd;
 }
-
-type LoadState =
-  | { phase: "loading" }
-  | { phase: "error"; message: string }
-  | { phase: "ready"; options: LaunchOption[]; current: LaunchConfigLayer; globalDefaults: LaunchConfigLayer };
 
 export interface ProjectSectionProps {
   /** Unused - kept so this component's signature matches every other
@@ -65,18 +65,8 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   // host's project layer rather than this hub's (component 07b). The cwd stays
   // in the route's ?cwd= query; the host comes from the settings route.
   const store = launchConfigStoreForHost(host);
-  // The browse-assisted path fields the shared form renders (path scalars, the
-  // prompt file sub-fields, and pathList add rows) list THIS host's filesystem,
-  // not the controller's: same store, same seam as the validate/save calls
-  // above (component 07b). evener/paths/complete and evener/path/validate are
-  // both on the proxy allow-list.
-  const paths: LaunchFormPaths = {
-    directory: {
-      validatePath: (path, kind) => store.getState().validatePath(path, kind),
-      createDirectory: (path) => store.getState().createDirectory(path),
-    },
-    complete: (prefix, includeFiles) => store.getState().completePaths(prefix, includeFiles),
-  };
+  // Browse-assisted path fields list THIS host's filesystem (component 07b).
+  const paths = launchFormPaths(store);
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
   // A re-read of what this pane is already showing that failed: the form (and
   // the draft in it) stays, and this says the values on screen may be stale.
@@ -153,7 +143,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   if (!cwd) {
     return (
       <div className={CLASS.root}>
-        <h2>Project launch settings</h2>
+        <h2 className={PANE_HEADING}>Project launch settings</h2>
         <p className={CLASS.help} data-reason="no-project">
           No project selected. Open this page via the gear icon next to a project in the sidebar, or navigate here with
           a <code>?cwd=</code> query parameter.
@@ -164,10 +154,10 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
 
   return (
     <div className={CLASS.root}>
-      <h2>Project launch settings</h2>
+      <h2 className={PANE_HEADING}>Project launch settings</h2>
       <p className={CLASS.help}>{cwd}</p>
       <RepositoryConfigSection host={host} cwd={cwd} />
-      <h3>Local overrides</h3>
+      <h3 className={BODY_HEADING}>Local overrides</h3>
       <p className={CLASS.help}>
         Saved in <code>.evener/launch.local.toml</code> for this directory. These values override session defaults and
         trusted repository settings.
@@ -189,18 +179,9 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       {load.phase === "ready" && (
         <>
           {refreshError !== null && (
-            <InlineNotice
-              tone="danger"
-              live="status"
-              data-reason="refresh-failed"
-              action={
-                <Button type="button" onClick={() => reload()}>
-                  Retry
-                </Button>
-              }
-            >
+            <RefreshErrorNotice onRetry={() => reload()}>
               Could not re-read this host's project settings. {refreshError}
-            </InlineNotice>
+            </RefreshErrorNotice>
           )}
           <LaunchConfigForm
             options={load.options}

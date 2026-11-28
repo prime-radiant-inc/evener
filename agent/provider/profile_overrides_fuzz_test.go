@@ -82,7 +82,8 @@ func FuzzProfileOverrides(f *testing.F) {
 
 		// When decisions survive the JSON round-trip inside addDecisionToSchema and
 		// the communicate tool has a usable output schema, the decoration must take
-		// effect: decision enum + required output.
+		// effect: decision enum + decision required inside output, with output
+		// itself left optional at the top level.
 		if len(decisions) > 0 {
 			assertDecisionApplied(t, p2, decisions)
 		}
@@ -124,11 +125,11 @@ func assertOverrideFaultBranches(t *testing.T) {
 		{Parameters: map[string]any{"properties": map[string]any{"output": map[string]any{}}}},
 	}
 	for _, bad := range badShapes {
-		_, _ = replaceCommunicateOutputSchema(bad, map[string]any{})
-		_ = addDecisionToSchema(bad, []string{"continue"})
+		_, _, _ = replaceCommunicateOutputSchema(bad, map[string]any{})
+		_, _ = addDecisionToSchema(bad, []string{"continue"})
 	}
-	_ = addDecisionToSchema(td, []string{"continue"})
-	if _, err := replaceCommunicateOutputSchema(td, map[string]any{"bad": make(chan int)}); err == nil {
+	_, _ = addDecisionToSchema(td, []string{"continue"})
+	if _, applied, err := replaceCommunicateOutputSchema(td, map[string]any{"bad": make(chan int)}); err == nil || applied {
 		t.Fatal("an unmarshalable output schema should fail the bind")
 	}
 	marshalErr := errors.New("marshal")
@@ -136,17 +137,17 @@ func assertOverrideFaultBranches(t *testing.T) {
 	oldMarshal, oldUnmarshal := profileJSONMarshal, profileJSONUnmarshal
 	defer func() { profileJSONMarshal, profileJSONUnmarshal = oldMarshal, oldUnmarshal }()
 	profileJSONMarshal = func(any) ([]byte, error) { return nil, marshalErr }
-	if _, err := replaceCommunicateOutputSchema(td, map[string]any{}); !errors.Is(err, marshalErr) {
+	if _, applied, err := replaceCommunicateOutputSchema(td, map[string]any{}); !errors.Is(err, marshalErr) || applied {
 		t.Fatalf("a parameters marshal failure should reach the caller, got %v", err)
 	}
-	_ = addDecisionToSchema(td, []string{"continue"})
+	_, _ = addDecisionToSchema(td, []string{"continue"})
 	_, _ = deepCopyJSONMap(map[string]any{})
 	profileJSONMarshal = oldMarshal
 	profileJSONUnmarshal = func([]byte, any) error { return unmarshalErr }
-	if _, err := replaceCommunicateOutputSchema(td, map[string]any{}); !errors.Is(err, unmarshalErr) {
+	if _, applied, err := replaceCommunicateOutputSchema(td, map[string]any{}); !errors.Is(err, unmarshalErr) || applied {
 		t.Fatalf("a parameters unmarshal failure should reach the caller, got %v", err)
 	}
-	_ = addDecisionToSchema(td, []string{"continue"})
+	_, _ = addDecisionToSchema(td, []string{"continue"})
 	_, _ = deepCopyJSONMap(map[string]any{})
 	profileJSONUnmarshal = oldUnmarshal
 	profileJSONMarshal = func(v any) ([]byte, error) {
@@ -155,7 +156,7 @@ func assertOverrideFaultBranches(t *testing.T) {
 		}
 		return oldMarshal(v)
 	}
-	_, _ = replaceCommunicateOutputSchema(td, nil)
+	_, _, _ = replaceCommunicateOutputSchema(td, nil)
 }
 
 func assertBaseUnchanged(t *testing.T, base *Profile, snapshot []byte, op string) {
@@ -194,8 +195,11 @@ func assertDecisionApplied(t *testing.T, p *Profile, decisions []string) {
 			t.Fatalf("decision enum[%d] = %q, want %q", i, enum[i], d)
 		}
 	}
-	if !contains(toStringSlice(def.Parameters["required"]), "output") {
-		t.Fatalf("output not required at top level after WithAllowedDecisions")
+	if contains(toStringSlice(def.Parameters["required"]), "output") {
+		t.Fatalf("output must stay optional at the top level after WithAllowedDecisions")
+	}
+	if !contains(toStringSlice(output["required"]), "decision") {
+		t.Fatalf("decision not required inside output after WithAllowedDecisions")
 	}
 }
 

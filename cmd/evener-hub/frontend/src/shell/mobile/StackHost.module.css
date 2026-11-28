@@ -26,6 +26,46 @@
   pointer-events: auto;
 }
 
+.split {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow-x: clip;
+}
+
+.boardColumn {
+  flex: none;
+  width: var(--rail-width, 280px);
+  border-right: 1px solid var(--edge);
+  min-height: 0;
+  padding-top: env(safe-area-inset-top);
+  background: var(--surface-canvas);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Lift the leaving column out of flex flow so the reader and collapsed toggle
+ * settle immediately at the leading edge while the board slides off left. */
+.boardColumn[data-motion="closing"] {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: var(--z-raised);
+  pointer-events: none;
+}
+
+.paneColumn {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
 .topBar {
   flex: none;
   display: flex;
@@ -35,35 +75,156 @@
   padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--space-2) var(--space-2);
   background: var(--surface-1);
   border-bottom: 1px solid var(--edge);
+  transition:
+    background-color var(--motion-duration-spatial) var(--motion-easing-standard),
+    border-color var(--motion-duration-spatial) var(--motion-easing-standard);
+}
+
+.topBar[inert] {
+  visibility: hidden;
+}
+
+/* The drawer trigger must keep one mounted node across pane swaps (the drawer
+ * restores focus to its opener when it closes, including mid-navigation), so
+ * it lives in the trailing cluster even where it should lead. Row-reversing
+ * the whole bar puts that cluster at the visual leading edge when Back is
+ * absent; the empty leading cluster's matching min-width keeps the centered
+ * title centered. */
+.topBar[data-drawer-leads] {
+  flex-direction: row-reverse;
 }
 
 .stackTitle {
+  margin: 0;
+  composes: truncate from "../../styles/text.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: paneTitle from "../../styles/text.module.css";
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
    * the same rule PaneScaffold's own .title records. */
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   text-align: center;
-  color: var(--ink-hi);
-  font-family: var(--font-prose);
-  font-size: var(--font-size-pane-title);
-  font-weight: var(--font-weight-semibold);
-  line-height: var(--line-height-title);
-  letter-spacing: var(--tracking-display);
+  transition: opacity var(--motion-duration-spatial) var(--motion-easing-standard);
+}
+
+.topBar[data-session="true"] .stackTitle {
+  text-align: left;
+}
+
+/* One tap target wide even when empty, so the centered title centers on
+ * the bar and not on whatever space is left. */
+.leading,
+.trailing {
+  min-width: var(--tap-min);
 }
 
 .leading {
-  /* Always rendered, even empty (welcome - see StackHost.tsx's showBack) -
-   * a single empty flex item still anchors at the row's start under
-   * justify-content: space-between, keeping the drawer trigger pinned to
-   * the trailing edge regardless of whether the back button is present. */
+  /* Always rendered, even empty - a single empty flex item still anchors
+   * at the row's start under justify-content: space-between, keeping the
+   * trailing cluster from absorbing the free edge. */
   display: flex;
   align-items: center;
-  /* One tap target wide even when empty, matching the trailing drawer trigger,
-   * so the title centers on the bar and not on whatever space is left. */
-  min-width: var(--tap-min);
+  transition:
+    background-color var(--motion-duration-spatial) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-spatial) var(--motion-easing-standard);
+}
+
+.trailing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  transition:
+    background-color var(--motion-duration-spatial) var(--motion-easing-standard),
+    box-shadow var(--motion-duration-spatial) var(--motion-easing-standard);
+}
+
+/* The floating state (docs/web-ui/design-system.md §12): the bar keeps its
+ * box and its padding - only paint changes - so the controls stay exactly
+ * where they were, now as translucent blur capsules over the scrolling
+ * transcript instead of a solid bar above it. Empty clusters draw no capsule. */
+.paneColumn[data-reading-overlay="title-and-notes"] > .topBar:not(.topBarCollapsed) {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: var(--z-sticky-bar);
+}
+
+.topBarCollapsed {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-sticky-bar);
+  background: transparent;
+  border-bottom-color: transparent;
+  pointer-events: none;
+}
+
+.topBarCollapsed .stackTitle {
+  opacity: 0;
+}
+
+/* The system edge bar owns the controls. Only the reader title occupies the row. */
+.topBar[data-system-edge-actions],
+.topBar[data-home-edge] {
+  padding: var(--space-2) var(--space-4);
+}
+
+/* The Home Screen grants the document this edge below the system clock.
+ * Anchor at the bottom so a rotation cannot put an action under the camera. */
+.homeToolbar {
+  position: fixed;
+  bottom: calc(var(--dock-clearance) + var(--keyboard-inset, 0px) + var(--space-3));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  z-index: var(--z-sticky-bar);
+}
+
+.homeToolbar[hidden] {
+  display: none;
+}
+
+.homeToolbar[data-home-toolbar="left"] {
+  left: 0;
+  width: var(--home-safe-left);
+}
+
+.homeToolbar[data-home-toolbar="right"] {
+  right: 0;
+  width: var(--home-safe-right);
+}
+
+.homeToolbar :is(.leading, .trailing):not(:empty) {
+  flex-direction: column;
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill, var(--surface-1));
+  box-shadow: var(--glass-shadow);
+}
+
+.homeToolbar .leading:empty {
+  display: none;
+}
+
+.topBarCollapsed .leading:not(:empty),
+.topBarCollapsed .trailing:not(:empty) {
+  pointer-events: auto;
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--surface-1) 88%, transparent);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--shadow-card);
+}
+
+/* The workspace also owns navigation on the Board, in documents, and in
+ * wider layouts. Use the same two control groups as the iPhone header. */
+:global([data-iphone-glass]) .topBar:not([inert]) :is(.leading, .trailing):not(:empty) {
+  border-radius: var(--radius-pill);
+  background: var(--glass-fill);
+  background-image: var(--glass-sheen);
+  -webkit-backdrop-filter: var(--glass-filter);
+  backdrop-filter: var(--glass-filter);
+  box-shadow: var(--glass-shadow);
 }
 
 .stackBody {
@@ -79,6 +240,12 @@
   position: relative;
   isolation: isolate;
   overflow-x: clip;
+}
+
+/* A downward reversal can reveal Notes while the title is still floating.
+ * Leave its centered summary clear of the two trailing action buttons. */
+.topBarCollapsed:not([data-home-edge], [data-system-edge-actions]) ~ .stackBody {
+  --notes-controls-inset: calc(2 * var(--tap-min) + var(--space-2));
 }
 
 /* The shown pane. It fills the body exactly as a pane sitting directly in

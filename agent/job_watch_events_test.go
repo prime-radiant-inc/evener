@@ -282,7 +282,8 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{
 		Target: rec.JobID,
 		Events: []string{"assistant.tool"},
-		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Note:   "observe",
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
@@ -308,7 +309,7 @@ func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	if !strings.Contains(state.Frame, "observe") ||
 		!strings.Contains(state.Frame, rec.JobID) ||
 		!strings.Contains(state.Frame, "event: TOOL_CALL_END") {
-		t.Fatalf("pending frame = %q, want configured message, job id, and trigger", state.Frame)
+		t.Fatalf("pending frame = %q, want configured note, job id, and trigger", state.Frame)
 	}
 }
 
@@ -532,7 +533,7 @@ func TestAttachScanSendArmFiresOnce(t *testing.T) {
 	res, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller},
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)
@@ -1250,5 +1251,22 @@ func TestOutputMatchWatchOnJobWithNoOutputStoreIsLoud(t *testing.T) {
 	}
 	if len(notified) != 1 || !strings.Contains(notified[0].Reason, "output_match attach scan skipped") {
 		t.Fatalf("notifications = %+v, want one attach-scan-skipped warning", notified)
+	}
+}
+
+func TestWatchQuietCommunicateDoesNotMatch(t *testing.T) {
+	for _, wildcard := range []bool{false, true} {
+		snap := watchEventSnapshot{
+			targetActive: true, wildcardEvents: wildcard, eventKinds: map[events.EventKind]bool{events.EventToolCallEnd: true},
+			triggerKind: events.EventToolCallEnd, triggerEvery: 2, eventCount: 1,
+		}
+		data := events.ToolCallEndData{ToolName: "communicate", ToolState: json.RawMessage(`{"communicate_quiet":true}`)}
+		if got := evaluateWatchEvent(snap, events.SessionEvent{Kind: events.EventToolCallEnd, Data: data}); got.matched || got.eventCount != 1 {
+			t.Errorf("wildcard=%v: successful quiet result matched or changed count: %+v", wildcard, got)
+		}
+		data.Error = "test failure"
+		if got := evaluateWatchEvent(snap, events.SessionEvent{Kind: events.EventToolCallEnd, Data: data}); !got.matched || got.eventCount != 2 {
+			t.Errorf("wildcard=%v: failed call did not match: %+v", wildcard, got)
+		}
 	}
 }

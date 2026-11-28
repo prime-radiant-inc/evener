@@ -1,0 +1,7 @@
+/* The Send, Stop, and Start words drop at each pane's 559px inline-size rung;
+ * each button keeps its aria-label and each pane row is the query container. */
+@container (max-width: 559px) {
+  .sendWord {
+    display: none;
+  }
+}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -181,38 +180,27 @@ func TestJobStatusOnDelegateAfterAttentionReportIsAllowed(t *testing.T) {
 	}
 }
 
-// Only a session that has a human partner is offered end_reason on its result
-// tool; advice to pass it elsewhere fails schema validation.
-func TestWaitGuidanceNamesEndReasonOnlyWhereTheResultToolOffersIt(t *testing.T) {
+func TestWaitRefusalAllowsQuietYieldWithBackgroundWork(t *testing.T) {
 	t.Parallel()
 	child := minimalTestSessionConfig(t)
 	child.spawn.parentSessionID = "01PARENT"
 	for name, s := range map[string]*Session{
-		"root":     newTestSession(t),
-		"delegate": newSession(t, withConfig(child)),
+		"root": newTestSession(t), "delegate": newSession(t, withConfig(child)),
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			offered := false
-			if def := s.reg.Get(s.resultToolName()); def != nil {
-				props, _ := def.Definition.Parameters["properties"].(map[string]any)
-				_, offered = props["end_reason"]
+			if r := callTool(s, "shell", map[string]any{"command": "sleep 30"}); !isWaitRefused(r) {
+				t.Fatalf("sleep not refused: %+v", r)
 			}
-			if offered != s.hasHumanPartnerToAsk() {
-				t.Fatalf("setup: end_reason offered = %v, human partner = %v", offered, s.hasHumanPartnerToAsk())
+			jobID := startBackgroundShellJob(t, s, idleShellCommand)
+			t.Cleanup(func() { _, _ = s.jobManager.stop(jobID) })
+			res := callTool(s, "communicate", map[string]any{"message": "Waiting on background shell job.", "next": tool.CommunicateNextLogQuietlyAndEndTurn})
+			var state struct {
+				Accepted bool `json:"communicate_accepted"`
+				EndTurn  bool `json:"communicate_end_turn"`
+				Quiet    bool `json:"communicate_quiet"`
 			}
-			mentions := func(text string) bool { return strings.Contains(text, "end_reason") }
-			for _, toolName := range []string{"job_status", "job_list"} {
-				if got := mentions(s.reg.Get(toolName).Definition.Description); got != offered {
-					t.Errorf("%s description names end_reason = %v, result tool offers it = %v", toolName, got, offered)
-				}
-			}
-			refusal := callTool(s, "shell", map[string]any{"command": "sleep 30"})
-			if !isWaitRefused(refusal) {
-				t.Fatalf("sleep not refused: %+v", refusal)
-			}
-			if got := mentions(refusal.Output); got != offered {
-				t.Errorf("shell refusal names end_reason = %v, result tool offers it = %v", got, offered)
+			if err := json.Unmarshal(res.ToolState, &state); err != nil || res.IsError || !state.Accepted || !state.EndTurn || !state.Quiet {
+				t.Fatalf("quiet yield: IsError=%v, state=%+v, decode=%v", res.IsError, state, err)
 			}
 		})
 	}

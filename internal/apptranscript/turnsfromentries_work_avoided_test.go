@@ -84,7 +84,7 @@ func TestItemTurnsFromEntriesAvoidsFileScanAndDecode(t *testing.T) {
 		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("message %d with some body text to make the line realistic", i)))
 		turn.Usage = llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
 		turn.Timestamp = time.Unix(1_700_000_000+int64(i), 0).UTC()
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered}); err != nil {
 			t.Fatalf("append %d: %v", i, err)
 		}
 	}
@@ -101,14 +101,15 @@ func TestItemTurnsFromEntriesAvoidsFileScanAndDecode(t *testing.T) {
 	}
 
 	// File form.
-	var fileTurns []appwire.Turn
+	var fileProj ItemTurnProjection
 	var fileErr error
 	fileAllocs, fileElapsed, fileBytes := allocsPerProjection(func() {
-		fileTurns, fileErr = ItemTurnsFromFile(path, 1<<30, project)
+		fileProj, fileErr = ItemTurnProjectionFromFile(path, 1<<30, project)
 	})
 	if fileErr != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", fileErr)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", fileErr)
 	}
+	fileTurns := fileProj.Turns
 
 	// Entries form: decode once the way resume does, then project.
 	rw, entries, err := transcript.OpenWriterForSession(path, "th_large")

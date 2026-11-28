@@ -195,7 +195,7 @@ func TestWalkToTopLevelAgreesWithTheTreeRollup(t *testing.T) {
 		}
 	}
 
-	tree := BuildTreeAt(metas, live, nil, now)
+	tree := buildTreeAtResolved(metas, live, nil, now)
 	rollups := map[string]string{}
 	for _, project := range tree.Projects {
 		rollups[project.WorkingDir] = project.RollupState

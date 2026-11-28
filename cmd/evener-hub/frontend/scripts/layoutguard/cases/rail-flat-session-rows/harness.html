@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Flat session rows</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>body { font-family: var(--font-sans); } .board { width: 280px; }</style>
+</head>
+<body data-font-size="m">
+<div class="board"><div role="tree" class="tree flatTree">
+  <div role="treeitem" aria-expanded="true" class="row">Sessions</div>
+  <div role="group" class="group"></div>
+</div></div>
+<script>
+// Same Tree, title target and slots as RailRow; only the status content differs.
+const group = document.querySelector(".group");
+for (const [selected, status] of [[true, '<span class="why">Which release branch should we cut from before we publish the preview build?</span>'], [false, ""]]) {
+  group.insertAdjacentHTML("beforeend", `<div role="treeitem" aria-selected="${selected}" class="row">
+    <span class="railRow flatSession"><span class="textCol"><span class="titleLine">
+      <button type="button" class="label sessionTitleButton"><span class="label">Compare landing workflows</span><span class="flatStatus">${status}</span><span class="meta flatMeta"><span class="metaText"><span class="time">8m</span> · <span>Release engineering and distribution project</span></span>${selected ? '<span data-host-online="true">buildbox</span>' : ''}</span></button>
+    </span></span><span class="rightSlot"><span class="actions"><button type="button">⋯</button></span></span></span>
+  </div>`);
+}
+window.measure = () => {
+  const rows = [...group.children].map((row) => {
+    const title = row.querySelector("button > .label").getBoundingClientRect();
+    const status = row.querySelector(".flatStatus").getBoundingClientRect();
+    const meta = row.querySelector(".flatMeta").getBoundingClientRect();
+    const box = row.getBoundingClientRect();
+    const paint = getComputedStyle(row);
+    return { height: box.height, titleToMeta: meta.top - title.top,
+      statusHeight: status.height, background: paint.backgroundColor, radius: paint.borderRadius };
+  });
+  const host = group.querySelector("[data-host-online]").getBoundingClientRect();
+  const meta = group.querySelector(".flatMeta").getBoundingClientRect();
+  return { rows, guide: getComputedStyle(group).borderLeftWidth, hostWidth: host.width, hostRoom: meta.right - host.right };
+};
+</script>
+</body>
+</html>

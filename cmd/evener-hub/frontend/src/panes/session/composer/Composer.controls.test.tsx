@@ -297,6 +297,8 @@ test.each([false, true])("the composer omits the recipient and Activity row on %
 test("a focused pane focuses its composer on mount (desktop)", async () => {
   await mountComposer("ref_a", {}, { focused: true });
   await waitFor(() => expect(document.activeElement).toBe(textarea()));
+  expect(screen.getByTestId("composer-input-card").getAttribute("data-folded")).toBe("true");
+  expect(textarea().style.minHeight).toBe("1lh");
 });
 
 test("an unfocused pane never focuses its composer on mount", async () => {
@@ -451,29 +453,27 @@ test("an empty exited follow-up can pick its next model before entering the edit
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
 });
 
-test("an empty exited follow-up keeps its phone menus usable", async () => {
+test("a phone composer keeps its session menu usable with content", async () => {
   const restoreViewport = installMobileViewport();
   try {
     const user = userEvent.setup();
-    const fake = await mountComposer("ref_a", {
+    await mountComposer("ref_a", {
       status: { type: "notLoaded" },
       evener: { ref: "ref_a", capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
     });
-    fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
-    fake.on("thread/model/set", () => ({}));
     expect(textarea().style.minHeight).toBe("1lh");
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     expect(screen.queryByRole("menu")).not.toBeNull();
     await user.keyboard("{Escape}");
-    // The phone's resting row is the compact one-line row; engaging the
-    // editor brings the model picker back.
+    // The phone's resting row stays compact on focus, and content expands the
+    // card.
     await user.click(textarea());
-    await waitFor(() => expect(screen.getByTestId("model-switch-trigger")).toBeTruthy());
-    await user.click(screen.getByTestId("model-switch-trigger"));
-    expect(screen.getByRole("dialog", { name: "Choose model" })).toBeTruthy();
-    await user.click(await screen.findByRole("option", { name: /gpt-5.5/ }));
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(1));
-    expect(document.activeElement).toBe(screen.getByTestId("model-switch-trigger"));
+    act(() => replaceEditorText(textarea(), "draft"));
+    expect(screen.getByTestId("composer-input-card").hasAttribute("data-folded")).toBe(false);
+    // The one menu stays reachable in the expanded card.
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    expect(screen.queryByRole("menu")).not.toBeNull();
+    await user.keyboard("{Escape}");
   } finally {
     cleanup();
     restoreViewport();
@@ -853,7 +853,7 @@ test("the composer editing attribute follows the editor, not composer controls",
   await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
 });
 
-test("an outside press leaves the card folded-open until its click lands", async () => {
+test("an outside click clears editing without changing the folded card", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_press_hold"));
   await threadsStore.getState().ensureThread("ref_press_hold");
@@ -873,32 +873,32 @@ test("an outside press leaves the card folded-open until its click lands", async
 
   const editor = screen.getByRole("textbox", { name: "Message" });
   const card = screen.getByTestId("composer-input-card");
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
   await act(async () => {
     editor.focus();
   });
-  await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+  expect(card.getAttribute("data-folded")).toBe("true");
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
 
-  // The press moves focus off the editor, as a real press does: the browser
-  // runs that default action after pointerdown and before mouseup. The card is
-  // in flow, so folding at the press would shrink it before mouseup and move
-  // the pressed control out from under the pointer, swallowing its click. The
-  // blur paths below must therefore leave the card open.
+  // The press moves focus off the editor, as a real press does. Content, not
+  // focus, owns the card's shape, so the folded card stays put throughout.
   await act(async () => {
     fireEvent.pointerDown(document.body);
     editor.blur();
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   });
   await waitForMacrotaskInActScope();
-  expect(card.hasAttribute("data-folded")).toBe(false);
+  expect(card.getAttribute("data-folded")).toBe("true");
 
-  // The click lands on the pressed control first, then folds the card.
+  // The click lands on the pressed control first, then clears editing.
   await act(async () => {
     fireEvent.click(document.body);
   });
-  await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
+  await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+  expect(card.getAttribute("data-folded")).toBe("true");
 });
 
-test("a press that never becomes a click never folds the composer", async () => {
+test("a press that never becomes a click leaves the folded card and editing state alone", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_press_drag"));
   await threadsStore.getState().ensureThread("ref_press_drag");
@@ -918,23 +918,25 @@ test("a press that never becomes a click never folds the composer", async () => 
 
   const editor = screen.getByRole("textbox", { name: "Message" });
   const card = screen.getByTestId("composer-input-card");
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
 
   // Pressing into the transcript to select or scroll blurs the editor, but the
   // gesture produces no click. Dragging it must not shrink the card mid-gesture.
   await act(async () => {
     editor.focus();
   });
-  await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+  expect(card.getAttribute("data-folded")).toBe("true");
   await act(async () => {
     fireEvent.pointerDown(document.body);
     editor.blur();
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   });
   await waitForMacrotaskInActScope();
-  expect(card.hasAttribute("data-folded")).toBe(false);
+  expect(card.getAttribute("data-folded")).toBe("true");
+  expect(anchor?.hasAttribute("data-composer-editing")).toBe(true);
 });
 
-test("a clicked control that stops its click's propagation still folds the composer", async () => {
+test("a clicked control that stops propagation still clears editing without changing the folded card", async () => {
   const fake = connectReadyFakeClient();
   fake.on("thread/read", () => readResponse("ref_press_stop"));
   await threadsStore.getState().ensureThread("ref_press_stop");
@@ -974,7 +976,7 @@ test("a clicked control that stops its click's propagation still folds the compo
     await act(async () => {
       editor.focus();
     });
-    await waitFor(() => expect(card.hasAttribute("data-folded")).toBe(false));
+    expect(card.getAttribute("data-folded")).toBe("true");
 
     await act(async () => {
       fireEvent.pointerDown(control);
@@ -988,15 +990,14 @@ test("a clicked control that stops its click's propagation still folds the compo
     await act(async () => {
       fireEvent.click(control);
     });
-    // The control's own handler ran, and the card was still open while it did:
-    // the fold waits for dispatch to finish, so the pressed control wins the
-    // race and keeps its click.
+    // The control's own handler ran before editing cleared: the press waits
+    // for dispatch to finish, so the pressed control keeps its click.
     expect(controlClicks).toHaveLength(1);
     expect(editingWhenControlClickRan).toBe(true);
-    // The click's own handler stopped propagation, and folding waits for
-    // dispatch to finish, so the fold arrives on a later task.
-    await waitFor(() => expect(card.getAttribute("data-folded")).toBe("true"));
-    expect(anchor?.hasAttribute("data-composer-editing")).toBe(false);
+    // The click's own handler stopped propagation; clearing editing still
+    // arrives on a later task without changing the content-owned card shape.
+    await waitFor(() => expect(anchor?.hasAttribute("data-composer-editing")).toBe(false));
+    expect(card.getAttribute("data-folded")).toBe("true");
   } finally {
     control.remove();
   }
@@ -1352,16 +1353,16 @@ test("every control in the composer's button row is the xs (24px) size", async (
   }
 });
 
-// Stop is the WORD, in danger ink, not a filled square glyph: it is chrome, and
-// chrome speaks. dangerQuiet keeps the hue on the label rather than as a fill
-// competing with the primary control beside it.
-test("Stop renders as the word in the dangerQuiet variant, not as an icon", async () => {
+// Stop keeps its word where space allows and gains a stop-sign glyph for the
+// compact row. dangerQuiet keeps the hue quiet beside the primary control.
+test("Stop renders a stop-sign glyph in the dangerQuiet variant", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(stopButton().textContent).not.toBe("");
-  expect(stopButton().querySelector("svg")).toBeNull();
+  expect(stopButton().querySelector("svg")).not.toBeNull();
+  expect(stopButton().getAttribute("aria-label")).toBe("Stop");
   expect(stopButton().className.split(" ")).toContain(buttonStyles.dangerQuiet);
 });
 
@@ -1376,23 +1377,7 @@ test("the attach control draws an SVG glyph, not a literal text character", asyn
   expect(attach.textContent).toBe("");
 });
 
-// --- the verb cluster's order and emphasis ---------------------------------
-//
-// Stop and Send share the first slot; wide Steer stays to its right.
-test("Stop and Send alternate before Steer", async () => {
-  await mountComposer("ref_a", {
-    status: { type: "active" },
-    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
-  });
-  const card = screen.getByTestId("composer-input-card");
-  const order = () =>
-    [...card.querySelectorAll("button")]
-      .map((b) => b.getAttribute("data-testid"))
-      .filter((id) => id?.startsWith("composer-") && id !== "composer-attach");
-  expect(order()).toEqual(["composer-stop", "composer-steer"]);
-  act(() => replaceEditorText(textarea(), "draft"));
-  expect(order()).toEqual(["composer-submit", "composer-steer"]);
-});
+// --- the verb cluster's emphasis --------------------------------------------
 
 // Jesse's own correction, honored exactly: both verbs stay, with distinct jobs.
 // While a turn runs Steer is the primary (interrupt and redirect NOW) and Send

@@ -126,14 +126,19 @@ func sessionNamerEnabled(profile *provider.Profile) bool {
 }
 
 // sessionNamerUsable reports whether a naming call is worth making at all: the
-// profile must resolve a naming model, and the session must not already have
-// learned that the current model choice's allowance is spent.
+// session must outlive the current turn (one-shot TurnEndsProcess runs have no
+// persistent UI listing a generated title), the profile must resolve a naming
+// model, and the session must not already have learned that the current model
+// choice's allowance is spent.
 //
 // Every launch path asks this one question, which is why the question has one
 // name. sessionNamerEnabled answers only the model-resolution half and cannot
 // see session state; a quota exhaustion is the same category of fact ("the
 // namer cannot run") but is learned at runtime rather than read from config.
 func (s *Session) sessionNamerUsable() bool {
+	if s.cfg.TurnEndsProcess {
+		return false
+	}
 	if !sessionNamerEnabled(s.currentProfile()) {
 		return false
 	}
@@ -161,7 +166,7 @@ func sessionNamerModel(profile *provider.Profile) string {
 // which requires a catalog row (a live-only or synthesized row inherits the
 // protocol's send-by-default baseline without any catalog fact) and reads the
 // protocol-keyed temperature path, so Google rows are judged on
-// generationConfig.temperature.
+// generation_config.temperature.
 func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, model string) *float64 {
 	if client == nil || profile == nil || model == "" {
 		return nil
@@ -183,8 +188,9 @@ func sessionNamerTemperature(client *llm.Client, profile *provider.Profile, mode
 // form, structured unknown_parameter/unsupported_parameter codes) — instead of
 // re-matching provider prose here. The comparison is against the rejected
 // protocol's own temperature path: a Google-protocol rejection names the
-// nested spelling ("generationConfig.temperature"), everything else the plain
-// one, and an error with no protocol attribution is compared against both.
+// nested spelling (registry.TemperaturePath(registry.ProtocolGoogle)),
+// everything else the plain one, and an error with no protocol attribution is
+// compared against both.
 func isTemperatureUnsupported(err error) bool {
 	if llm.Kind(err) != llm.KindInvalidRequest {
 		return false
@@ -193,11 +199,12 @@ func isTemperatureUnsupported(err error) bool {
 	if param == "" {
 		return false
 	}
+	googleTempPath := registry.TemperaturePath(registry.ProtocolGoogle)
 	switch llm.ErrorProtocol(err) {
 	case registry.ProtocolGoogle:
-		return param == "generationConfig.temperature"
+		return param == googleTempPath
 	case "":
-		return param == "temperature" || param == "generationConfig.temperature"
+		return param == "temperature" || param == googleTempPath
 	default:
 		return param == "temperature"
 	}

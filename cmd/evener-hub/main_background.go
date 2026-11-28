@@ -58,12 +58,14 @@ func watchHubRoster(ctx context.Context, roster *hubcore.Roster) {
 // initial derive, the tick and the poke that reach it publish the identical
 // snapshot.
 func runHubAttention(ctx context.Context, web *WebServer, archive *hubcore.ArchiveStore, w *hubcore.AttentionWatcher) {
-	decisions, _ := archive.Decisions()
 	// Derive from the same remote-inclusive metas/live the navigation tree
 	// uses: sessions on other hosts reach the hub only through the
 	// remote-thread cache, so reading the roster alone left their
 	// question/approval out of the broadcast (#2529).
 	snapshot := web.navigationSnapshot(ctx)
+	// The derive must read the decisions the reconcile left behind.
+	unarchiveProjectsUsedSinceNewSessions(archive, snapshot)
+	decisions, _ := archive.Decisions()
 	m, sum := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
 	// Archiving clears human attention, not the Manager's live population.
 	// Reuse top-level eligibility without an archive suppression decision.
@@ -254,7 +256,7 @@ func refreshHubRemoteThreads(ctx context.Context, poke <-chan struct{}, web *Web
 		// captured under the registration that owns its rows and still
 		// appears on this tick.
 		snapshot := web.refreshRemoteThreadSnapshot(refreshCtx)
-		web.cfg.RemoteThreadCache.StoreWalkSnapshot(hubcore.RemoteThreadSnapshot{
+		web.cfg.RemoteThreadCache.Store(hubcore.RemoteThreadSnapshot{
 			Threads:  snapshot.threads,
 			Complete: snapshot.complete,
 			Sources:  snapshot.sources,

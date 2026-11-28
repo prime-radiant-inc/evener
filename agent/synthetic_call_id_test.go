@@ -62,12 +62,14 @@ func TestSynthesizedCallID_IsUniqueAcrossTurnsAndSurvivesRecording(t *testing.T)
 		t.Fatal("session has no transcript path; StateDir was not set")
 	}
 	reg := apptranscript.NewToolCallRegistry()
-	turns, err := apptranscript.ItemTurnsFromFile(path, 64<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+	proj, err := apptranscript.ItemTurnProjectionFromFile(path, 64<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectTurnParts(turnID, turnIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
 	})
 	if err != nil {
-		t.Fatalf("ItemTurnsFromFile: %v", err)
+		t.Fatalf("ItemTurnProjectionFromFile: %v", err)
 	}
+	turns := proj.Turns
 	// The result item is the recorded call the synthesized id lands on.
 	var recorded []string
 	for i := range turns {

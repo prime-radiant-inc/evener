@@ -119,3 +119,29 @@ export function foldTurnEntries(turn: ProjectedTurn): (ProjectedEntry | ToolRun)
     descriptorFor: toolRendererFor,
   });
 }
+
+/** The consecutive action rows starting at `index`: TurnBlock renders them as
+ * one group, TranscriptBody names a cross-turn group for them, and Find opens
+ * that same group to reveal a member's rationale. `end` is the first index
+ * after the run. */
+export function intentRunAt(
+  entries: readonly (ProjectedEntry | ToolRun)[],
+  index: number,
+): { entries: Extract<ProjectedEntry, { kind: "intent" }>[]; end: number } {
+  const run: Extract<ProjectedEntry, { kind: "intent" }>[] = [];
+  let end = index;
+  for (;;) {
+    const entry = entries[end];
+    if (entry?.kind !== "intent") break;
+    run.push(entry);
+    end += 1;
+  }
+  return { entries: run, end };
+}
+
+/** The disclosure id a run of action rows is folded under: the row id both
+ * TurnBlock and TranscriptBody give the group, and the one Find opens to
+ * reveal a member's rationale. */
+export function intentGroupId(firstEntryId: string | undefined): string {
+  return `intent-group:${firstEntryId ?? "empty"}`;
+}

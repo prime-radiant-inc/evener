@@ -754,6 +754,7 @@ test("an active fenced local session renders a refused Steer that explains itsel
     },
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  act(() => replaceEditorText(textarea(), "draft"));
   const steer = steerButton();
   expect(steer.disabled).toBe(false);
   expect(steer.getAttribute("aria-disabled")).toBe("true");

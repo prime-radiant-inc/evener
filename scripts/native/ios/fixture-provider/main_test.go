@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,91 @@ import (
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
+// TestReadyFileWriteIsAtomic pins the readiness file's reader contract: every
+// read observes either no file or the complete endpoint JSON.
+func TestReadyFileWriteIsAtomic(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const readyName = "ready.json"
+	ready := filepath.Join(dir, readyName)
+	const wantBaseURL = "http://127.0.0.1:9"
+	endpoint, err := json.Marshal(readyEndpoint{BaseURL: wantBaseURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	readErr := make(chan error, 1)
+	go func() {
+		defer close(readErr)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			data, err := os.ReadFile(ready)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				readErr <- err
+				return
+			}
+			var parsed readyEndpoint
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				readErr <- fmt.Errorf("reader saw an incomplete readiness file %q: %w", data, err)
+				return
+			}
+			if parsed.BaseURL == "" {
+				readErr <- fmt.Errorf("reader saw readiness JSON without an endpoint: %q", data)
+				return
+			}
+		}
+	}()
+	for range 5000 {
+		if err := writeReadyFile(ready, endpoint); err != nil {
+			close(stop)
+			<-readErr
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	if err := <-readErr; err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("readiness file is not private: %v", perm)
+	}
+	published, err := os.ReadFile(ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got readyEndpoint
+	if err := json.Unmarshal(published, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseURL != wantBaseURL {
+		t.Fatalf("readiness file names %q, not the published endpoint", got.BaseURL)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != readyName {
+		names := make([]string, len(entries))
+		for i, entry := range entries {
+			names[i] = entry.Name()
+		}
+		t.Fatalf("readiness directory holds leftovers after the write: %v", names)
+	}
+}
+
 // waitReady polls the readiness file until the provider names its endpoint,
 // then returns the base URL. The file is the provider's only interface: the
 // UI runner never learns the port any other way.
@@ -26,9 +112,7 @@ func waitReady(t *testing.T, ready string) string {
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(ready)
 		if err == nil {
-			var endpoint struct {
-				BaseURL string `json:"base_url"`
-			}
+			var endpoint readyEndpoint
 			if err := json.Unmarshal(data, &endpoint); err != nil {
 				t.Fatalf("readiness file is not endpoint JSON: %v", err)
 			}
@@ -51,11 +135,32 @@ func waitReady(t *testing.T, ready string) string {
 func TestFixtureProviderCompletesTurnAndStops(t *testing.T) {
 	t.Parallel()
 	ready := filepath.Join(t.TempDir(), "ready.json")
+	// A seeded readiness file makes the publish observable: waitReady rejects
+	// this placeholder, and the provider must replace the path rather than
+	// rewrite it in place, so no reader can catch a truncated rewrite.
+	placeholder, err := json.Marshal(readyEndpoint{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ready, placeholder, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seeded, err := os.Stat(ready)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, ready) }()
 
 	baseURL := waitReady(t, ready)
+	published, err := os.Stat(ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(seeded, published) {
+		t.Fatal("provider rewrote the seeded readiness file in place; a concurrent reader can observe a truncated file")
+	}
 	request := `{"model":"` + fakellm.ModelID + `","messages":[{"role":"user","content":"qualify"}],"tools":[{}]}`
 	resp, err := http.Post(baseURL+"/chat/completions", "application/json", strings.NewReader(request))
 	if err != nil {
@@ -94,13 +199,13 @@ func TestFixtureProviderCompletesTurnAndStops(t *testing.T) {
 	}
 	var args struct {
 		Message string `json:"message"`
-		EndTurn bool   `json:"end_turn"`
+		Next    string `json:"next"`
 	}
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
 		t.Fatalf("result-tool arguments are not JSON: %v", err)
 	}
-	if !args.EndTurn {
-		t.Fatal("result-tool call does not end the turn")
+	if args.Next != "send_and_end_turn" {
+		t.Fatalf("result-tool next = %q, want send_and_end_turn", args.Next)
 	}
 	for _, marker := range []string{"QUALIFICATION_prose_a7", "**QUALIFICATION_emphasis_b8**", "QUALIFICATION_code_c9"} {
 		if !strings.Contains(args.Message, marker) {

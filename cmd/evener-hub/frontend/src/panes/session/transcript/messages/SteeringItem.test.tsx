@@ -54,10 +54,18 @@ test("is memoized ignoring turn identity - a fresh turn object on every streamin
 // internal/apptranscript/apptranscript.go:225-228): steering the human
 // typed themselves is indistinguishable from a normal prompt.
 
-test('source "user" renders as a normal user message bubble (the "You" tag), not the divider', () => {
-  render(<SteeringItem item={item({ text: "focus on the tests", source: "user" })} turn={turn} live={false} />);
+test('source "user" renders as a normal user message bubble (the "You" tag) with Markdown, not the divider', () => {
+  render(
+    <SteeringItem
+      item={item({ text: "focus on **the tests** in `parser.ts`", source: "user" })}
+      turn={turn}
+      live={false}
+    />,
+  );
   expect(screen.getByTestId("user-message-item").dataset.speaker).toBe("user");
-  expect(screen.getByText("focus on the tests")).toBeTruthy();
+  const bubble = screen.getByTestId("user-bubble");
+  expect(bubble.querySelector("strong")?.textContent).toBe("the tests");
+  expect(bubble.querySelector("code")?.textContent).toBe("parser.ts");
   expect(screen.queryByTestId("steering-item")).toBeNull();
 });
 
@@ -632,12 +640,13 @@ test("a collapsed divider keeps its steered text out of the document until opene
   expect(screen.getByText("the steered note")).toBeTruthy();
 });
 
-test("the diamond sits in the content column at 50% opacity - no gutter pull", () => {
+test("the diamond seats in the shared icon rail at ambient opacity and pulls into the desktop gutter", () => {
   const css = readModuleCss(import.meta.url, "steeringitem.module.css");
   const slot = /\.railIcon\s*\{([^}]*)\}/.exec(css);
   expect(slot).not.toBeNull();
-  expect(slot![1]).toContain("opacity: 0.5");
-  expect(css).not.toContain("margin-left: calc(-1 * var(--speaker-gutter))");
+  expect(slot![1]).toContain('composes: seat from "../../../../styles/railseat.module.css"');
+  expect(slot![1]).toContain('composes: ambient from "../../../../styles/railseat.module.css"');
+  expect(slot![1]).toContain('composes: gutterPull from "../../../../styles/railseat.module.css"');
 });
 
 test("the body opens with the SYSTEM-REMINDER wrapper stripped", () => {

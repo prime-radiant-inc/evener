@@ -1,6 +1,7 @@
 import { type ComposerMention, NO_ACTIVE_TURN, sessionActionError } from "@evener/appwire-client";
 import { ownPendingSend } from "@evener/appwire-client/state/mutation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { tellIPhoneHost } from "../../../shell/iPhoneHost";
 import { controlsFor, liveThreadModel, pressLocalRecoveryFenced, pressRefusal } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import {
@@ -22,10 +23,12 @@ import {
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
 import {
+  compositionIsEmpty,
   mergeRecoveryComposerDraft,
   recoveredCompositionIsEmpty,
   recoveryComposerDraft,
 } from "./recovery/recoveryDraft";
+import { sameStrings } from "./selection";
 import {
   materializeSelectionReferences,
   parseSkillDocument,
@@ -38,7 +41,6 @@ import {
   type ComposerSourceState,
   recoverySubmissionInFlight,
   restoredSkillNames,
-  sameSkillSelections,
 } from "./sourceState";
 import { composerAvailability } from "./submissionAvailability";
 import {
@@ -234,10 +236,13 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       freshRecoveryRef !== ref ||
       !recoveryProjectionLoaded ||
       activeRecoveryId !== null ||
-      textRef.current.trim() !== "" ||
-      attachments.items.length > 0 ||
-      skillNamesRef.current.length > 0 ||
-      selectionMetaRef.current.commandNames.length > 0
+      !compositionIsEmpty({
+        text: textRef.current,
+        attachments: attachments.items,
+        skillNames: skillNamesRef.current,
+        commandNames: selectionMetaRef.current.commandNames,
+        mentions: selectionMetaRef.current.mentions,
+      })
     ) {
       return;
     }
@@ -302,7 +307,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateText,
     updateSkillNames,
     updateSelectionMeta,
-    attachments.items.length,
+    attachments.items,
   ]);
   // restoreTextToComposer implements the shared "put text back into the
   // composer without clobbering what's already typed there" merge (parity-
@@ -377,10 +382,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // restore seam; the seam's own consumed-request bookkeeping serializes
     // presses, so this callback runs at most once per press.
     if (!source.alive) return;
-    if (attachments.hasPending) {
-      toasts.push("error", "Image attachment is still processing");
-      return;
-    }
+    const pendingRefusal = attachments.refusalReason();
+    if (pendingRefusal) return toasts.push("error", pendingRefusal);
     try {
       if (!(await source.activateRecovery(record))) {
         if (source.alive) pushRecoveryRefusal("changed");
@@ -414,10 +417,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     options: { text?: string; clearDraftText?: string } = {},
   ): Promise<void> {
     if (isBusy()) return;
-    if (attachments.hasPending) {
-      toasts.push("error", "Image attachment is still processing");
-      return;
-    }
+    const pendingRefusal = attachments.refusalReason();
+    if (pendingRefusal) return toasts.push("error", pendingRefusal);
     const model = liveThreadModel(ref);
     if (!model) return;
     if (kind === "send" || kind === "queue") {
@@ -619,8 +620,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       if (!source.alive) return;
       const submittedEditorMatches =
         textRef.current === clearDraftText &&
-        sameSkillSelections(skillNamesRef.current, submittedSkillNames) &&
-        sameSkillSelections(selectionMetaRef.current.commandNames, submittedCommandNames);
+        sameStrings(skillNamesRef.current, submittedSkillNames) &&
+        sameStrings(selectionMetaRef.current.commandNames, submittedCommandNames);
       const cleared = clearIfUnchanged(
         clearDraftText,
         submittedRevision,
@@ -649,6 +650,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
         }
       }
       clearSubmittedAttachments(submittedAttachments);
+      tellIPhoneHost({ type: "haptic", kind: "light" });
     } catch (error) {
       submissionFailed = true;
       // A refused recovery resend keeps its composer payload. Ordinary sends
@@ -751,13 +753,8 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
   async function submitFromLiveState(): Promise<void> {
     if (isBusy()) return;
     const current = source.getSnapshot();
-    if (
-      !current.text.trim() &&
-      attachments.items.length === 0 &&
-      current.skillNames.length === 0 &&
-      current.commandNames.length === 0
-    )
-      return;
+    const { text, skillNames, commandNames, mentions } = current;
+    if (compositionIsEmpty({ text, attachments: attachments.items, skillNames, commandNames, mentions })) return;
     const allowed = liveAvailability();
     if (!allowed.canSend && !allowed.canQueue) {
       toasts.push("error", "Send is not available for this session");

@@ -18,7 +18,7 @@ import (
 // hub-side preference.
 func TestThreadEnvelopeSeedProjectsManagerFromMeta(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	source := &stubThreadEnvelopeSource{}
 	source.meta.Manager = true
 	publishEnvelope(srv, source)
@@ -33,7 +33,7 @@ func TestThreadEnvelopeSeedProjectsManagerFromMeta(t *testing.T) {
 // half: an ordinary session reads Manager false, never invented.
 func TestThreadEnvelopeSeedLeavesManagerFalseWhenNotStarted(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
+	setAppIdentity(t, srv, "local", "th_1")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{})
 
 	thread := readThreadOverWire(t, srv, "local:th_1")

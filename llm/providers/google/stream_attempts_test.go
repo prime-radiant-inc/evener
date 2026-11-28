@@ -18,19 +18,18 @@ import (
 	"primeradiant.com/evener/llm/apilog"
 )
 
-// twoGeminiChunks is the opening of a streamGenerateContent body: two text
-// chunks, neither carrying the finishReason that ends the stream.
-const twoGeminiChunks = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hel\"}]}}]}\n\n" +
-	"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]}}]}\n\n"
+const twoInteractionsChunks = "event: interaction.created\n" +
+	`data: {"event_type":"interaction.created","interaction":{"id":"int_two","status":"in_progress"}}` + "\n\n" +
+	"event: step.start\n" +
+	`data: {"event_type":"step.start","index":0,"step":{"type":"model_output"}}` + "\n\n" +
+	"event: step.delta\n" +
+	`data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"hel"}}` + "\n\n" +
+	"event: step.delta\n" +
+	`data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"lo"}}` + "\n\n"
 
-// TestStreamAppendsTheAttemptBeforeTheTerminalEvent pins the ordering the
-// adapter's wire captures pinned before the protocols replaced them: the
-// canonical attempt record is appended before the consumer sees the
-// stream's terminal event, so a caller that reacts to FINISH always finds
-// the attempt already in the log.
 func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 	t.Parallel()
-	srv, _ := protoServer(t, 200, generateSSE)
+	srv, _ := protoServer(t, 200, interactionsSSE)
 	sink := &captureSink{}
 	ctx := llm.WithAPIAttemptSink(
 		llm.WithAPIAttemptGroup(t.Context(), llm.NewAPIAttemptGroup("ag_google_stream_order")),
@@ -60,10 +59,6 @@ func TestStreamAppendsTheAttemptBeforeTheTerminalEvent(t *testing.T) {
 	}
 }
 
-// TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout pins that a stream
-// that stalls mid-body is recorded as a provider timeout — the request
-// reached the provider and the response headers arrived, so neither a
-// connect nor a request-deadline classification would be honest.
 func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
 	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
@@ -76,7 +71,7 @@ func TestStreamClassifiesAnSSEReadTimeoutAsAProviderTimeout(t *testing.T) {
 				io.Copy(io.Discard, req.Body)
 				req.Body.Close()
 			}
-			go func() { defer w.Close(); io.WriteString(w, twoGeminiChunks); <-stall }()
+			go func() { defer w.Close(); io.WriteString(w, twoInteractionsChunks); <-stall }()
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: r, Request: req}, nil
 		})}
 		srv := &httptest.Server{URL: "https://example.invalid"}
@@ -114,7 +109,7 @@ func TestStreamCompressedWireProgressDoesNotRequireDecodedSSEBytes(t *testing.T)
 		var compressed bytes.Buffer
 		zw := gzip.NewWriter(&compressed)
 		zw.Name = "slow-compressed-header"
-		zw.Write([]byte(generateSSE))
+		zw.Write([]byte(interactionsSSE))
 		zw.Close()
 		left, right := net.Pipe()
 		defer right.Close()

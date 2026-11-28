@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { resolveComposes, unwrapGlobal } from "./resolve-composes.mjs";
+import { prefixClassSelectors, resolveComposes, unwrapGlobal } from "./resolve-composes.mjs";
 
 // Removes every @media block (brace-counted, so a block's nested rules go with
 // its gate): what remains is the CSS the browser applies at EVERY width.
@@ -46,7 +46,57 @@ describe("unwrapGlobal", () => {
   });
 });
 
+describe("prefixClassSelectors", () => {
+  test("prefixes every class selector in a rule list, including compound and gated selectors", () => {
+    const out = prefixClassSelectors(
+      ".summary, details[open] > .summary:hover { color: red; }\n@media (max-width: 899px) { .body { margin-top: 4px; } }",
+      "d-",
+    );
+    expect(out).toContain(".d-summary, details[open] > .d-summary:hover");
+    expect(out).toMatch(/@media \(max-width: 899px\) \{\s*\.d-body\s*\{/);
+    expect(out).toContain("margin-top: 4px");
+  });
+
+  test("leaves :global() inners and declaration values alone", () => {
+    const out = prefixClassSelectors('.a > :global(.kept) { content: ".body"; }', "d-");
+    expect(out).toContain(".d-a > :global(.kept)");
+    expect(out).toContain('content: ".body"');
+  });
+
+  test("prefixes same-file composes targets and leaves cross-file ones", () => {
+    const out = prefixClassSelectors('.a { composes: b, c; }\n.d { composes: e from "./x.module.css"; }', "d-");
+    expect(out).toContain("composes: d-b, d-c;");
+    expect(out).toContain('composes: e from "./x.module.css";');
+  });
+});
+
 describe("resolveComposes", () => {
+  test("resolves a same-name composes import without a cycle, consumer declarations kept", () => {
+    // popover.module.css's .panel composes floatingSurface.module.css's
+    // .panel: the consumer extends the same-named class from another
+    // module. The consumer is not a target of itself.
+    const out = resolveComposes([
+      ".panel { background: blue; }",
+      '.panel { composes: panel from "./floatingSurface.module.css"; color: red; }',
+    ]);
+    expect(out).toMatch(/\.panel\s*\{[^}]*background:\s*blue[^}]*color:\s*red/);
+    expect(out).not.toContain("composes");
+  });
+
+  test("resolves a composes chain transitively, the way the build merges class lists", () => {
+    // .sidebarMobile composes .sidebar, which itself composes .docked from
+    // another module: postcss-modules merges the whole class list, so the
+    // mobile sidebar paints the docked ground. A single pass leaves the
+    // second hop as a literal composes line the browser drops.
+    const out = resolveComposes([
+      ".docked { background: blue; position: relative; }",
+      '.sidebar { composes: docked from "./surface.module.css"; color: red; }\n.sidebarMobile { composes: sidebar; }',
+    ]);
+    expect(out).toMatch(/\.sidebarMobile\s*\{[^}]*background:\s*blue/);
+    expect(out).toMatch(/\.sidebarMobile\s*\{[^}]*color:\s*red/);
+    expect(out).not.toContain("composes");
+  });
+
   test("unwraps :global while still resolving composes", () => {
     const out = resolveComposes([
       ".base { color: red; }",
@@ -58,6 +108,15 @@ describe("resolveComposes", () => {
 
   test("splices an ungated composed body in place of the composes line", () => {
     const out = resolveComposes([".base { color: red; }", '.a { composes: base from "./b.module.css"; }']);
+    expect(out).toMatch(/\.a\s*\{[^}]*color:\s*red/);
+  });
+
+  test("splices a zero-specificity :where(.base) rule and leaves the wrapper in place", () => {
+    // `:where(.panel)` keeps the class a composes line names; the wrapper
+    // only lowers its specificity. The harness element must still receive
+    // the declarations, and the wrapper itself stays as the sheet wrote it.
+    const out = resolveComposes([":where(.base) { color: red; }", '.a { composes: base from "./b.module.css"; }']);
+    expect(out).toContain(":where(.base)");
     expect(out).toMatch(/\.a\s*\{[^}]*color:\s*red/);
   });
 

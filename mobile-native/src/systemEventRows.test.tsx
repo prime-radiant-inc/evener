@@ -25,7 +25,7 @@ import { act, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { createConversationService } from "./conversation/services/conversation";
 import { createConversationStore } from "./conversation/state/conversation";
-import { palettes } from "./design/tokens";
+import { palettes, typeRoles } from "./design/tokens";
 import { MAX_ITEM_BYTES, projectConversation } from "./projectedRows";
 import { withTestID } from "./markerTestUtils";
 import { offersButton, render, renderedText, textOf } from "./renderNative.testkit";
@@ -554,6 +554,108 @@ Delegate dlg_42 completed.
 	it.each(LEVELS)("leaves out the current task and the task list, as the web does, at %s", (level) => {
 		for (const name of ["steer-current-task", "steer-task-list"] as const) {
 			expect(rowFor(name, level)).toBeUndefined();
+		}
+	});
+});
+
+describe("quiet_yield prose typography", () => {
+	it("renders a standalone quiet_yield in agentProse serif at inkLow, while a regular lifecycle notice keeps 13pt sans-serif", () => {
+		const quietItem = {
+			id: "qy-1",
+			turnId: "turn_1",
+			type: "systemMessage",
+			eventKind: "quiet_yield",
+			text: "Waiting for the build to finish.",
+		} as ThreadItem;
+		const quietRow = rowsAt("intent", [completedTurn([quietItem])]).rows.find((row) => row.id === quietItem.id);
+		if (!quietRow) throw new Error("no quiet_yield row");
+		const quietTree = render(<TimelineItem item={quietRow} hubId="hub" sessionRef="quiet-prose-standalone" />);
+		const quietText = quietTree.root.findAll((node) => String(node.type) === "Text");
+		expect(quietText).toHaveLength(1);
+		expect(quietText[0]?.props.style).toMatchObject({
+			fontFamily: typeRoles.agentProse.fontFamily,
+			fontSize: typeRoles.agentProse.fontSize,
+			lineHeight: typeRoles.agentProse.lineHeight,
+			color: palettes.light.inkLow,
+		});
+		expect(quietText[0]?.props.numberOfLines).toBeUndefined();
+
+		const lifecycleTree = show("tool-repair", "full");
+		const lifecycleText = lifecycleTree.root.findAll((node) => String(node.type) === "Text");
+		expect(lifecycleText).toHaveLength(1);
+		expect(lifecycleText[0]?.props.style).toMatchObject({
+			fontSize: 13,
+			lineHeight: 18,
+			color: palettes.light.inkLow,
+		});
+		expect(lifecycleText[0]?.props.style?.fontFamily).toBeUndefined();
+		expect(lifecycleText[0]?.props.numberOfLines).toBe(2);
+	});
+
+	it("renders a quiet_yield summary with demoted commentary in agentProse serif at inkLow", () => {
+		const quietWithCommentary = {
+			id: "qy-commentary",
+			turnId: "turn_1",
+			type: "systemMessage",
+			eventKind: "quiet_yield",
+			text: "Waiting for CI.",
+			raw: { commentary: "Let me wait for the CI run to settle." },
+		} as ThreadItem;
+		const row = rowsAt("full", [completedTurn([quietWithCommentary])]).rows.find(
+			(candidate) => candidate.id === quietWithCommentary.id,
+		);
+		if (!row) throw new Error("no quiet_yield commentary row");
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="quiet-prose-commentary" />);
+		const summaryText = tree.root.findAll((node) => String(node.type) === "Text");
+		expect(summaryText).toHaveLength(1);
+		expect(summaryText[0]?.props.style).toMatchObject({
+			fontFamily: typeRoles.agentProse.fontFamily,
+			fontSize: typeRoles.agentProse.fontSize,
+			lineHeight: typeRoles.agentProse.lineHeight,
+			color: palettes.light.inkLow,
+		});
+		expect(summaryText[0]?.props.numberOfLines).toBeUndefined();
+	});
+
+	it("keeps collapsed quiet_yield group chrome at 13pt sans-serif while inner expanded wakes use agentProse", () => {
+		const turn1 = {
+			id: "turn_1",
+			itemsView: "full",
+			status: "completed",
+			startedAt: T0,
+			completedAt: T0 + 1000,
+			items: [
+				{ id: "qy-g1", turnId: "turn_1", type: "systemMessage", eventKind: "quiet_yield", text: "First quiet wait" },
+			],
+		} as unknown as Turn;
+		const turn2 = {
+			id: "turn_2",
+			itemsView: "full",
+			status: "completed",
+			startedAt: T0 + 2000,
+			completedAt: T0 + 3000,
+			items: [
+				{ id: "qy-g2", turnId: "turn_2", type: "systemMessage", eventKind: "quiet_yield", text: "Second quiet wait" },
+			],
+		} as unknown as Turn;
+		const groupRow = rowsAt("intent", [turn1, turn2]).rows.find((row) => row.kind === "details");
+		if (!groupRow) throw new Error("no quiet-yields group row");
+		const tree = render(<TimelineItem item={groupRow} hubId="hub" sessionRef="quiet-prose-group" />);
+		const collapsedText = tree.root.findAll((node) => String(node.type) === "Text");
+		expect(collapsedText).toHaveLength(1);
+		expect(collapsedText[0]?.props.style).toMatchObject({ fontSize: 13, lineHeight: 18, color: palettes.light.inkLow });
+		expect(collapsedText[0]?.props.style?.fontFamily).toBeUndefined();
+
+		press(tree);
+		const innerTexts = tree.root.findAll((node) => String(node.type) === "Text").slice(1);
+		expect(innerTexts).toHaveLength(2);
+		for (const inner of innerTexts) {
+			expect(inner.props.style).toMatchObject({
+				fontFamily: typeRoles.agentProse.fontFamily,
+				fontSize: typeRoles.agentProse.fontSize,
+				lineHeight: typeRoles.agentProse.lineHeight,
+				color: palettes.light.inkLow,
+			});
 		}
 	});
 });

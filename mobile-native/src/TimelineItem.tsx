@@ -3,6 +3,7 @@ import {
 	type EvenerDelegateInfo,
 	isExitOnly,
 	itemIdentityMatches,
+	isQuietYield,
 	MEMORY_CONTEXT_EVENT_KIND,
 	type TurnModel,
 } from "@evener/appwire-client";
@@ -33,7 +34,7 @@ import { SubagentRow } from "./session/SubagentRow";
 import { SystemEvent } from "./session/SystemEvent";
 import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
-import { askRowQuestions, stepWords, timeMarkerText } from "./session/transcriptRows";
+import { askRowQuestions, isThoughtRow, stepWords, timeMarkerText } from "./session/transcriptRows";
 import { useStepEvidence } from "./session/useStepEvidence";
 import { subagentOutcome } from "./subagents/subagentModel";
 import { TranscriptImages } from "./TranscriptImages";
@@ -62,9 +63,7 @@ const NO_STEP = { label: "", summaryOnly: true, detail: {} } as const;
 // default" switch; runs and every other activity keep the expand-details
 // posture. Everything else starts closed.
 function rowOpensByDefault(item: TimelineRow, expandByDefault: boolean, thinkingOpenByDefault: boolean): boolean {
-	const isThoughtRow =
-		(item.kind === "activity" && item.family === "reasoning") || (item.kind === "failure" && item.thought === true);
-	if (isThoughtRow) return thinkingOpenByDefault;
+	if (isThoughtRow(item)) return thinkingOpenByDefault;
 	const expandable = item.kind === "activity" || item.kind === "run";
 	return expandable && expandByDefault;
 }
@@ -177,7 +176,11 @@ export function TimelineItem({
 	switch (item.kind) {
 		case "details":
 			content = (
-				<SystemEvent label={`Session details · ${item.entries.length}`} expanded={expanded} onToggle={toggle}>
+				<SystemEvent
+					label={item.summary ?? `Session details · ${item.entries.length}`}
+					expanded={expanded}
+					onToggle={toggle}
+				>
 					{item.entries.map((entry) => (
 						<TimelineItem
 							key={entry.id}
@@ -185,8 +188,12 @@ export function TimelineItem({
 							hubId={hubId}
 							sessionRef={sessionRef}
 							sourceTurns={sourceTurns}
+							thinkingOpenByDefault={thinkingOpenByDefault}
+							delegates={delegates}
+							openSubagent={openSubagent}
 							errorActionFor={errorActionFor}
 							onErrorAction={onErrorAction}
+							fileContext={fileContext}
 						/>
 					))}
 				</SystemEvent>
@@ -245,7 +252,14 @@ export function TimelineItem({
 					attention={item.tone === "attention"}
 				/>
 			) : (
-				<SystemEvent label={label} text={noticeText} hint={item.hint} expanded={expanded} onToggle={toggle}>
+				<SystemEvent
+					label={label}
+					text={noticeText}
+					hint={item.hint}
+					expanded={expanded}
+					onToggle={toggle}
+					prose={isQuietYield(item)}
+				>
 					{item.eventKind === MEMORY_CONTEXT_EVENT_KIND ? (
 						<MemoryContextBody
 							observation={item.memoryContext}

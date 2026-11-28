@@ -1,23 +1,39 @@
 .region {
   position: fixed;
-  bottom: var(--space-4);
-  right: var(--space-4);
+  bottom: calc(var(--space-4) + var(--dock-clearance));
+  right: calc(var(--space-4) + var(--home-safe-right, 0px));
   z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  max-width: 360px;
+  max-width: min(360px, calc(100% - 2 * var(--space-4) - var(--home-safe-left, 0px) - var(--home-safe-right, 0px)));
+}
+
+/* The shell's usable bounds exclude the installed window's system edge.
+ * Keep phone notices clear of Send/Stop in either workspace layout. */
+:global([data-notices-at-top]) .region {
+  position: absolute;
+  inset: calc(env(safe-area-inset-top, 0px) + var(--space-8) + var(--space-4)) var(--space-4) auto;
+  margin-inline: auto;
+  width: max-content;
+  max-width: min(360px, calc(100% - 2 * var(--space-4)));
 }
 
 /* A toast is an arrival that asks for the user: it floats in and out (the
  * Float recipe) from the corner its region is pinned to. */
 .toast {
+  --glass-layer-fill: var(--tone-bg);
   composes: float from "../../styles/motion.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: panel from "../../styles/floatingSurface.module.css";
   transform-origin: right bottom;
+  display: grid;
+  align-content: center;
+  min-height: calc(2 * var(--radius-toast));
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-pane);
-  background: var(--surface-2);
-  box-shadow: var(--shadow-overlay);
+  border-radius: var(--radius-toast);
+  border-color: var(--tone-edge);
+  background: var(--tone-bg);
 }
 
 .text {
@@ -25,48 +41,29 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
-  color: var(--ink-hi);
+  color: var(--tone-ink);
+  overflow-wrap: anywhere;
 }
 
 /* --- kind -> semantic tone -------------------------------------------
- * success/error/warning/info map onto the app's four semantic hues
- * (alive/danger/attention/accent) - see this task's report for why (the
- * old UI's separate --success/--error tokens don't exist in the wave-2
- * token set; these are its closest semantic equivalents).
+ * success/error/warning/info map onto the app's four semantic families
+ * (alive/danger/attention/accent), whose companions live in
+ * styles/tone.module.css. Every toast has a kind, so the paint above can
+ * read the composed --tone-* properties unconditionally.
  */
 
 .success {
-  border-color: var(--alive-edge);
-  background: var(--alive-bg);
-}
-
-.success .text {
-  color: var(--alive-ink);
+  composes: toneAlive from "../../styles/tone.module.css";
 }
 
 .error {
-  border-color: var(--danger-edge);
-  background: var(--danger-bg);
-}
-
-.error .text {
-  color: var(--danger-ink);
+  composes: toneDanger from "../../styles/tone.module.css";
 }
 
 .warning {
-  border-color: var(--attention-edge);
-  background: var(--attention-bg);
-}
-
-.warning .text {
-  color: var(--attention-ink);
+  composes: toneAttention from "../../styles/tone.module.css";
 }
 
 .info {
-  border-color: var(--accent-edge);
-  background: var(--accent-bg);
-}
-
-.info .text {
-  color: var(--accent-ink);
+  composes: toneAccent from "../../styles/tone.module.css";
 }

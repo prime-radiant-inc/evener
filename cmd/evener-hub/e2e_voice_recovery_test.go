@@ -162,7 +162,7 @@ func TestE2E_VoiceReconnectRetainsOutputBeforeDelayedFence(t *testing.T) {
 	f := newVoiceCorrectionStack(t)
 	f.admit(t, "DELAYED-FENCE-INPUT-71", false)
 	args := communicateArgs("DELAYED-FENCE-OLD-71")
-	args["end_turn"] = false
+	args["next"] = "send_and_continue"
 	f.next(t).RespondToolCall("communicate", args)
 	held := f.next(t)
 	active := f.read(t).Thread.Evener.ActiveTurnID

@@ -68,8 +68,11 @@ export function insertEffortLevel(levels: string[], level: string): string[] {
 // the model's ladder as the model orders it (a ladder-listed "none" rides in
 // place), and the current value inserted at its rank when the session already
 // runs at a level the ladder omits — the select must be able to display it.
-export function effortOptionLevels(levels: string[], current: string): string[] {
-  return ["", ...(current !== "" ? insertEffortLevel(levels, current) : levels)];
+// ensureNone appends an explicit "none" when the list lacks one: a picker that
+// always offers off keeps it on a none-less ladder.
+export function effortOptionLevels(levels: string[], current: string, ensureNone = false): string[] {
+  const offered = ["", ...(current !== "" ? insertEffortLevel(levels, current) : levels)];
+  return ensureNone && !offered.includes("none") ? [...offered, "none"] : offered;
 }
 
 // The session picker uses this ladder when reasoning is supported but the

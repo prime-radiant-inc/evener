@@ -24,7 +24,6 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { blockBody, mediaBlock, readModuleCss, topRuleBlock } from "../../styles/cssBlock";
 import { LONG_PRESS_MS } from "../../widgets/hovercard";
-import { installHoverlessMatchMedia } from "../../widgets/hovercard/hovercardTestUtils";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -33,6 +32,7 @@ import { MOBILE_QUERY } from "../useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import {
   watchGloss as domainWatchGloss,
+  RailFlatContext,
   RailRow,
   type RailRowActions,
   watchCadenceLabel,
@@ -40,6 +40,7 @@ import {
 } from "./RailRow";
 import railStyles from "./RailRow.module.css";
 import type {
+  BandRailNode,
   HostRailNode,
   LoadingRailNode,
   OverflowRailNode,
@@ -813,42 +814,49 @@ describe("compact session status", () => {
     }
   });
 
-  // The bug this pins: on a touch-only device the row's own tap must open the
-  // session, and only a long press may expose the context card. A real tap
-  // first fires mousedown, which RailRow uses to focus the owning tree row -
-  // exactly the focus that used to pop the card on its own.
+  // A tap opens the session. Holding the second line opens the same context
+  // card as holding the name, and lifting the hold does not open the session.
   test("a hoverless tap opens the session and only a long press opens the context panel", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    installHoverlessMatchMedia();
+    const restoreViewport = installMobileViewport([MOBILE_QUERY, "(hover: none)"]);
     const rowInfo = info();
-    render(
-      <div role="treeitem" tabIndex={0}>
-        <RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={rowInfo} actions={actions()} />
-      </div>,
-    );
-    const title = screen.getByTestId("rail-row-title");
+    try {
+      render(
+        <div role="treeitem" tabIndex={0}>
+          <RailRow
+            node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true }), { live: "question" })}
+            info={rowInfo}
+            actions={actions()}
+          />
+        </div>,
+      );
+      const title = screen.getByTestId("rail-row-title");
+      const reason = screen.getByTestId("rail-row-why-text");
 
-    // Real touch order: the pointer lifts, then the compatibility mousedown
-    // focuses the row. That focus must not open the card on its own.
-    fireEvent.pointerDown(title, { button: 0 });
-    fireEvent.pointerUp(title, { button: 0 });
-    fireEvent.mouseDown(title, { button: 0 });
-    expect(screen.queryByRole("tooltip")).toBeNull();
+      // Real touch order: the pointer lifts, then the compatibility mousedown
+      // focuses the row. That focus must not open the card on its own.
+      fireEvent.pointerDown(title, { button: 0 });
+      fireEvent.pointerUp(title, { button: 0 });
+      fireEvent.mouseDown(title, { button: 0 });
+      expect(screen.queryByRole("tooltip")).toBeNull();
 
-    fireEvent.click(title);
-    expect(rowInfo.activate).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("tooltip")).toBeNull();
+      fireEvent.click(title);
+      expect(rowInfo.activate).toHaveBeenCalledOnce();
+      expect(screen.queryByRole("tooltip")).toBeNull();
 
-    fireEvent.pointerDown(title, { button: 0, clientX: 5, clientY: 5 });
-    act(() => {
-      vi.advanceTimersByTime(LONG_PRESS_MS);
-    });
-    expect(screen.getByRole("tooltip")).toBeTruthy();
+      fireEvent.pointerDown(reason, { button: 0, clientX: 5, clientY: 5 });
+      act(() => {
+        vi.advanceTimersByTime(LONG_PRESS_MS);
+      });
+      expect(screen.getByRole("tooltip")).toBeTruthy();
 
-    fireEvent.pointerUp(title, { clientX: 5, clientY: 5 });
-    fireEvent.click(title);
-    expect(rowInfo.activate).toHaveBeenCalledOnce();
-    expect(screen.getByRole("tooltip")).toBeTruthy();
+      fireEvent.pointerUp(reason, { clientX: 5, clientY: 5 });
+      fireEvent.click(reason);
+      expect(rowInfo.activate).toHaveBeenCalledOnce();
+      expect(screen.getByRole("tooltip")).toBeTruthy();
+    } finally {
+      restoreViewport();
+    }
   });
 
   test.each([
@@ -1143,9 +1151,13 @@ describe("row alignment", () => {
   });
 
   test("the title button reset preserves the rail label's explicit UI font size", () => {
-    const buttonReset = topRuleBlock(RAIL_CSS, ".sessionTitle .label");
+    const buttonReset = topRuleBlock(RAIL_CSS, ".sessionTitleButton");
     expect(buttonReset).toContain("font-family: inherit");
     expect(buttonReset).not.toMatch(/(?:^|\s)font:\s*inherit/);
+  });
+
+  test("the title's block presentation comes from HoverCard, not a rail-side reach-in", () => {
+    expect(RAIL_CSS).not.toMatch(/\.sessionTitle(?![A-Za-z])/);
   });
 });
 
@@ -1155,7 +1167,7 @@ describe("touch tap floor (RailRow.module.css, any-pointer: coarse)", () => {
   const coarseBlock = mediaBlock(RAIL_CSS, "any-pointer: coarse");
 
   test("long-press-enabled session titles meet the 44px floor in both dimensions", () => {
-    const rule = nestedRuleBlock(coarseBlock, ".sessionTitle button.label");
+    const rule = nestedRuleBlock(coarseBlock, ".label.sessionTitleButton");
     expect(rule).toContain("min-width: var(--tap-min)");
     expect(rule).toContain("min-height: var(--tap-min)");
   });
@@ -1946,11 +1958,21 @@ describe("project row", () => {
     expect(screen.getByText("prime-radiant")).toBeTruthy();
   });
 
-  test("shows an attention Badge when rollup_attn is nonzero, hides it when zero", () => {
+  test("shows an inline uncolored count beside the name when rollup_attn is nonzero, hides it when zero", () => {
     const { rerender } = render(
-      <RailRow node={projectRailNode(apiProject({ rollup_attn: 3 }))} info={info()} actions={actions()} />,
+      <RailRow
+        node={projectRailNode(apiProject({ rollup_attn: 3 }))}
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
     );
-    expect(screen.getByText("3")).toBeTruthy();
+    const count = screen.getByText("3");
+    const titleLine = screen.getByText("Proj").closest(`.${railStyles.titleLine}`);
+    expect(titleLine?.contains(count)).toBe(true);
+    expect(count.closest(`.${railStyles.rightSlot}`)).toBeNull();
+    expect(count.dataset.hue).toBeUndefined();
+    const chevron = screen.getByTestId("rail-chevron");
+    expect(Boolean(count.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 
     rerender(<RailRow node={projectRailNode(apiProject({ rollup_attn: 0 }))} info={info()} actions={actions()} />);
     expect(screen.queryByText("0")).toBeNull();
@@ -2468,7 +2490,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     expect(revealTargets).toEqual(
       expect.arrayContaining([
         '.railRow[data-row-focused="true"] .actions',
-        '.actions:has(button[aria-expanded="true"])',
+        '.actions:has([data-open="true"])',
         ".railRow:hover .actions",
       ]),
     );
@@ -2484,7 +2506,7 @@ describe("shared right slot (RailRow.module.css)", () => {
     const flipBlock = nestedRuleBlock(flipMedia, '.railRow[data-row-focused="true"] .rightSlot > :not(.actions)');
     for (const selector of [
       '.railRow[data-row-focused="true"] .rightSlot > :not(.actions)',
-      '.rightSlot:has(button[aria-expanded="true"]) > :not(.actions)',
+      '.rightSlot:has([data-open="true"]) > :not(.actions)',
       ".railRow:hover .rightSlot > :not(.actions)",
     ]) {
       expect(flipMedia).toContain(selector);
@@ -2665,5 +2687,102 @@ describe("host group row", () => {
     expect(screen.queryByTestId("rail-row-signal")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.getByTestId("rail-row-host-group").textContent).toBe("devbox");
+  });
+});
+
+// The unread marker is a read signal, not a status: a session can need you with
+// nothing new to read, or carry new replies that need nothing from you.
+describe("unread marker", () => {
+  test("an unread session leads its age with the marker in both Compact and Three lines", () => {
+    const node = sessionRailNode(apiNode({ updated_at: new Date(Date.now() - 60_000).toISOString() }), {
+      unseen: true,
+    });
+    const { rerender } = render(<RailRow node={node} info={info()} actions={actions()} />);
+    const compactUnread = screen.getByTestId("rail-row-unread");
+    const compactAge = screen.getByTestId("rail-row-time");
+    expect(Boolean(compactUnread.compareDocumentPosition(compactAge) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+
+    rerender(
+      <RailFlatContext.Provider value={true}>
+        <RailRow node={node} info={info()} actions={actions()} />
+      </RailFlatContext.Provider>,
+    );
+    const flatUnread = screen.getByTestId("rail-row-unread");
+    const flatAge = screen.getByTestId("rail-row-time");
+    expect(Boolean(flatUnread.compareDocumentPosition(flatAge) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
+  test("a session with nothing new to read shows no marker", () => {
+    render(<RailRow node={sessionRailNode(apiNode())} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-unread")).toBeNull();
+  });
+
+  test("a row that needs you but has been read shows the needs-you dot and no unread marker", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("rail-row-unread")).toBeNull();
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
+  });
+
+  test("a finished row with new replies shows the unread marker and no status dot", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle" }), { unseen: true })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-unread")).toBeTruthy();
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+  });
+});
+
+describe("band row counts", () => {
+  const bandNode = (band: BandRailNode["band"], count: number): BandRailNode => ({
+    id: `band:${band}`,
+    kind: "band",
+    band,
+    expanded: true,
+    children: Array.from({ length: count }, (_, idx) => sessionRailNode(apiNode({ ref: `local:${band}-${idx}` }))),
+  });
+
+  test.each([
+    { band: "needsYou" as const, count: 2 },
+    { band: "working" as const, count: 6 },
+    { band: "idle" as const, count: 1 },
+  ])("renders an uncolored inline count beside the label for $band", ({ band, count }) => {
+    render(<RailRow node={bandNode(band, count)} info={info({ hasChildren: true })} actions={actions()} />);
+    const numberEl = screen.getByTestId("rail-row-band-count");
+    expect(numberEl.textContent).toBe(String(count));
+    expect(numberEl.dataset.hue).toBeUndefined();
+    const titleLine = screen.getByTestId("rail-row-band").querySelector(`.${railStyles.titleLine}`);
+    expect(titleLine?.contains(numberEl)).toBe(true);
+    const chevron = screen.getByTestId("rail-chevron");
+    expect(Boolean(numberEl.compareDocumentPosition(chevron) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
+  test("desktop two-line session aligns the right slot with the title row above the full-width why line and keeps firstElementChild clickable", () => {
+    const rowInfo = info();
+    const node = sessionRailNode(
+      apiNode({ state: "awaiting", ask_pending: true, updated_at: new Date(Date.now() - 60_000).toISOString() }),
+      { live: "question" },
+    );
+    const { container } = render(<RailRow node={node} info={rowInfo} actions={actions()} />);
+    const row = container.querySelector<HTMLElement>("[data-session-ref]");
+    const why = screen.getByTestId("rail-row-why");
+    const age = screen.getByTestId("rail-row-time");
+    expect(row?.classList.contains(railStyles.stackedRow as string)).toBe(true);
+    expect(row?.firstElementChild?.classList.contains(railStyles.textCol as string)).toBe(true);
+    expect(row?.firstElementChild?.contains(screen.getByTestId("rail-row-title"))).toBe(true);
+    expect(row?.firstElementChild?.contains(why)).toBe(false);
+    expect(age.closest(`.${railStyles.rightSlot}`)?.parentElement).toBe(row);
+    expect(why.closest(`.${railStyles.belowRow}`)?.parentElement).toBe(row);
+    fireEvent.click(row?.firstElementChild as HTMLElement);
+    expect(rowInfo.activate).toHaveBeenCalledTimes(1);
   });
 });

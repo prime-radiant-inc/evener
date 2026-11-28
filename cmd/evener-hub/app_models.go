@@ -128,6 +128,20 @@ func sourceForModelHarness(sources *appsource.Registry, harness string) (appsour
 	return source, nil
 }
 
+// launchModelsCacheKey normalizes a working directory so model/list (raw CWD)
+// and prepareLocalSpawn (canonicalized CWD) share one cache entry across
+// trailing slashes and symlinks (including /var -> /private/var on macOS).
+func launchModelsCacheKey(workingDir string) string {
+	trimmed := strings.TrimSpace(workingDir)
+	if trimmed == "" {
+		return ""
+	}
+	if canonical, err := hubCanonicalizeDir(trimmed); err == nil {
+		return canonical
+	}
+	return trimmed
+}
+
 // fetchLaunchModels serves the evener launch model list from a per-working-dir
 // cache, generation-gated like fetchLiveModels: a registry Reload or live
 // re-apply bumps the holder generation and retires the entry. A cold key blocks
@@ -142,11 +156,12 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string, re
 		// cached entry could never be invalidated, so don't cache.
 		return evenerLaunchModelList(ctx, s.cfg, workingDir)
 	}
+	cacheKey := launchModelsCacheKey(workingDir)
 	// Snapshot the entry under the lock, then clone it outside: the cache
 	// replaces an entry rather than mutating one in place, so the snapshot
 	// stays valid after the unlock.
 	s.launchModels.mu.Lock()
-	entry := s.launchModels.entries[workingDir]
+	entry := s.launchModels.entries[cacheKey]
 	s.launchModels.mu.Unlock()
 	if entry == nil || refresh {
 		// A shared load runs on the server lifetime, not this request's context:
@@ -157,7 +172,7 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string, re
 		}
 		loadCtx, cancel := launchModelsFetchContext(s.lifetime)
 		defer cancel()
-		return s.loadLaunchModels(loadCtx, workingDir, gen, refresh)
+		return s.loadLaunchModelsKeyed(loadCtx, cacheKey, workingDir, gen, refresh)
 	}
 	// The launch list shares the live list's TTL: both track the same provider
 	// inventory, and a picker open past it refreshes the list.
@@ -166,8 +181,8 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string, re
 	}
 	// Stale: serve it now and refresh behind the request, so a picker open pays
 	// the live listing once per key rather than on every open.
-	if s.beginLaunchModelsRefresh(workingDir) {
-		s.startLaunchRefresh(workingDir, gen, entry.resp)
+	if s.beginLaunchModelsRefresh(cacheKey) {
+		s.startLaunchRefresh(cacheKey, gen, entry.resp)
 	}
 	return cloneModelListResponse(entry.resp), nil
 }
@@ -223,14 +238,18 @@ func (s *WebServer) endLaunchModelsRefresh(workingDir string) {
 // answer, collapsing concurrent callers onto one child. A failed load caches
 // nothing, so the next request retries instead of serving an empty list.
 func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen uint64, refresh bool) (appwire.ModelListResponse, error) {
-	v, err, _ := s.launchModels.loading.Do(workingDir, func() (any, error) {
+	return s.loadLaunchModelsKeyed(ctx, launchModelsCacheKey(workingDir), workingDir, gen, refresh)
+}
+
+func (s *WebServer) loadLaunchModelsKeyed(ctx context.Context, cacheKey, workingDir string, gen uint64, refresh bool) (appwire.ModelListResponse, error) {
+	v, err, _ := s.launchModels.loading.Do(cacheKey, func() (any, error) {
 		// Re-check the cache inside the flight: a caller that read the cache
 		// before a concurrent flight published its entry reaches this group only
 		// after that flight cleared — singleflight deletes the key after the
 		// store — so serve the entry the flight just filled instead of spawning
 		// a second launch check.
 		s.launchModels.mu.Lock()
-		entry := s.launchModels.entries[workingDir]
+		entry := s.launchModels.entries[cacheKey]
 		s.launchModels.mu.Unlock()
 		if !refresh && entry != nil && entry.gen == gen && time.Since(entry.filledAt) < liveModelsTTL {
 			return entry.resp, nil
@@ -239,7 +258,7 @@ func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen
 		if err != nil {
 			return nil, err
 		}
-		s.storeLaunchModels(workingDir, gen, resp)
+		s.storeLaunchModels(cacheKey, gen, resp)
 		return resp, nil
 	})
 	if err != nil {
@@ -369,9 +388,35 @@ func cloneModelDescriptors(models []appwire.ModelDescriptor) []appwire.ModelDesc
 }
 
 func validateEvenerLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref cmdutil.ModelRef, workingDir string) error {
-	contract, err := evenerLaunchModelList(ctx, cfg, workingDir)
-	if err != nil || (len(contract.Data) == 0 && len(contract.Diagnostics) == 0) {
+	if !hasEvenerLaunchModelLister(cfg) {
+		return nil
+	}
+	if cfg.LaunchModels == nil {
+		contract, err := evenerLaunchModelList(ctx, cfg, workingDir)
+		if err != nil {
+			return nil //nolint:nilerr // fail open: if the model list can't be enumerated, don't block launch
+		}
+		return checkEvenerLaunchModel(cfg, ref, contract)
+	}
+	contract, err := cfg.LaunchModels(ctx, workingDir, false)
+	if err != nil {
 		return nil //nolint:nilerr // fail open: if the model list can't be enumerated, don't block launch
+	}
+	if err := checkEvenerLaunchModel(cfg, ref, contract); err == nil {
+		return nil
+	}
+	// Confirm a refusal against a cached contract with one live refresh so a
+	// newly added model is never rejected by a stale snapshot.
+	fresh, err := cfg.LaunchModels(ctx, workingDir, true)
+	if err != nil {
+		return nil //nolint:nilerr // fail open: if the model list can't be enumerated, don't block launch
+	}
+	return checkEvenerLaunchModel(cfg, ref, fresh)
+}
+
+func checkEvenerLaunchModel(cfg hubcore.WebConfig, ref cmdutil.ModelRef, contract appwire.ModelListResponse) error {
+	if len(contract.Data) == 0 && len(contract.Diagnostics) == 0 {
+		return nil
 	}
 	providerEnumerated := false
 	for _, model := range contract.Data {
@@ -617,9 +662,10 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		}
 		// The listing is an authenticated request like every other hub
 		// fetch: bind this client's own registry root (see
-		// withScopedCodexAuth) so a custom root reads its own Codex
+		// withScopedOAuthAuth) so a custom root reads its own OAuth
 		// record instead of the process default's.
-		listCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), instanceLiveListTimeout)
+		listCtx, cancel := context.WithTimeout(withScopedOAuthAuth(ctx, client.Registry()),
+			llm.LiveModelListTimeout)
 		listing, listErr := client.Models(listCtx, inst.Name)
 		cancel()
 		// An instance the hub's registry does not hold has no probe here,

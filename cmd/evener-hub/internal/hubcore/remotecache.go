@@ -50,7 +50,7 @@ type RemoteThreadCache struct {
 	// shape hostreg's registry chose: one cache-wide monotonic counter,
 	// per-name state only for live names. A refresh walk captures a source's
 	// generation immediately before it reads that source, and
-	// StoreWalkSnapshot rejects the source's rows when the generation moved
+	// Store rejects the source's rows when the generation moved
 	// underneath the read, so neither a remove — the entry drops, and an
 	// absent source mismatches every capture — nor a remove/re-add — the
 	// re-registration assigns a strictly newer generation — can publish the
@@ -67,63 +67,19 @@ type RemoteThreadCache struct {
 // source immediately without lock inversion.
 func (c *RemoteThreadCache) SetOnChange(fn func()) { c.mu.Lock(); c.onChange = fn; c.mu.Unlock() }
 
-func (c *RemoteThreadCache) Store(threads []appwire.Thread) {
-	c.StoreSnapshot(threads, true)
-}
-
-// StoreSnapshot stores rows with compatibility source inference. Production's
-// refresh path uses StoreWalkSnapshot so source ownership, row quality, and
-// the walk's captured identity generations are published together with the
-// same atomic generation.
-func (c *RemoteThreadCache) StoreSnapshot(threads []appwire.Thread, complete bool) {
-	c.StoreSnapshotData(RemoteThreadSnapshot{
-		Threads:  threads,
-		Complete: complete,
-		Sources:  inferRemoteSources(threads, complete),
-	})
-}
-
-// StoreSnapshotData atomically publishes all remote snapshot metadata as one
-// generation. The caller's generation is ignored because the cache owns the
-// monotonic sequence used by tree memoization.
+// Store atomically publishes snapshot as one unit, assigning a monotonic
+// Generation (ignoring any caller Generation) and invoking onChange outside the
+// cache lock when the normalized snapshot changes.
 //
-// This is the walk-metadata-free publish: nothing is filtered, because it
-// carries no capture at all — with no captured generations there is no
-// evidence a source's identity moved under the rows. The production refresh
-// path publishes through StoreWalkSnapshot, which carries the generations the
-// walk captured and drops rows a removal or remove/re-add has made stale.
-func (c *RemoteThreadCache) StoreSnapshotData(snapshot RemoteThreadSnapshot) {
-	c.publish(snapshot, nil)
-}
-
-// StoreWalkSnapshot publishes one refresh walk's result the way the background
-// refresher does: sourceGenerations is the per-source identity map the walk
-// captured at READ time — each source's generation taken immediately before
-// the walk read it (SourceGeneration). Under the publish lock, every row and
-// per-source entry the walk attributed to a source whose current generation
-// differs from the one it was read under is dropped: a walk that read a source
-// before a remove cannot republish the removed host's rows when it finishes,
-// and a walk that read before a remove/re-add cannot publish the old
-// registration's rows under the re-added name.
-//
-// A source the walk did not capture is dropped unconditionally. The
-// production walk captures every source it reads, so an uncaptured row owner
-// means no registration is known to own the rows: the source was already
-// removed when the walk read it (its registry snapshot lagged the removal),
-// or the publish names a source the walk never read. "Currently live" cannot
-// prove ownership: an add → read → remove → re-add inside one walk leaves the
-// rows belonging to the first registration, which the churn replaced before
-// the publish. The immediacy a live-check would serve is carried by the
-// read-time capture instead: a source that registers mid-walk is captured
-// when the walk reads it, under the registration that owns the rows, and
-// still publishes on that tick.
-func (c *RemoteThreadCache) StoreWalkSnapshot(snapshot RemoteThreadSnapshot, sourceGenerations map[string]uint64) {
-	c.publish(snapshot, sourceGenerations)
-}
-
-func (c *RemoteThreadCache) publish(snapshot RemoteThreadSnapshot, captured map[string]uint64) {
+// When sourceGenerations is nil, no per-source staleness filtering runs. When
+// non-nil (the background refresher path, which captures each source's
+// generation via SourceGeneration immediately before reading it), every row and
+// per-source entry whose source is uncaptured or whose current generation differs
+// from sourceGenerations[sourceID] is dropped before publishing. Tombstoned
+// entries remain exempt until that source name registers again.
+func (c *RemoteThreadCache) Store(snapshot RemoteThreadSnapshot, sourceGenerations map[string]uint64) {
 	c.mu.Lock()
-	snapshot = c.withoutStaleSources(snapshot, captured)
+	snapshot = c.withoutStaleSources(snapshot, sourceGenerations)
 	previous := c.snapshot
 	previous = normalizeRemoteThreadSnapshot(previous)
 	snapshot = normalizeRemoteThreadSnapshot(snapshot)
@@ -145,8 +101,8 @@ func (c *RemoteThreadCache) publish(snapshot RemoteThreadSnapshot, captured map[
 // source registers — every configured entry at startup and every runtime add — and
 // the source registry's construction does it for configured hosts, so the
 // cache knows which registration of the name a walk is walking: RemoveSource
-// deletes the entry, a re-add assigns a strictly newer generation, and
-// StoreWalkSnapshot compares the two to reject a walk captured under a stale
+// deletes the entry, a re-add assigns a strictly newer generation, and Store
+// compares the two to reject a walk captured under a stale
 // registration. Without the comparison, a refresh that started before a
 // remove/re-add published the old host's rows under the new host's identity.
 // Registering a name that is already registered refreshes its generation
@@ -168,19 +124,6 @@ func (c *RemoteThreadCache) RegisterSource(sourceID string) {
 	}
 	c.generations[sourceID] = c.nextGeneration
 	c.mu.Unlock()
-}
-
-// SourceGenerations returns a copy of the per-source identity generations.
-// The background walk captures each source's generation at read time via
-// SourceGeneration instead — a copy taken before the walk started reading
-// could not tell a mid-walk remove/re-add from a fresh registration — so
-// this whole-map view serves callers that need every registration at once.
-func (c *RemoteThreadCache) SourceGenerations() map[string]uint64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	generations := make(map[string]uint64, len(c.generations))
-	maps.Copy(generations, c.generations)
-	return generations
 }
 
 // SourceGeneration returns sourceID's current identity generation and whether
@@ -209,15 +152,14 @@ func (c *RemoteThreadCache) SourceGeneration(sourceID string) (uint64, bool) {
 //
 // The removal also deletes the source's registration generation: a refresh that
 // was walking while the remove committed holds a capture of the old
-// generation, and StoreWalkSnapshot rejects every captured source whose
+// generation, and Store rejects every captured source whose
 // registration is gone — an absent source mismatches any capture — so the late
 // publish cannot republish the removed host's rows. No per-name state
 // survives the removal, so the cache's bookkeeping stays bounded by the live
-// source set. Row ownership follows the same rule
-// StoreSnapshot's source inference uses: the row's Source when it carries one,
-// else its parsed ref. An empty ID does nothing; a source the cache holds no
+// source set. Row ownership uses the row's Source when it carries one, else its
+// parsed ref. An empty ID does nothing; a source the cache holds no
 // rows for loses only its generation — the snapshot rewrite stays a no-op
-// prune that publishes no generation, mirroring publish's no-op discipline.
+// prune that publishes no generation, mirroring Store's no-op discipline.
 func (c *RemoteThreadCache) RemoveSource(sourceID string) {
 	if sourceID == "" {
 		return
@@ -279,11 +221,8 @@ func (c *RemoteThreadCache) RemoveSource(sourceID string) {
 // it and still publishes on that tick. Callers hold mu.
 func (c *RemoteThreadCache) withoutStaleSources(snapshot RemoteThreadSnapshot, captured map[string]uint64) RemoteThreadSnapshot {
 	if captured == nil {
-		// The walk-free publish (StoreSnapshotData) carries no capture at
-		// all: with nothing captured there is no evidence a source's identity
-		// moved under the rows, so nothing is filtered. A walk's empty
-		// capture is a map — SourceGenerations returns one, never nil — and
-		// still filters.
+		// A nil capture skips staleness filtering; an empty non-nil map
+		// still filters every source as uncaptured.
 		return snapshot
 	}
 	// The tombstone tags the incoming snapshot carries: a tombstone-sourced
@@ -351,11 +290,9 @@ func (c *RemoteThreadCache) withoutStaleSources(snapshot RemoteThreadSnapshot, c
 
 // remoteThreadSourceID resolves the source a snapshot walk attributed thread
 // to: the row's own Source when it carries one, else its parsed ref's
-// source ID. It is the one definition of row ownership — the staleness test
-// and the ownership rule below and the source inference
-// (inferRemoteSources) all resolve through it, so they cannot disagree
-// about which source owns a row. ok is false when neither carries a usable
-// source (a ref that fails to parse).
+// source ID. Both the staleness test and the ownership rule below resolve
+// through it, so they cannot disagree about which source owns a row. ok is
+// false when neither carries a usable source (a ref that fails to parse).
 func remoteThreadSourceID(thread appwire.Thread) (string, bool) {
 	if thread.Source != "" {
 		return thread.Source, true
@@ -424,21 +361,6 @@ func (c *RemoteThreadCache) Generation() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.snapshot.Generation
-}
-
-func inferRemoteSources(threads []appwire.Thread, complete bool) map[string]RemoteSourceSnapshot {
-	sources := make(map[string]RemoteSourceSnapshot)
-	for _, thread := range threads {
-		sourceID, _ := remoteThreadSourceID(thread)
-		if sourceID == "" {
-			continue
-		}
-		source := sources[sourceID]
-		source.Threads = append(source.Threads, thread)
-		source.Complete = complete
-		sources[sourceID] = source
-	}
-	return sources
 }
 
 func cloneRemoteThreadSnapshot(snapshot RemoteThreadSnapshot) RemoteThreadSnapshot {

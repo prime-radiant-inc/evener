@@ -8,7 +8,7 @@ import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import type { SearchResult } from "@evener/appwire-client";
 import { countSearchMatches } from "@evener/appwire-client";
 import { useConnection } from "../ConnectionProvider";
-import type { DraftLibrary } from "../draftLibrary";
+import { workspaceSessionPath } from "../location";
 import { isReady } from "../connectionDisplay";
 import { createBoardController } from "../board/boardData";
 import { type SearchScope, createSearchController, sessionResults } from "../board/boardSearch";
@@ -21,27 +21,15 @@ import { destructiveButton } from "../haptics";
 import { SearchField } from "../sheet/SearchField";
 import { SymbolView } from "expo-symbols";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { placeSharedText } from "./placeShare";
 import { type SharedPayload } from "./sharePayload";
 
 export interface ShareTargetSheetProps {
 	navigation: {
-		/** Replaces this sheet with the destination: a pushed screen would
-		 * leave the consumed share underneath it, one Back from placing the
-		 * same text again. */
-		replace(name: string, params?: object): void;
 		goBack(): void;
 		setOptions?(options: object): void;
 	};
 	route: { params: { item: SharedPayload } };
-	/** The app's one draft registry, so the sheet writes the same document the
-	 * session screen will read. */
-	drafts: DraftLibrary;
-	/** The share is safely in a draft: the app drops its file and moves on. */
-	onPlaced(item: SharedPayload): void;
-	/** The share went with the New session sheet, which seeds the prompt and
-	 * completes the share itself. The file stays until that seed lands. */
-	onHandedOff?(item: SharedPayload): void;
+	onChoose(hubId: string, path: string, item: SharedPayload): void;
 	/** The sheet went away, chosen or not: the intake may offer the next share.
 	 * This is the swipe-down path too, which no callback of its own reports. */
 	onClosed?(): void;
@@ -50,20 +38,11 @@ export interface ShareTargetSheetProps {
 	onDiscarded?(item: SharedPayload): void;
 }
 
-export function ShareTargetSheet({
-	navigation,
-	route,
-	drafts,
-	onPlaced,
-	onHandedOff,
-	onClosed,
-	onDiscarded,
-}: ShareTargetSheetProps) {
+export function ShareTargetSheet({ navigation, route, onChoose, onClosed, onDiscarded }: ShareTargetSheetProps) {
 	const { item } = route.params;
 	const { activeProfile, client, state, fatal } = useConnection();
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const [error, setError] = useState<string | null>(null);
 	const connected = isReady(state) && activeProfile !== null;
 	const hubId = activeProfile?.id ?? "";
 	// A sheet dismissed by a swipe unmounts with nothing else to say so.
@@ -98,29 +77,16 @@ export function ShareTargetSheet({
 	const quiet = new Set(bands.idle.map((item) => item.row.ref));
 	const usual = usualPlace(boardSnapshot.live.rows);
 
-	// A place that took the text: drop the share, then show the destination.
-	function placed() {
-		setError(null);
-		onPlaced(item);
-	}
-
-	function openSession(ref: string, title: string) {
-		const document = drafts.open({ hubId, sessionRef: ref });
-		if (!placeSharedText(document, item)) {
-			setError("Your draft couldn't be saved on this device, so the share is still here. Try again.");
-			return;
-		}
-		placed();
-		navigation.replace("Conversation", { hubId, ref, title });
+	function openSession(ref: string) {
+		onChoose(hubId, workspaceSessionPath(ref), item);
 	}
 
 	function startNew() {
-		onHandedOff?.(item);
-		navigation.replace("NewSession", { hubId, hubName: activeProfile?.name ?? "", share: item });
+		onChoose(hubId, "/new", item);
 	}
 
 	function openResult(result: SearchResult) {
-		openSession(result.ref, result.title);
+		openSession(result.ref);
 	}
 
 	/** Cancel drops the share, and only after asking: a swipe-down without a
@@ -213,15 +179,6 @@ export function ShareTargetSheet({
 			<View style={{ marginHorizontal: 16, marginVertical: 8 }}>
 				<SearchField label="Search sessions" value={searchSnapshot.query} onChangeText={search.setQuery} />
 			</View>
-			{error ? (
-				<Text
-					testID="share-error"
-					allowFontScaling={allowFontScaling}
-					style={{ marginHorizontal: 16, marginVertical: 8, fontSize: 14 * scale, color: palette.dangerInk }}
-				>
-					{error}
-				</Text>
-			) : null}
 			{!connected && !fatal ? (
 				<Text
 					allowFontScaling={allowFontScaling}
@@ -262,7 +219,7 @@ export function ShareTargetSheet({
 							hasDraft={false}
 							msSinceRead={null}
 							now={Date.now()}
-							onOpen={(row) => openSession(row.ref, row.title)}
+							onOpen={(row) => openSession(row.ref)}
 						/>
 					))}
 				</>

@@ -1,101 +1,42 @@
-/* A folded run of settled tool calls (critique R9, toolRuns.ts): one row of
- * the tool card it sits in (styles/surface.module.css draws the card on this
- * element). The collapsed row is deliberately quieter than the
- * tool rows it stands in for: a count and one name, at the UI step, with the
- * same inset a tool row takes so its edge lines up with their seats. Open, it
- * is the header of the rows it stands for, which follow inside the same card
- * behind hairline dividers. The card does not clip, because a row's Open
- * control overhangs its line by more than the row's padding on a phone.
- * What paints to the card's edge takes the card's corners instead, read from
- * the segment's corner properties (styles/surface.module.css): the summary
- * while it is the whole row, and the last row of an open run, whose evidence
- * band inherits them. */
-.group {
-  min-width: 0;
-}
+/* A folded run's chevron seats in the shared icon rail so its label aligns
+ * with the calls it reveals. */
 
 .summary {
   composes: toolRowInsets from "../../../styles/surface.module.css";
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--tool-card-row-pad) var(--tool-card-inset);
-  border-radius: var(--tool-card-radius-top, 0) var(--tool-card-radius-top, 0) var(--tool-card-radius-bottom, 0)
-    var(--tool-card-radius-bottom, 0);
-  color: var(--ink-mid);
+  padding: var(--tool-card-row-pad) 0;
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
-  cursor: pointer;
-  /* Suppress the UA's own disclosure triangle: this summary draws the app's
-   * shared Chevron instead (widgets/chevron). */
-  list-style: none;
 }
 
-.group[open] > .summary {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
+.railChevron {
+  composes: seat from "../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class */
+  composes: gutterPull from "../../../styles/railseat.module.css";
+  align-self: center;
 }
 
-.summary::-webkit-details-marker {
-  display: none;
-}
-
-.summary:hover {
-  background: var(--hover-1);
-}
-
-/* Inset: the summary spans the card, so an outset ring would sit on its edge. */
 .summary:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
   border-radius: var(--radius-control);
 }
 
 /* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
- * the summary is the one control that opens a folded run, so it takes the
- * same --tap-min widgets/disclosure's summary does. min-height, not height,
- * so the desktop row keeps its own rhythm. */
+ * the summary is the one control that opens a folded run. Disclosure's summary
+ * states the same floor, but this row keeps its own declaration because
+ * styles/display-gates.test.ts pins it here and the row's geometry is owned
+ * here; both declarations set the same --tap-min. min-height, not height, so
+ * the desktop row keeps its own rhythm. */
 @media (max-width: 899px) {
   .summary {
     min-height: var(--tap-min);
   }
 }
 
-/* The chevron turns to point down when the run opens - the same rotation
- * toolcallitem.module.css gives a tool row's own chevron, so one disclosure
- * gesture reads the same everywhere in the transcript. */
-.chevron {
-  display: inline-flex;
-  flex: none;
-  color: var(--ink-mid);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .chevron > svg {
-    transition: transform var(--motion-duration-hover) var(--motion-easing-standard);
-  }
-}
-
-.chevron[data-open="true"] > svg {
-  transform: rotate(90deg);
-}
-
 .label {
+  composes: truncate from "../../../styles/text.module.css";
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
-/* The rows of an open run: divided from each other by the card's rows rule,
- * and from the header above by the body's own top edge. */
+/* Place the first expanded call directly below the summary. */
 .body {
-  composes: groupedRows from "../../../styles/surface.module.css";
-  border-top: 1px solid var(--edge);
-}
-
-.body,
-.body > :last-child {
-  border-bottom-left-radius: var(--tool-card-radius-bottom, 0);
-  border-bottom-right-radius: var(--tool-card-radius-bottom, 0);
+  margin-top: calc(-1 * var(--space-1));
 }

@@ -115,14 +115,24 @@ palette, Popover, Menu, HoverCard, the selection-quote bubble, Tooltip, Toast, h
 
 ### 4. Slide
 
-A surface attached to an edge of the screen: Sheet (left, right, bottom), the Sessions
-drawer, the Overview sidebar, and a phone's pane-to-pane navigation.
+A surface attached to an edge of the screen: overlay sheets (Sheet left, right, and
+bottom; the mobile Sessions drawer; the phone Overview overlay), docked shell edge panes
+(the desktop left Sessions rail, the desktop right Overview sidebar, and the tablet
+persistent Sessions board column), and a phone's pane-to-pane navigation.
 
 - Enter: translate in from the edge the surface lives on, `--motion-duration-spatial`,
   `--motion-easing-standard`.
 - Exit: translate back out to the same edge, `--motion-duration-spatial-exit`,
   `--motion-easing-exit`.
-- The distance is the surface's own size (`100%`), never a pixel constant.
+- The distance is the surface's own size (`-100%` on the left edge, `+100%` on the right
+  edge, `100%` on the bottom edge), never a pixel constant.
+- Docked shell edge panes: the desktop left Sessions rail, the desktop right Overview
+  sidebar, and the tablet persistent Sessions board column follow Slide symmetrically
+  through `src/motion` (`AnimatePresence` with `initial={false}`, `spatialTransition()`,
+  `spatialExitTransition()`). The shell container clips the overhang (`overflow-x: clip`),
+  each transition is interruptible at any point with its reveal control immediately
+  interactive, the leaving pane is `inert` and ignores pointer events while exiting, and
+  `prefers-reduced-motion: reduce` collapses both enter and exit to an instant swap.
 - Phone navigation: going deeper, the new pane slides in from the right over the old one.
   Going back, the top pane slides out to the right and reveals the pane beneath. Going back
   is a pane change the top bar's Back caused. Going deeper is any other change the user
@@ -143,7 +153,7 @@ User-initiated geometry: something the user resized, folded or opened changes sh
 place. These are the only places a layout property is animated.
 
 - The composer folding and unfolding (height).
-- An expandable bottom sheet growing to full height (height).
+- The inline Goal editor in Overview → About unfolding and folding its action bar (height, keeping the goal text itself stationary at zero shift while its field border responds on `--motion-duration-hover` and its action row reveals via `bodyReveal`).
 - A zoom column opening, or narrowing into its spine (width).
 - `--motion-duration-spatial`, `--motion-easing-standard`, both directions.
 - Spatial motion runs through the `src/motion` wrapper, which reads the tokens. Components
@@ -167,6 +177,24 @@ Opening a disclosure, a tool row or a folded run shows a body that was not there
 - Closing is instant. The body's space closes at once, and a fade over a collapsing box
   would lag the layout it belongs to. The chevron (recipe 6) carries the close.
 - The body never slides and its height is never animated: its size belongs to the content.
+
+## When shell and pane transitions animate
+
+- **Animates (Slide, recipe 4):** User-initiated hide and show of edge-attached surfaces:
+  overlay sheets (`Sheet`, the mobile Sessions drawer, the phone Overview overlay) and
+  docked shell edge panes (the desktop left Sessions rail, the desktop right Overview
+  sidebar, and the tablet persistent Sessions board column), plus directional phone
+  pane-to-pane navigation. Symmetric shell edges follow the same rule, so one edge never
+  slides while the opposite edge snaps.
+- **Changes immediately:**
+  - `prefers-reduced-motion: reduce`: every slide, fade, transform, and spatial geometry
+    change snaps to its end state without interpolation.
+  - Initial mount, hydration, route or layout restoration, breakpoint crossings,
+    reconnects, and incoming data or status updates (`initial={false}`): geometry never
+    animates without a direct user hide/show action.
+  - Non-edge content swaps: switching Overview or dock tabs, selecting a session or
+    settings section, opening or closing dockview panes, and non-directional phone pane
+    replacements.
 
 ## Signals
 

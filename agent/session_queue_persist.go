@@ -20,12 +20,10 @@ import (
 const queuePersistSubdir = "queues"
 
 // persistedQueues is the on-disk representation of a session's pending
-// steering and input queues. Steering and Input are kept as distinct fields
-// (rather than merged into one list) so the steer-vs-input classification of
-// each entry survives a restart alongside its order and content.
+// daemon-authored steering queue. Client input and steering live exclusively in
+// the durable client-mutation snapshot.
 type persistedQueues struct {
 	Steering []steeringMessage `json:"steering,omitempty"`
-	Input    []queuedInput     `json:"input,omitempty"`
 }
 
 // queuesFilePath returns the path a session's queue snapshot lives at.
@@ -33,18 +31,18 @@ func queuesFilePath(stateDir, id string) string {
 	return filepath.Join(stateDir, queuePersistSubdir, id+".json")
 }
 
-// saveQueues writes the given queues to <stateDir>/queues/<id>.json
-// durably and atomically (fsatomic.Write), matching TaskStore.save's pattern. An
-// empty snapshot (both slices empty) removes the file instead of writing an
-// empty-array residue, so "no queued messages" is absent, not noise. A blank
+// saveQueues writes the given daemon steering queue to
+// <stateDir>/queues/<id>.json durably and atomically (fsatomic.Write), matching
+// TaskStore.save's pattern. An empty slice removes the file instead of writing
+// an empty-array residue, so "no queued steering" is absent, not noise. A blank
 // stateDir (state persistence disabled, e.g. ephemeral `evener run`) is a no-op,
 // matching maybeAutoSave's own convention.
-func saveQueues(stateDir, id string, steering []steeringMessage, input []queuedInput) error {
+func saveQueues(stateDir, id string, steering []steeringMessage) error {
 	if stateDir == "" {
 		return nil
 	}
 	path := queuesFilePath(stateDir, id)
-	if len(steering) == 0 && len(input) == 0 {
+	if len(steering) == 0 {
 		if err := fsatomic.Remove(path); err != nil {
 			return fmt.Errorf("remove empty queue snapshot: %w", err)
 		}
@@ -53,7 +51,7 @@ func saveQueues(stateDir, id string, steering []steeringMessage, input []queuedI
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create queues dir: %w", err)
 	}
-	data, err := json.Marshal(persistedQueues{Steering: steering, Input: input})
+	data, err := json.Marshal(persistedQueues{Steering: steering})
 	if err != nil {
 		return fmt.Errorf("marshal queues: %w", err)
 	}
@@ -63,26 +61,26 @@ func saveQueues(stateDir, id string, steering []steeringMessage, input []queuedI
 	return nil
 }
 
-// loadQueues reads a session's persisted queue snapshot. A missing file
-// (never persisted, or drained to empty before the last exit) is not an
-// error: it returns two nil slices, exactly the zero-value queues a fresh
-// session starts with.
-func loadQueues(stateDir, id string) ([]steeringMessage, []queuedInput, error) {
+// loadQueues reads a session's persisted daemon steering snapshot. A missing
+// file (never persisted, or drained to empty before the last exit) is not an
+// error: it returns a nil slice, the zero-value steering queue a fresh session
+// starts with.
+func loadQueues(stateDir, id string) ([]steeringMessage, error) {
 	if stateDir == "" {
-		return nil, nil, nil
+		return nil, nil
 	}
 	data, err := os.ReadFile(queuesFilePath(stateDir, id))
 	if os.IsNotExist(err) {
-		return nil, nil, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("read queues: %w", err)
+		return nil, fmt.Errorf("read queues: %w", err)
 	}
 	var snap persistedQueues
 	if err := json.Unmarshal(data, &snap); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal queues: %w", err)
+		return nil, fmt.Errorf("unmarshal queues: %w", err)
 	}
-	return snap.Steering, snap.Input, nil
+	return snap.Steering, nil
 }
 
 // persistQueuesSnapshot writes only daemon-authored steering to the legacy
@@ -109,7 +107,7 @@ func (s *Session) persistQueuesSnapshot() {
 	stateDir := s.stateDir
 	id := s.id
 	s.mu.Unlock()
-	if err := saveQueues(stateDir, id, steering, nil); err != nil {
+	if err := saveQueues(stateDir, id, steering); err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("queue persist failed: %v", err)})
 	}
 }
