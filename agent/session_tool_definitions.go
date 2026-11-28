@@ -373,13 +373,10 @@ func (s *Session) isDeferredToolLocked(canonicalName string) bool {
 }
 
 func (s *Session) hasDeferredToolsLocked() bool {
-	if s == nil || s.reg == nil {
+	if s == nil {
 		return false
 	}
-	if s.toolDefsGen > 0 {
-		return len(s.cachedDeferredFullDefs) > 0
-	}
-	return slices.ContainsFunc(s.reg.Names(), s.isDeferredToolLocked)
+	return len(s.cachedDeferredFullDefs) > 0
 }
 
 // deferredToolStub returns the minimal static open-object stub for a
@@ -403,7 +400,6 @@ func (s *Session) rebuildToolDefsCache() {
 		if s != nil {
 			s.cachedToolDefs = nil
 			s.cachedDeferredFullDefs = nil
-			s.cachedAdvertisedTier1 = nil
 			s.cachedToolDefsJSONBytes = 0
 			s.toolDefsGen++
 		}
@@ -506,6 +502,9 @@ func (s *Session) rebuildToolDefsCache() {
 		if included[td.Name] {
 			continue
 		}
+		if td.Name == "tool_search" && !s.resultToolOwnsToolSearch() {
+			continue
+		}
 		// Never expose both apply_patch and edit_file in the same session; both
 		// stay registered in s.reg for mid-session model switching.
 		if (td.Name == "apply_patch" && included["edit_file"]) || (td.Name == "edit_file" && included["apply_patch"]) {
@@ -536,7 +535,6 @@ func (s *Session) rebuildToolDefsCache() {
 	// The registry holds what this session can call, by canonical name.
 	canMessageDelegates := s.reg.Get("delegate_send") != nil
 	deferredFull := make(map[string]llm.ToolDefinition)
-	advertisedTier1 := make(map[string]string)
 	for i := range defs {
 		canonical := canonicalToolName(defs[i].Name, nameMap)
 		if s.isDeferredToolLocked(canonical) {
@@ -559,27 +557,19 @@ func (s *Session) rebuildToolDefsCache() {
 			// advertised schema, optional in the registry's validation schema.
 			defs[i] = tool.WithIntentParameterRequired(defs[i])
 		}
-		advertisedTier1[canonical] = defs[i].Name
 	}
 	if !s.resultToolOwnsToolSearch() {
 		if len(deferredFull) == 0 {
 			s.reg.Remove("tool_search")
-			defs = slices.DeleteFunc(defs, func(td llm.ToolDefinition) bool {
-				return canonicalToolName(td.Name, nameMap) == "tool_search"
-			})
-			delete(advertisedTier1, "tool_search")
-		} else if _, advertised := advertisedTier1["tool_search"]; !advertised && s.ensureToolSearchRegisteredLocked() {
+		} else if s.ensureToolSearchRegisteredLocked() {
 			if rt := s.reg.Get("tool_search"); rt != nil {
-				td := tool.WithIntentParameterRequired(normalizeRegistryToolDefinition(rt.Definition))
-				defs = append(defs, td)
-				advertisedTier1["tool_search"] = td.Name
+				defs = append(defs, tool.WithIntentParameterRequired(normalizeRegistryToolDefinition(rt.Definition)))
 			}
 		}
 	}
 
 	s.cachedToolDefs = defs
 	s.cachedDeferredFullDefs = deferredFull
-	s.cachedAdvertisedTier1 = advertisedTier1
 	s.cachedToolDefsJSONBytes = llm.ToolsJSONBytes(defs)
 	s.toolDefsGen++
 }

@@ -60,6 +60,61 @@ func assertFullTier1Def(t *testing.T, td llm.ToolDefinition) {
 	}
 }
 
+func assertParamsRequireIntent(t *testing.T, label string, params map[string]any) {
+	t.Helper()
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s: missing properties map: %#v", label, params)
+	}
+	if _, hasIntent := props["intent"]; !hasIntent {
+		t.Fatalf("%s: properties missing intent: %#v", label, props)
+	}
+	switch req := params["required"].(type) {
+	case []string:
+		if !slices.Contains(req, "intent") {
+			t.Fatalf("%s: required %v missing intent", label, req)
+		}
+	case []any:
+		if !slices.ContainsFunc(req, func(v any) bool { s, ok := v.(string); return ok && s == "intent" }) {
+			t.Fatalf("%s: required %v missing intent", label, req)
+		}
+	default:
+		t.Fatalf("%s: missing required list containing intent: %#v", label, params["required"])
+	}
+}
+
+func assertReactiveDisclosureRequiresIntent(t *testing.T, label, text, wantTool string) {
+	t.Helper()
+	const marker = "Deferred tool schemas (call these tools directly by name):\n"
+	_, rest, ok := strings.Cut(text, marker)
+	if !ok {
+		t.Fatalf("%s: missing deferred schema disclosure header:\n%s", label, text)
+	}
+	jsonLine, _, _ := strings.Cut(rest, "</system-notification>")
+	jsonLine = strings.TrimSpace(jsonLine)
+	var items []struct {
+		Name       string         `json:"name"`
+		Required   []string       `json:"required"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(jsonLine), &items); err != nil {
+		t.Fatalf("%s: invalid reactive disclosure JSON (%v):\n%s", label, err, jsonLine)
+	}
+	for _, item := range items {
+		if item.Name != wantTool {
+			continue
+		}
+		if _, hasIntent := item.Properties["intent"]; !hasIntent {
+			t.Fatalf("%s: reactive schema for %q missing intent property: %#v", label, wantTool, item.Properties)
+		}
+		if !slices.Contains(item.Required, "intent") {
+			t.Fatalf("%s: reactive schema for %q missing intent in required %v", label, wantTool, item.Required)
+		}
+		return
+	}
+	t.Fatalf("%s: reactive disclosure did not contain %q:\n%s", label, wantTool, jsonLine)
+}
+
 func TestDeferredToolsTurn1ToolsAndPromptAvailability(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -369,6 +424,7 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 		if item.Description == "" || item.Parameters == nil || item.Parameters["properties"] == nil {
 			t.Errorf("tool_search schema for %q incomplete: %+v", item.Name, item)
 		}
+		assertParamsRequireIntent(t, "tool_search "+item.Name, item.Parameters)
 	}
 
 	// 2. Query modes: keyword query, "all", omitted, already-Tier-1, and unknown names.
@@ -421,6 +477,7 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 	if err := json.Unmarshal([]byte(wfRes.Output), &wfSchemas); err != nil || len(wfSchemas) != 1 || wfSchemas[0].Name != "web_fetch" {
 		t.Fatalf("tool_search(names=[web_fetch]) = %q (err=%v), want web_fetch schema", wfRes.Output, err)
 	}
+	assertParamsRequireIntent(t, "tool_search web_fetch", wfSchemas[0].Parameters)
 
 	t1Res := sess.execTool(tripwireCtx(t), llm.ToolCallData{
 		ID:        "ts-t1",
@@ -950,6 +1007,114 @@ func TestToolSearchSchemasStaticToolsAndOmission(t *testing.T) {
 			t.Fatal("oversize single schema job_watch must not be marked disclosed")
 		}
 	})
+
+	t.Run("tool_search_registered_once_from_final_definitions", func(t *testing.T) {
+		t.Parallel()
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+
+		// Delegate-shaped ceiling omits tool_search while keeping a deferred tool:
+		// discovery must be registered once in rebuildToolDefsCache with configured limits.
+		var delegateRegCount int
+		delCfg := SessionConfig{
+			StateDir:        t.TempDir(),
+			NonInteractive:  true,
+			TurnEndsProcess: true,
+			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+			ToolOutputLimits: map[string]schema.ToolOutputLimit{
+				"tool_search": {MaxChars: 4096, Strategy: schema.TruncHeadTail},
+			},
+		}
+		delCfg.spawn.toolNameCeiling = []string{"read_file", "web_fetch", "communicate"}
+		delCfg.testOnly.registerTool = func(reg *tool.Registry, rt tool.RegisteredTool) error {
+			if rt.Definition.Name == "tool_search" {
+				delegateRegCount++
+			}
+			return reg.Register(rt)
+		}
+		delSess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), delCfg)
+		if err != nil {
+			t.Fatalf("NewSession(delegate ceiling): %v", err)
+		}
+		defer delSess.Close()
+		if delegateRegCount != 1 {
+			t.Fatalf("tool_search registration count for delegate with deferred tool = %d, want 1", delegateRegCount)
+		}
+		if rt := delSess.reg.Get("tool_search"); rt == nil || rt.Limit.MaxChars != 4096 {
+			t.Fatalf("tool_search Limit.MaxChars = %+v, want 4096", rt)
+		}
+		var foundCore bool
+		for _, ti := range delSess.DetailedStatus().Tools {
+			if ti.Name == "tool_search" {
+				foundCore = ti.Source == "core"
+				if ti.Source != "core" {
+					t.Fatalf("DetailedStatus tool_search source = %q, want core", ti.Source)
+				}
+			}
+		}
+		if !foundCore {
+			t.Fatal("DetailedStatus missing core tool_search entry")
+		}
+		upfrontRes := delSess.execTool(tripwireCtx(t), llm.ToolCallData{
+			ID:        "ts-upfront",
+			Name:      "tool_search",
+			Type:      "function",
+			Arguments: json.RawMessage(`{"names":["read_file"],"intent":"Checking upfront tool lookup"}`),
+		}, "")
+		if upfrontRes.IsError || !strings.Contains(upfrontRes.Output, "read_file") {
+			t.Fatalf("tool_search(names=[read_file]) = isErr:%v out:%q, want upfront result", upfrontRes.IsError, upfrontRes.Output)
+		}
+
+		// Zero deferred tools: tool_search must never be registered at all.
+		var zeroRegCount int
+		zeroCfg := SessionConfig{
+			StateDir:         t.TempDir(),
+			DisableSubagents: true,
+			NonInteractive:   true,
+			TurnEndsProcess:  true,
+			AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		}
+		zeroCfg.spawn.allowedToolNames = []string{"read_file", "communicate"}
+		zeroCfg.spawn.deniedToolNames = []string{"read_transcript"}
+		zeroCfg.testOnly.registerTool = func(reg *tool.Registry, rt tool.RegisteredTool) error {
+			if rt.Definition.Name == "tool_search" {
+				zeroRegCount++
+			}
+			return reg.Register(rt)
+		}
+		zeroSess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), zeroCfg)
+		if err != nil {
+			t.Fatalf("NewSession(zero deferred): %v", err)
+		}
+		defer zeroSess.Close()
+		if zeroRegCount != 0 {
+			t.Fatalf("tool_search registration count with zero deferred tools = %d, want 0", zeroRegCount)
+		}
+
+		// Explicitly denied tool_search: must never be registered.
+		var deniedRegCount int
+		denCfg := SessionConfig{
+			StateDir:        t.TempDir(),
+			NonInteractive:  true,
+			TurnEndsProcess: true,
+			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+		}
+		denCfg.spawn.deniedToolNames = []string{"tool_search"}
+		denCfg.testOnly.registerTool = func(reg *tool.Registry, rt tool.RegisteredTool) error {
+			if rt.Definition.Name == "tool_search" {
+				deniedRegCount++
+			}
+			return reg.Register(rt)
+		}
+		denSess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), denCfg)
+		if err != nil {
+			t.Fatalf("NewSession(denied tool_search): %v", err)
+		}
+		defer denSess.Close()
+		if deniedRegCount != 0 {
+			t.Fatalf("tool_search registration count when denied = %d, want 0", deniedRegCount)
+		}
+	})
 }
 
 func TestDelegationCueAbsentWhenDelegateUnregistered(t *testing.T) {
@@ -1089,14 +1254,12 @@ func TestTier1ToolsConfigPromotionRespectsCeilings(t *testing.T) {
 	wired := wireDeferredToolDef(llm.ToolDefinition{
 		Name:        "shell",
 		Description: "run shell",
-		Parameters:  map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}, "intent": map[string]any{"type": "string"}}},
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}},
 	}, NewOpenAIProfile("gpt-5.2").ToolNameMap())
 	if wired.Name != "exec_command" {
 		t.Fatalf("wireDeferredToolDef Name = %q, want exec_command", wired.Name)
 	}
-	if _, hasIntent := wired.Parameters["properties"].(map[string]any)["intent"]; hasIntent {
-		t.Fatalf("wireDeferredToolDef kept intent property: %#v", wired.Parameters)
-	}
+	assertParamsRequireIntent(t, "wireDeferredToolDef exec_command", wired.Parameters)
 
 	t.Run("restore merges explicit Tier1Tools with saved promotions and preserves saved when omitted", func(t *testing.T) {
 		t.Parallel()
@@ -1289,6 +1452,7 @@ func TestDeferredStubDirectDispatchHooksAndSchemaDisclosure(t *testing.T) {
 			t.Fatalf("invalid manage_worktree FullOutput missing %q, got: %s", want, badRes.FullOutput)
 		}
 	}
+	assertReactiveDisclosureRequiresIntent(t, "invalid manage_worktree", badRes.Output, "manage_worktree")
 	if strings.Contains(badRes.Output, "call_tool") {
 		t.Fatalf("deferred schema disclosure must not mention call_tool: %s", badRes.Output)
 	}
@@ -1368,6 +1532,7 @@ func TestUseSkillDisclosesDeferredSchemasOnce(t *testing.T) {
 	if !strings.Contains(msgs1[0].Text, "<system-notification>") || !strings.Contains(msgs1[0].Text, `"name":"manage_worktree"`) {
 		t.Fatalf("first use_skill(using-worktrees) steering missing manage_worktree schema: %s", msgs1[0].Text)
 	}
+	assertReactiveDisclosureRequiresIntent(t, "use_skill using-worktrees", msgs1[0].Text, "manage_worktree")
 	if strings.Contains(msgs1[0].Text, "call_tool") || !strings.Contains(msgs1[0].Text, "call these tools directly by name") {
 		t.Fatalf("use_skill disclosure should direct native calls without call_tool: %s", msgs1[0].Text)
 	}

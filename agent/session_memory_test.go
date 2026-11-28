@@ -3450,21 +3450,24 @@ func TestMemorySchemaAndOutputAliases(t *testing.T) {
 		}
 		seen := 0
 		sess.mu.Lock()
+		defs := make([]llm.ToolDefinition, 0, len(pairs))
 		for name := range pairs {
 			def, ok := sess.deferredToolDefinitionLocked(name)
 			if !ok {
 				continue
 			}
-			def = tool.WithIntentParameterRequired(def)
+			defs = append(defs, def)
+		}
+		sess.mu.Unlock()
+		for _, def := range defs {
 			seen++
-			required := def.Parameters["required"].([]string)
+			required, _ := def.Parameters["required"].([]string)
 			for _, field := range []string{"scope", "intent"} {
 				if !slices.Contains(required, field) {
 					t.Fatalf("advertised %s does not require %s: %v", def.Name, field, required)
 				}
 			}
 		}
-		sess.mu.Unlock()
 		if seen != len(pairs) {
 			t.Fatalf("deferred memory tools=%d want=%d", seen, len(pairs))
 		}

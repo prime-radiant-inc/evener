@@ -521,9 +521,6 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 			return err
 		}
 	}
-	if err := s.registerToolSearch(register); err != nil {
-		return err
-	}
 	// The result tool registers LAST so its own registration sees every other
 	// intrinsic tool: a ResultToolName that names one of them is a collision,
 	// not a rename (issue #4218). Nothing here depends on communicate being

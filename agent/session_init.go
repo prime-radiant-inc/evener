@@ -1940,6 +1940,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.reg = reg
 
 	s.coreToolNames = reg.RegisteredNames()
+	s.coreToolNames["tool_search"] = true
 
 	if err := s.initMCP(); err != nil {
 		return nil, fmt.Errorf("MCP initialization: %w", err)

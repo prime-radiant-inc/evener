@@ -21,30 +21,16 @@ func (s *Session) resultToolOwnsToolSearch() bool {
 	return s != nil && s.resultToolName() == "tool_search"
 }
 
-func (s *Session) toolSearchRegisteredTool() tool.RegisteredTool {
-	return tool.RegisteredTool{
-		Definition: tool.DefToolSearch(),
-		ReadOnly:   true,
-		Exec:       s.execToolSearch,
-	}
-}
-
-func (s *Session) registerToolSearch(register func(tool.RegisteredTool) error) error {
-	if register == nil || s.resultToolOwnsToolSearch() {
-		return nil
-	}
-	return register(s.toolSearchRegisteredTool())
-}
-
 func (s *Session) ensureToolSearchRegisteredLocked() bool {
 	if s == nil || s.reg == nil || s.resultToolOwnsToolSearch() {
 		return false
 	}
+	if slices.Contains(s.cfg.spawn.deniedToolNames, "tool_search") {
+		s.reg.Remove("tool_search")
+		return false
+	}
 	if s.reg.Get("tool_search") != nil {
 		return true
-	}
-	if slices.Contains(s.cfg.spawn.deniedToolNames, "tool_search") {
-		return false
 	}
 	register := s.reg.Register
 	if s.cfg.testOnly.registerTool != nil {
@@ -52,19 +38,17 @@ func (s *Session) ensureToolSearchRegisteredLocked() bool {
 			return s.cfg.testOnly.registerTool(s.reg, rt)
 		}
 	}
-	if err := s.registerToolSearch(register); err != nil {
+	if err := register(tool.RegisteredTool{
+		Definition: tool.DefToolSearch(),
+		ReadOnly:   true,
+		Exec:       s.execToolSearch,
+	}); err != nil {
 		return false
 	}
 	if lim, ok := s.cfg.ToolOutputLimits["tool_search"]; ok {
 		s.reg.OverrideLimits(map[string]schema.ToolOutputLimit{"tool_search": lim})
 	}
 	return s.reg.Get("tool_search") != nil
-}
-
-func (s *Session) ensureToolDefsCacheLocked() {
-	if s != nil && s.reg != nil && s.toolDefsGen == 0 {
-		s.rebuildToolDefsCache()
-	}
 }
 
 // mergeTier1Tools returns saved plus any additional non-empty tool names from
@@ -97,20 +81,34 @@ func (s *Session) isDeferredTool(canonicalName string) bool {
 // deferredToolDefinitionLocked returns the live provider-facing schema for an
 // advertised deferred tool stub. Caller holds s.mu.
 func (s *Session) deferredToolDefinitionLocked(name string) (llm.ToolDefinition, bool) {
-	if s == nil || s.reg == nil {
+	if s == nil {
 		return llm.ToolDefinition{}, false
 	}
-	s.ensureToolDefsCacheLocked()
 	def, ok := s.cachedDeferredFullDefs[name]
 	return def, ok
 }
 
-// wireDeferredToolDef applies provider-visible naming and strips the optional
-// shared intent property so returned deferred schemas match wire tool names cleanly.
+// advertisedUpfrontToolNameLocked reports the provider-visible wire name of an
+// advertised non-deferred tool in cachedToolDefs. Caller holds s.mu.
+func (s *Session) advertisedUpfrontToolNameLocked(canonical string, nameMap map[string]string) (string, bool) {
+	if _, deferred := s.cachedDeferredFullDefs[canonical]; deferred {
+		return "", false
+	}
+	for _, td := range s.cachedToolDefs {
+		if canonicalToolName(td.Name, nameMap) == canonical {
+			return td.Name, true
+		}
+	}
+	return "", false
+}
+
+// wireDeferredToolDef renders a deferred tool's full schema in its
+// provider-visible wire form with the required intent parameter, matching
+// Tier-1 work tools.
 func wireDeferredToolDef(td llm.ToolDefinition, nameMap map[string]string) llm.ToolDefinition {
-	clean := tool.WithoutIntentParameter(td)
-	clean.Name = providerToolName(clean.Name, nameMap)
-	return clean
+	wired := tool.WithIntentParameterRequired(td)
+	wired.Name = providerToolName(wired.Name, nameMap)
+	return wired
 }
 
 type liveToolSchema struct {
@@ -204,7 +202,6 @@ func (s *Session) execToolSearch(_ context.Context, _ execenv.ExecutionEnvironme
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.ensureToolDefsCacheLocked()
 	nameMap := s.toolNameMap()
 	if len(s.cachedDeferredFullDefs) == 0 {
 		return tool.StateResult{Output: "No deferred tools are registered in this session."}, nil
@@ -258,7 +255,7 @@ func (s *Session) execToolSearch(_ context.Context, _ execenv.ExecutionEnvironme
 			addMatch(canonical, def)
 			continue
 		}
-		if visible, ok := s.cachedAdvertisedTier1[canonical]; ok {
+		if visible, ok := s.advertisedUpfrontToolNameLocked(canonical, nameMap); ok {
 			if !slices.Contains(alreadyTier1, visible) {
 				alreadyTier1 = append(alreadyTier1, visible)
 			}
@@ -409,18 +406,18 @@ func formatDeferredToolSchemasWithLead(leadNote string, defs []llm.ToolDefinitio
 	}
 	items := make([]compactSchema, 0, len(defs))
 	for _, td := range defs {
-		clean := tool.WithoutIntentParameter(td)
+		wired := tool.WithIntentParameterRequired(td)
 		var req any
 		var props map[string]any
-		if clean.Parameters != nil {
-			req = clean.Parameters["required"]
-			if p, ok := clean.Parameters["properties"].(map[string]any); ok && len(p) > 0 {
+		if wired.Parameters != nil {
+			req = wired.Parameters["required"]
+			if p, ok := wired.Parameters["properties"].(map[string]any); ok && len(p) > 0 {
 				props = p
 			}
 		}
 		items = append(items, compactSchema{
-			Name:        clean.Name,
-			Description: clean.Description,
+			Name:        wired.Name,
+			Description: wired.Description,
 			Required:    req,
 			Properties:  props,
 		})

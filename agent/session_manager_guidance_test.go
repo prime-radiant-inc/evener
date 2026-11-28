@@ -82,9 +82,7 @@ func TestManagerRequestAllBranches(t *testing.T) {
 						if err := json.Unmarshal([]byte(raw), &args); err != nil {
 							t.Fatal(err)
 						}
-						if index >= 0 && !root.isDeferredTool(tc.name) {
-							args["intent"] = "sentinel"
-						}
+						args["intent"] = "sentinel"
 						return compiled.Validate(args)
 					}
 					if err := validate(tc.manager); mode != "ordinary" && err != nil {

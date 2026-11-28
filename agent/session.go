@@ -1487,11 +1487,9 @@ type Session struct {
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
-	// Provider-facing full schemas for deferred stubs (by canonical name) and
-	// canonical-to-wire names for upfront Tier-1 tools advertised in cachedToolDefs.
-	// Rebuilt alongside cachedToolDefs and guarded by mu.
+	// Provider-facing full schemas for deferred stubs (by canonical name),
+	// rebuilt alongside cachedToolDefs and guarded by mu.
 	cachedDeferredFullDefs map[string]llm.ToolDefinition
-	cachedAdvertisedTier1  map[string]string
 	// cachedToolDefsJSONBytes is cachedToolDefs' serialized length, measured
 	// where the defs are built so the token estimator can price them without
 	// re-serializing the list every round (#6406). It is written only where
