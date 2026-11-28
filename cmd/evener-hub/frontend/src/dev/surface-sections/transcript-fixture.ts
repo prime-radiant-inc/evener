@@ -130,6 +130,26 @@ export function makeEditorialTranscriptModel() {
         },
       ],
     },
+    {
+      id: "editorial_user_blocks",
+      status: "completed",
+      items: [
+        {
+          id: "editorial_user_code_msg",
+          turnId: "editorial_user_blocks",
+          type: "userMessage",
+          status: "completed",
+          text: "```javascript\n0\n```",
+        },
+        {
+          id: "editorial_user_hr_msg",
+          turnId: "editorial_user_blocks",
+          type: "userMessage",
+          status: "completed",
+          text: "---",
+        },
+      ],
+    },
   ];
   return model;
 }

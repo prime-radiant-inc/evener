@@ -34,6 +34,11 @@ export default function assert({ measurements, surfaces, collapsedFailure }) {
       failures.push(`${id}: wide 5-column user table unexpectedly collapsed or reflowed (bubble ${m.tableBubbleWidth}px, reflowed ${m.tableReflowed})`);
     if (m.width < 900 && m.tableBubbleWidth < 260)
       failures.push(`${id}: narrow 5-column user table collapsed to ${m.tableBubbleWidth}px`);
+    if (m.codeLangOverlap || m.codeLangClippedLeft || m.codeBubbleWidth < 200)
+      failures.push(
+        `${id}: fenced code user bubble collided or collapsed (width ${m.codeBubbleWidth}px, overlap ${m.codeLangOverlap}, clippedLeft ${m.codeLangClippedLeft})`,
+      );
+    if (m.hrWidth < 160) failures.push(`${id}: standalone hr user bubble collapsed (hr width ${m.hrWidth}px)`);
     if (m.userSize !== (m.scale === "xl" ? "20px" : "16px"))
       failures.push(`${id}: reading preference did not scale: ${m.userSize}`);
     const expectedLineHeight = (m.scale === "xl" ? 29 : 23.2) * (m.density === "comfortable" ? 1.25 : 1);

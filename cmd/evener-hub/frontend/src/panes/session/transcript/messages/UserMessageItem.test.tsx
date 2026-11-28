@@ -233,6 +233,9 @@ test("delivered user bubbles paint white on accent-fill while leaving agent and 
   expect(deliveredBody).toMatch(/--mermaid-surface:\s*var\(--surface-1\)/);
   expect(deliveredBody).toMatch(/--mermaid-radius:\s*var\(--radius-pane\)/);
   expect(deliveredBody).toMatch(/--mermaid-pad:\s*var\(--space-2\)/);
+  expect(css).toMatch(
+    /\.provisional\s+\.body:has\(pre,\s*hr,\s*table\),\s*\.message\[data-speaker="user"\]:not\(\.provisional\)\s+\.body:has\(pre,\s*hr,\s*table\)\s*\{[^}]*width:\s*100%/,
+  );
   expect(css).not.toMatch(/\.message\[data-speaker="user"\]:not\(\.provisional\)\s+\.text\s*\{/);
 });
 

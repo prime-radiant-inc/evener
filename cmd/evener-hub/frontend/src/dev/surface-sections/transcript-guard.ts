@@ -132,6 +132,18 @@ export async function measureEditorialTranscript() {
             const rect = cell.getBoundingClientRect();
             return { width: rect.width, height: rect.height };
           });
+          const codeBubble = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]:has(pre)'));
+          const codeEl = required(codeBubble.querySelector<HTMLElement>("pre code"));
+          const codeLang = required(codeBubble.querySelector<HTMLElement>("span"));
+          const codeRect = codeEl.getBoundingClientRect();
+          const langRect = codeLang.getBoundingClientRect();
+          const codeOverlap =
+            langRect.left < codeRect.right &&
+            langRect.right > codeRect.left &&
+            langRect.top < codeRect.bottom &&
+            langRect.bottom > codeRect.top;
+          const hrBubble = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]:has(hr)'));
+          const hrEl = required(hrBubble.querySelector<HTMLElement>("hr"));
           const agent = host.querySelector<HTMLElement>('[data-testid="agent-bubble"] p');
           const quote = required(host.querySelector<HTMLElement>('[data-testid="subagent-quote"]'));
           const card = required(quote.closest<HTMLElement>('[data-testid="subagent-row"]'));
@@ -170,6 +182,10 @@ export async function measureEditorialTranscript() {
             tableBubbleWidth: tableBubble.getBoundingClientRect().width,
             tableReflowed: getComputedStyle(tableHead).position === "absolute",
             tableCells,
+            codeBubbleWidth: codeBubble.getBoundingClientRect().width,
+            codeLangOverlap: codeOverlap,
+            codeLangClippedLeft: langRect.left < codeBubble.getBoundingClientRect().left,
+            hrWidth: hrEl.getBoundingClientRect().width,
             agentLineHeight: agent && getComputedStyle(agent).lineHeight,
             agentFont: agent && getComputedStyle(agent).fontFamily,
             quoteFont: getComputedStyle(quote).fontFamily,

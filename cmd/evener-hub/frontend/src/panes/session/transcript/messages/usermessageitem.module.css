@@ -199,6 +199,17 @@
   position: relative;
 }
 
+/* Column-spanning markdown blocks (fenced code, horizontal rules, tables) have
+ * either no intrinsic inline size (hr, container-type tables) or an overlay
+ * language header (CodeBlock) that collides with short snippets when shrunk to
+ * fit-content. Expand only bubbles carrying those blocks to the reading column
+ * while short prose bubbles stay fit-content. Declared after .provisional .body
+ * in ascending specificity order. */
+.provisional .body:has(pre, hr, table),
+.message[data-speaker="user"]:not(.provisional) .body:has(pre, hr, table) {
+  width: 100%;
+}
+
 .provisional .railmark {
   position: absolute;
   left: -12px;
