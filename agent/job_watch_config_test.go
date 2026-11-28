@@ -132,6 +132,17 @@ func TestTerminalCatchupRejectsForwardedNestedTarget(t *testing.T) {
 	if len(notified) != 0 {
 		t.Fatalf("nested-owned terminal target must enqueue nothing; got %+v", notified)
 	}
+
+	progRes, progErr := jm.configureWatch(watchArgs{Target: "job_nested", ProgressIntervalMS: 5000})
+	if progErr == nil || !strings.HasPrefix(progErr.Error(), "target_terminal:") {
+		t.Fatalf("nested-owned terminal progress watch = (%+v, %v), want target_terminal", progRes, progErr)
+	}
+	if progRes.TerminalCatchup || progRes.Fired || jm.watchCount() != 0 {
+		t.Fatalf("nested-owned terminal progress watch must not catch-up or install watch: %+v", progRes)
+	}
+	if len(notified) != 0 {
+		t.Fatalf("nested-owned terminal progress watch must enqueue nothing; got %+v", notified)
+	}
 }
 
 func TestConfigureWatchSendToMissingDelegateFailsTargetNotFound(t *testing.T) {

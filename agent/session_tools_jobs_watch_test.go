@@ -1026,6 +1026,143 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	}
 }
 
+func TestJobWatchTerminalProgressCatchupThroughTool(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+
+	for _, tc := range []struct {
+		name     string
+		status   jobstore.Status
+		reason   string
+		exitCode int
+		output   string
+	}{
+		{
+			name:     "completed",
+			status:   jobstore.StatusCompleted,
+			reason:   "exit_zero",
+			exitCode: 0,
+			output:   "all tests passed\n",
+		},
+		{
+			name:     "command_exited_nonzero",
+			status:   jobstore.StatusCommandExitedNonzero,
+			reason:   "exit_nonzero",
+			exitCode: 101,
+			output:   "test failed\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := newManualRunningJob(t, s)
+			appendManualJobOutput(s.jobManager, rec.JobID, tc.output)
+			code := tc.exitCode
+			if err := s.jobManager.finalize(rec.JobID, tc.status, tc.reason, &code); err != nil {
+				t.Fatalf("finalize manual job: %v", err)
+			}
+			waitForShellDone(t, s.jobManager, rec.JobID)
+
+			watchRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "watch_" + tc.name,
+				Name:      "job_watch",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","source":%q,"progress_interval_ms":180000}`, rec.JobID)),
+			})
+			if watchRes.IsError {
+				t.Fatalf("terminal progress catch-up must not error: %s", watchRes.Output)
+			}
+			var got struct {
+				WatchID         string `json:"watch_id"`
+				Source          string `json:"source"`
+				Watching        bool   `json:"watching"`
+				Fired           bool   `json:"fired"`
+				TerminalCatchup bool   `json:"terminal_catchup"`
+				Status          string `json:"status"`
+				Reason          string `json:"reason"`
+				TranscriptRef   string `json:"transcript_ref"`
+			}
+			rawState := toolResultJSON(watchRes)
+			if err := json.Unmarshal(rawState, &got); err != nil {
+				t.Fatalf("unmarshal watch state: %v (%s)", err, watchRes.Output)
+			}
+			wantRef := "job:" + rec.JobID
+			if got.WatchID == "" || got.Source != rec.JobID || got.Watching || got.Fired || !got.TerminalCatchup {
+				t.Fatalf("progress catch-up state = %+v, want watch_id!=empty source=%s watching=false fired=false terminal_catchup=true", got, rec.JobID)
+			}
+			if got.Status != string(tc.status) || got.Reason != tc.reason || got.TranscriptRef != wantRef {
+				t.Fatalf("progress catch-up state = %+v, want status=%s reason=%s transcript_ref=%s", got, tc.status, tc.reason, wantRef)
+			}
+			if !strings.Contains(string(rawState), `"fired":false`) {
+				t.Fatalf("progress catch-up JSON must carry explicit fired:false: %s", rawState)
+			}
+			for _, token := range []string{got.WatchID, string(tc.status), tc.reason, wantRef, "read_transcript"} {
+				if !strings.Contains(watchRes.Output, token) {
+					t.Fatalf("model output missing %q: %s", token, watchRes.Output)
+				}
+			}
+			if s.jobManager.watchCount() != 0 {
+				t.Fatalf("watch count after catch-up = %d, want 0", s.jobManager.watchCount())
+			}
+
+			inspectRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "inspect_" + tc.name,
+				Name:      "job_watch",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"inspect","watch_id":%q}`, got.WatchID)),
+			})
+			if inspectRes.IsError {
+				t.Fatalf("inspect catch-up watch: %s", inspectRes.Output)
+			}
+			var inspected struct {
+				WatchID   string `json:"watch_id"`
+				Watching  bool   `json:"watching"`
+				EndReason string `json:"end_reason"`
+			}
+			if err := json.Unmarshal(toolResultJSON(inspectRes), &inspected); err != nil {
+				t.Fatalf("unmarshal inspect state: %v", err)
+			}
+			if inspected.WatchID != got.WatchID || inspected.Watching || inspected.EndReason != "completed" {
+				t.Fatalf("inspect state = %+v, want watch_id=%s watching=false end_reason=completed", inspected, got.WatchID)
+			}
+
+			readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "read_" + tc.name,
+				Name:      "read_transcript",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"transcript_ref":%q}`, got.TranscriptRef)),
+			})
+			if readRes.IsError {
+				t.Fatalf("read_transcript(%s) failed: %s", got.TranscriptRef, readRes.Output)
+			}
+			if !strings.Contains(readRes.Output, strings.TrimSpace(tc.output)) {
+				t.Fatalf("read_transcript(%s) output missing %q: %s", got.TranscriptRef, strings.TrimSpace(tc.output), readRes.Output)
+			}
+		})
+	}
+
+	t.Run("invalid progress_interval_ms rejected on terminal target", func(t *testing.T) {
+		rec := newManualRunningJob(t, s)
+		code := 0
+		if err := s.jobManager.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+			t.Fatalf("finalize manual job: %v", err)
+		}
+		waitForShellDone(t, s.jobManager, rec.JobID)
+
+		for _, rawArgs := range []string{
+			fmt.Sprintf(`{"operation":"create","source":%q,"progress_interval_ms":-100}`, rec.JobID),
+			fmt.Sprintf(`{"operation":"create","source":%q,"progress_interval_ms":1.5}`, rec.JobID),
+		} {
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "bad_prog",
+				Name:      "job_watch",
+				Arguments: json.RawMessage(rawArgs),
+			})
+			if !res.IsError {
+				t.Fatalf("args %s succeeded, want error: %s", rawArgs, res.Output)
+			}
+			if s.jobManager.watchCount() != 0 {
+				t.Fatalf("watch count after invalid args = %d, want 0", s.jobManager.watchCount())
+			}
+		}
+	})
+}
+
 func TestJobWatchNoConditionErrors(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)

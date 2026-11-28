@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -986,13 +987,13 @@ func TestTerminalCatchupFinalUnterminatedLineFires(t *testing.T) {
 }
 
 // TestTerminalCatchupRejectsEventsCondition covers spec §7.1: catch-up applies
-// ONLY to pure output_match-only requests. A terminal target carrying events
-// (even alongside output_match) still fails target_terminal — nothing can ever
-// fire — and installs no watch and no catch-up. A time field is the same story:
-// catch-up must not swallow a request the timer rules would reject, or the
-// model gets a terminal_catchup result instead of a correction. A note is NOT
-// a trigger, so it does not disqualify a request — see
-// TestTerminalCatchupCarriesTheNote.
+// ONLY to pure output_match-only and pure progress_interval_ms requests.
+// A terminal target carrying events or mixed trigger shapes still fails
+// target_terminal (nothing can ever fire) and installs no watch and no
+// catch-up. A time field is the same story: catch-up must not swallow a
+// request the timer rules would reject, or the model gets a terminal_catchup
+// result instead of a correction. A note is NOT a trigger, so it does not
+// disqualify a request; see TestTerminalCatchupCarriesTheNote.
 func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
@@ -1009,6 +1010,11 @@ func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
 		{"output_match plus progress", watchArgs{Target: jobID, OutputMatch: "ready", ProgressIntervalMS: 1000}},
 		{"output_match plus after_seconds", watchArgs{Target: jobID, OutputMatch: "ready", AfterSeconds: 600}},
 		{"output_match plus repeat_seconds", watchArgs{Target: jobID, OutputMatch: "ready", RepeatSeconds: 300}},
+		{"progress plus events", watchArgs{Target: jobID, ProgressIntervalMS: 1000, Events: []string{"communicate"}}},
+		{"progress plus every", watchArgs{Target: jobID, ProgressIntervalMS: 1000, Every: 2}},
+		{"progress plus event_filter", watchArgs{Target: jobID, ProgressIntervalMS: 1000, EventFilter: &watchEventFilter{ToolName: "read_file"}}},
+		{"progress plus after_seconds", watchArgs{Target: jobID, ProgressIntervalMS: 1000, AfterSeconds: 600}},
+		{"progress plus repeat_seconds", watchArgs{Target: jobID, ProgressIntervalMS: 1000, RepeatSeconds: 300}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := len(notified)
@@ -1017,12 +1023,185 @@ func TestTerminalCatchupRejectsEventsCondition(t *testing.T) {
 				t.Fatalf("result %+v err %v, want target_terminal", res, err)
 			}
 			if res.TerminalCatchup || res.Fired {
-				t.Fatalf("non-output_match-only terminal request must not catch-up: %+v", res)
+				t.Fatalf("ineligible terminal request must not catch-up: %+v", res)
 			}
 			if len(notified) != before {
-				t.Fatalf("non-output_match-only terminal request must enqueue nothing; new = %d", len(notified)-before)
+				t.Fatalf("ineligible terminal request must enqueue nothing; new = %d", len(notified)-before)
 			}
 		})
+	}
+}
+
+func TestTerminalCatchupProgressOnlyReturnsTerminalStatus(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		status   jobstore.Status
+		reason   string
+		exitCode int
+		note     string
+	}{
+		{name: "completed", status: jobstore.StatusCompleted, reason: "exit_zero", exitCode: 0},
+		{name: "nonzero", status: jobstore.StatusCommandExitedNonzero, reason: "exit_nonzero", exitCode: 2},
+		{name: "completed with note", status: jobstore.StatusCompleted, reason: "exit_zero", exitCode: 0, note: "build check"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			jm := newTestJM(t)
+			rec, err := jm.createShell(createShellOpts{Command: "cargo test"})
+			if err != nil {
+				t.Fatalf("createShell: %v", err)
+			}
+			code := tc.exitCode
+			if err := jm.finalize(rec.JobID, tc.status, tc.reason, &code); err != nil {
+				t.Fatalf("finalize: %v", err)
+			}
+			var notified []jobNotification
+			jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+			res, err := jm.configureWatch(watchArgs{
+				Target:             rec.JobID,
+				ProgressIntervalMS: 180000,
+				Note:               tc.note,
+			})
+			if err != nil {
+				t.Fatalf("configureWatch progress terminal catch-up: %v", err)
+			}
+			if res.Watching || res.Fired || !res.TerminalCatchup {
+				t.Fatalf("result = %+v, want watching=false fired=false terminal_catchup=true", res)
+			}
+			if res.WatchID == "" {
+				t.Fatalf("result = %+v, want non-empty watch_id", res)
+			}
+			if res.Status != string(tc.status) || res.Reason != tc.reason {
+				t.Fatalf("status/reason = (%q, %q), want (%q, %q)", res.Status, res.Reason, tc.status, tc.reason)
+			}
+			if jm.watchCount() != 0 {
+				t.Fatalf("watch count after catch-up = %d, want 0", jm.watchCount())
+			}
+			if len(notified) != 0 {
+				t.Fatalf("progress terminal catch-up must enqueue no ticks or notifications; got %+v", notified)
+			}
+			if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+				t.Fatalf("progress terminal catch-up must enqueue no watch sends; got %+v", pending)
+			}
+		})
+	}
+}
+
+func TestTerminalCatchupProgressOnlyRespectsValidationBoundaries(t *testing.T) {
+	t.Parallel()
+
+	t.Run("negative progress interval", func(t *testing.T) {
+		t.Parallel()
+		jm := newTestJM(t)
+		jobID := terminalShellWithOutput(t, jm, "done\n")
+		res, err := jm.configureWatch(watchArgs{Target: jobID, ProgressIntervalMS: -1})
+		if err == nil || !strings.HasPrefix(err.Error(), "invalid_request:") {
+			t.Fatalf("result %+v err %v, want invalid_request", res, err)
+		}
+		if res.TerminalCatchup || jm.watchCount() != 0 {
+			t.Fatalf("invalid negative interval must not catch up or install watch: %+v", res)
+		}
+	})
+
+	t.Run("invalid send target", func(t *testing.T) {
+		t.Parallel()
+		jm := newTestJM(t)
+		jobID := terminalShellWithOutput(t, jm, "done\n")
+		res, err := jm.configureWatch(watchArgs{
+			Target:             jobID,
+			ProgressIntervalMS: 5000,
+			Send:               &watchSendArgs{To: "job_not_a_delegate"},
+		})
+		if err == nil || !strings.HasPrefix(err.Error(), "invalid_request:") {
+			t.Fatalf("result %+v err %v, want invalid_request", res, err)
+		}
+		if res.TerminalCatchup || jm.watchCount() != 0 {
+			t.Fatalf("invalid send target must not catch up or install watch: %+v", res)
+		}
+	})
+
+	t.Run("missing job", func(t *testing.T) {
+		t.Parallel()
+		jm := newTestJM(t)
+		res, err := jm.configureWatch(watchArgs{Target: "job_missing", ProgressIntervalMS: 5000})
+		if !errors.Is(err, errWatchTargetNotFound) {
+			t.Fatalf("result %+v err %v, want errWatchTargetNotFound", res, err)
+		}
+		if res.TerminalCatchup || jm.watchCount() != 0 {
+			t.Fatalf("missing job must not catch up or install watch: %+v", res)
+		}
+	})
+
+	t.Run("finalizing job stays target_terminal", func(t *testing.T) {
+		t.Parallel()
+		jm := newTestJM(t)
+		rec, err := jm.createShell(createShellOpts{Command: "sleep 1"})
+		if err != nil {
+			t.Fatalf("createShell: %v", err)
+		}
+		jm.mu.Lock()
+		jm.running[rec.JobID].finalize = &finalizeAttempt{done: make(chan struct{})}
+		jm.mu.Unlock()
+
+		res, err := jm.configureWatch(watchArgs{Target: rec.JobID, ProgressIntervalMS: 5000})
+		if err == nil || !strings.HasPrefix(err.Error(), "target_terminal:") {
+			t.Fatalf("result %+v err %v, want target_terminal", res, err)
+		}
+		if res.TerminalCatchup || jm.watchCount() != 0 {
+			t.Fatalf("finalizing job must not catch up or install watch: %+v", res)
+		}
+	})
+}
+
+func TestTerminalCatchupInstallWatchRaceReturnsCatchup(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	startedAt := jm.now()
+	const jobID = "job_race_terminal"
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            jobID,
+		Type:             jobstore.JobShell,
+		Status:           jobstore.StatusRunning,
+		OwnerSessionID:   jm.sessionID,
+		VisibleToSession: jm.sessionID,
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append start: %v", err)
+	}
+
+	res, err := jm.configureWatchWithHooks(
+		watchArgs{Target: jobID, ProgressIntervalMS: 180000},
+		watchConfigureHooks{
+			beforeTargetRevalidate: func(string) {
+				endedAt := jm.now()
+				if finishErr := jm.appendEvent(jobstore.Event{
+					Kind:    jobstore.EventJobFinished,
+					TS:      endedAt,
+					JobID:   jobID,
+					Status:  jobstore.StatusCommandExitedNonzero,
+					Reason:  "exit_nonzero",
+					EndedAt: &endedAt,
+				}); finishErr != nil {
+					t.Fatalf("append finish during race: %v", finishErr)
+				}
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("configureWatchWithHooks race: %v", err)
+	}
+	if res.Watching || res.Fired || !res.TerminalCatchup {
+		t.Fatalf("race result = %+v, want watching=false fired=false terminal_catchup=true", res)
+	}
+	if res.Status != string(jobstore.StatusCommandExitedNonzero) || res.Reason != "exit_nonzero" {
+		t.Fatalf("race status/reason = (%q, %q), want (%q, %q)", res.Status, res.Reason, jobstore.StatusCommandExitedNonzero, "exit_nonzero")
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count after race catch-up = %d, want 0", jm.watchCount())
 	}
 }
 
@@ -1060,18 +1239,19 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 		Fired           bool   `json:"fired"`
 		TerminalCatchup bool   `json:"terminal_catchup"`
 		Status          string `json:"status"`
+		TranscriptRef   string `json:"transcript_ref"`
 	}
 	if err := json.Unmarshal(handlerJSON(t, fired), &firedOut); err != nil {
 		t.Fatalf("unmarshal fired: %v (%s)", err, fired)
 	}
-	if firedOut.Watching || !firedOut.Fired || !firedOut.TerminalCatchup || firedOut.Status != "completed" {
-		t.Fatalf("fired projection = %+v, want fired+terminal_catchup+completed", firedOut)
+	if firedOut.Watching || !firedOut.Fired || !firedOut.TerminalCatchup || firedOut.Status != "completed" || firedOut.TranscriptRef != "job:job_A" {
+		t.Fatalf("fired projection = %+v, want fired+terminal_catchup+completed+job:job_A", firedOut)
 	}
 	firedState, ok := fired.(tooldefs.StateResult)
 	if !ok {
 		t.Fatalf("fired result type = %T, want StateResult", fired)
 	}
-	for _, want := range []string{"terminal catch-up", "fired", "completed"} {
+	for _, want := range []string{"terminal catch-up", "fired", "completed", "job:job_A"} {
 		if !strings.Contains(firedState.Output, want) {
 			t.Fatalf("fired model output missing %q: %s", want, firedState.Output)
 		}
@@ -1083,12 +1263,15 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 		Fired:           false,
 		TerminalCatchup: true,
 		Status:          "failed",
+		Reason:          "exit_nonzero",
 	}, 4096)
 	if err != nil {
 		t.Fatalf("marshal not-fired: %v", err)
 	}
-	if !strings.Contains(string(handlerJSON(t, notFired)), `"terminal_catchup":true`) || !strings.Contains(string(handlerJSON(t, notFired)), `"status":"failed"`) {
-		t.Fatalf("not-fired projection = %s, want terminal_catchup+status", notFired)
+	if !strings.Contains(string(handlerJSON(t, notFired)), `"terminal_catchup":true`) ||
+		!strings.Contains(string(handlerJSON(t, notFired)), `"status":"failed"`) ||
+		!strings.Contains(string(handlerJSON(t, notFired)), `"transcript_ref":"job:job_A"`) {
+		t.Fatalf("not-fired projection = %s, want terminal_catchup+status+transcript_ref", notFired)
 	}
 	// Contract §7.1 promises "fired=false on none" — explicit, not omitted.
 	if !strings.Contains(string(handlerJSON(t, notFired)), `"fired":false`) {
@@ -1098,7 +1281,7 @@ func TestMarshalWatchResultTerminalCatchupProjection(t *testing.T) {
 	if !ok {
 		t.Fatalf("not-fired result type = %T, want StateResult", notFired)
 	}
-	for _, want := range []string{"terminal catch-up", "not fired", "failed"} {
+	for _, want := range []string{"terminal catch-up", "not fired", "failed", "exit_nonzero", "job:job_A"} {
 		if !strings.Contains(notFiredState.Output, want) {
 			t.Fatalf("not-fired model output missing %q: %s", want, notFiredState.Output)
 		}
