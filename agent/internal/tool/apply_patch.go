@@ -60,6 +60,8 @@ func ApplyPatchTracked(ctx context.Context, fm execenv.FileMutator, patch string
 					effects = append(effects, PatchEffect{Path: o.path})
 				}
 			}
+		} else if u, ok := ops[i].(updateFileOp); ok && len(paths) > 0 {
+			effects = append(effects, PatchEffect{Path: u.path})
 		}
 		if err != nil {
 			return "", effects, err
@@ -292,7 +294,7 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 	moveTo := o.moveTarget()
 	if moveTo != "" && moveTo != o.path {
 		if err := fm.RenamePath(o.path, moveTo); err != nil {
-			return nil, err
+			return []string{"M " + o.path}, err
 		}
 		return []string{fmt.Sprintf("R %s -> %s", o.path, moveTo)}, nil
 	}

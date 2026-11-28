@@ -770,4 +770,31 @@ func TestApplyPatchTracked_ReportsCommittedEffectsInOrder(t *testing.T) {
 	if !slices.Equal(partialEffects, []PatchEffect{{Path: "moved.txt"}}) {
 		t.Fatalf("partial effects = %+v, want moved.txt written", partialEffects)
 	}
+
+	// Update + Move whose rename fails (destination is an existing directory)
+	// must return the rename error alongside the committed source write only.
+	blockedDir := filepath.Join(dir, "blocked_dir")
+	if err := os.Mkdir(blockedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failedMove := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: moved.txt",
+		"*** Move to: blocked_dir",
+		"@@",
+		"-UNO",
+		"+RENAMED_FAIL",
+		"*** End Patch",
+		"",
+	}, "\n")
+	_, moveEffects, err := ApplyPatchTracked(t.Context(), testMutator(dir), failedMove)
+	if err == nil {
+		t.Fatal("expected rename failure when moving onto an existing directory")
+	}
+	if !slices.Equal(moveEffects, []PatchEffect{{Path: "moved.txt"}}) {
+		t.Fatalf("failed move effects = %+v, want only moved.txt written", moveEffects)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "moved.txt")); err != nil || !strings.Contains(string(got), "RENAMED_FAIL") {
+		t.Fatalf("moved.txt = %q, err=%v; want committed write before rename failure", got, err)
+	}
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -463,6 +464,74 @@ func TestApplyPatchTracksReadAndMismatchState(t *testing.T) {
 		})
 		if mmAfter, ok := errors.AsType[*tool.PatchMismatchError](after.Err); !ok || mmAfter.FileState != tool.PatchFileStateUnchanged {
 			t.Fatalf("follow-up mismatch = %v (state=%v), want PatchFileStateUnchanged", after.Err, mmAfter)
+		}
+	})
+
+	t.Run("failed move records committed source write and clears priorReads", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		blockedDir := filepath.Join(dir, "blocked_dir")
+		if err := os.Mkdir(blockedDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		src := filepath.Join(dir, "src.txt")
+		if err := os.WriteFile(src, []byte("alpha\nbeta\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := newSession(t, withDir(dir))
+		if res := execSessionTool(t, s, "r-src", "read_file", map[string]any{"file_path": "src.txt"}); res.IsError {
+			t.Fatalf("read_file src.txt: %s", res.Output)
+		}
+
+		// Rewrite changes byte size and then fails RenamePath onto blocked_dir.
+		moveFail := execSessionTool(t, s, "p-move-fail", "apply_patch", map[string]any{
+			"patch": "*** Begin Patch\n*** Update File: src.txt\n*** Move to: blocked_dir\n@@\n alpha\n-beta\n+BETA-EXTENDED\n*** End Patch\n",
+		})
+		if !moveFail.IsError {
+			t.Fatalf("expected rename failure onto existing directory, got: %q", moveFail.Output)
+		}
+		// Destination directory must not be tracked as read or stamped.
+		s.readFilesMu.RLock()
+		_, dstRead := s.readFiles[blockedDir]
+		_, dstStamped := s.fileStamps[blockedDir]
+		s.readFilesMu.RUnlock()
+		if dstRead || dstStamped {
+			t.Fatalf("failed move tracked destination directory: read=%v stamped=%v", dstRead, dstStamped)
+		}
+		// Retrying apply_patch against src.txt expecting pre-edit text must see
+		// the refreshed post-write stamp (Unchanged, not Changed).
+		retry := execSessionTool(t, s, "p-retry", "apply_patch", map[string]any{
+			"patch": "*** Begin Patch\n*** Update File: src.txt\n@@\n alpha\n-beta\n+gamma\n*** End Patch\n",
+		})
+		if mm, ok := errors.AsType[*tool.PatchMismatchError](retry.Err); !ok || mm.FileState != tool.PatchFileStateUnchanged {
+			t.Fatalf("retry mismatch = %v (state=%v), want PatchFileStateUnchanged", retry.Err, mm)
+		}
+
+		// Same-size failed move with pinned mtime must still invalidate priorReads.
+		mtime := time.Date(2026, 9, 10, 11, 12, 13, 0, time.UTC)
+		var b strings.Builder
+		for i := 1; i <= 20; i++ {
+			fmt.Fprintf(&b, "line-%02d\n", i)
+		}
+		same := filepath.Join(dir, "same.txt")
+		pinReadFile(t, same, b.String(), mtime)
+		if first := repeatReadFile(t, s, "r-same-1", same, map[string]any{"offset": 1, "limit": 20}); first.UnchangedSinceTurn != nil {
+			t.Fatal("first read must not be marked unchanged")
+		}
+		if res := execSessionTool(t, s, "p-same-move-fail", "apply_patch", map[string]any{
+			"patch": "*** Begin Patch\n*** Update File: same.txt\n*** Move to: blocked_dir\n@@\n line-06\n-line-07\n+LINE-07\n line-08\n*** End Patch\n",
+		}); !res.IsError {
+			t.Fatalf("expected rename failure on same.txt, got: %q", res.Output)
+		}
+		if err := os.Chtimes(same, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		after := repeatReadFile(t, s, "r-same-2", same, map[string]any{"offset": 5, "limit": 6})
+		if after.UnchangedSinceTurn != nil {
+			t.Fatalf("failed move did not invalidate priorReads: subset read falsely marked unchanged since turn %d", *after.UnchangedSinceTurn)
+		}
+		if !strings.Contains(after.Output, "LINE-07") {
+			t.Fatalf("subset read after failed move missing committed edit: %q", after.Output)
 		}
 	})
 }
