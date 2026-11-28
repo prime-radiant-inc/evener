@@ -425,6 +425,27 @@ func TestReconcileBlankTolerantReplacement(t *testing.T) {
 			new:     "a\nmid\nb\nc",
 			want:    "a\nmid\nb\n\nc",
 		},
+		{
+			name:    "new_string using real file indentation anchors interior blank break",
+			matched: "Status 1\n\tP1\n\n\tP2\nOwner 1",
+			old:     "Status 1\nP1\nP2\nOwner 1",
+			new:     "Status 2\n\tP1\n\tP2\nOwner 2",
+			want:    "Status 2\n\tP1\n\n\tP2\nOwner 2",
+		},
+		{
+			name:    "explicit re-indentation matching neither old nor file is honored",
+			matched: "Status 1\n\tP1\n\n\tP2\nOwner 1",
+			old:     "Status 1\n  P1\n  P2\nOwner 1",
+			new:     "Status 1\n    P1\n  P2\nOwner 1",
+			want:    "Status 1\n    P1\n\n\tP2\nOwner 1",
+		},
+		{
+			name:    "explicit blank count edit around file-indented anchor is honored",
+			matched: "Status 1\n\tP1\n\n\tP2\n\nOwner 1",
+			old:     "Status 1\nP1\n\nP2\nOwner 1",
+			new:     "Status 2\n\tP1\n\tP2\nOwner 2",
+			want:    "Status 2\n\tP1\n\tP2\n\nOwner 2",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

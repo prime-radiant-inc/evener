@@ -222,13 +222,14 @@ func splitNonBlank(s string) (lines []string, gaps [][]string) {
 // alignUnchangedLines returns matched (oldIdx, newIdx) anchor pairs via common
 // prefix/suffix trimming plus bounded LCS DP over the interior. It reports
 // ok=false when the unaligned interior exceeds maxBlankReconcileCells.
-func alignUnchangedLines(oldLines, newLines []string) ([][2]int, bool) {
+func alignUnchangedLines(matchedLines, oldLines, newLines []string) ([][2]int, bool) {
 	m, k := len(oldLines), len(newLines)
+	same := func(i, j int) bool { return oldLines[i] == newLines[j] || matchedLines[i] == newLines[j] }
 	p, s := 0, 0
-	for p < m && p < k && oldLines[p] == newLines[p] {
+	for p < m && p < k && same(p, p) {
 		p++
 	}
-	for p+s < m && p+s < k && oldLines[m-1-s] == newLines[k-1-s] {
+	for p+s < m && p+s < k && same(m-1-s, k-1-s) {
 		s++
 	}
 	om, nm := m-p-s, k-p-s
@@ -244,7 +245,7 @@ func alignUnchangedLines(oldLines, newLines []string) ([][2]int, bool) {
 		dp := make([]int, (om+1)*w)
 		for i := om - 1; i >= 0; i-- {
 			for j := nm - 1; j >= 0; j-- {
-				if oldLines[p+i] == newLines[p+j] {
+				if same(p+i, p+j) {
 					dp[i*w+j] = dp[(i+1)*w+j+1] + 1
 				} else {
 					dp[i*w+j] = max(dp[(i+1)*w+j], dp[i*w+j+1])
@@ -252,7 +253,7 @@ func alignUnchangedLines(oldLines, newLines []string) ([][2]int, bool) {
 			}
 		}
 		for i, j := 0, 0; i < om && j < nm; {
-			if oldLines[p+i] == newLines[p+j] {
+			if same(p+i, p+j) {
 				anchors = append(anchors, [2]int{p + i, p + j})
 				i, j = i+1, j+1
 			} else if dp[(i+1)*w+j] >= dp[i*w+j+1] {
@@ -280,7 +281,7 @@ func reconcileBlankTolerantReplacement(matched, oldString, newString string) (st
 	if m != len(oLines) || k == 0 {
 		return newString, true
 	}
-	anchors, ok := alignUnchangedLines(oLines, nLines)
+	anchors, ok := alignUnchangedLines(mLines, oLines, nLines)
 	if !ok {
 		return "", false
 	}

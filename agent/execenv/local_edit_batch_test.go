@@ -1346,6 +1346,13 @@ func TestEditFile_BlankLineTolerantUniqueFallback(t *testing.T) {
 				new:  "Heading\nBody\nFooter",
 				want: "Heading\nBody\n\nFooter\n",
 			},
+			{
+				name: "file-indented new_string with unindented old_string preserves interior paragraph break",
+				orig: "Status 1\n\tP1\n\n\tP2\nOwner 1\n",
+				old:  "Status 1\nP1\nP2\nOwner 1",
+				new:  "Status 2\n\tP1\n\tP2\nOwner 2",
+				want: "Status 2\n\tP1\n\n\tP2\nOwner 2\n",
+			},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
