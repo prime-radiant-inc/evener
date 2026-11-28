@@ -41,15 +41,11 @@ func TestFinishingPromptGating(t *testing.T) {
 				}
 			}
 			checkPromptInput(t, "registered manage_worktree", sess.reg.Get("manage_worktree") != nil, tc.worktree)
-			upfront := hasUpfrontToolDef(sess.ToolDefinitions(), "manage_worktree")
-			if sess.reg.Get("tool_search") == nil {
-				checkPromptInput(t, "upfront manage_worktree", upfront, tc.worktree)
-			} else if !tc.worktree && upfront {
-				t.Fatal("manage_worktree remained advertised upfront when unregistered")
-			}
+			advertised := hasToolDef(sess.ToolDefinitions(), "manage_worktree")
+			checkPromptInput(t, "advertised manage_worktree", advertised, tc.worktree)
 			data, _ := sess.buildPromptData(sess.env)
 			checkPromptInput(t, "IsSubagent", data.IsSubagent, tc.delegate)
-			checkPromptInput(t, "HasTool manage_worktree", data.HasTool("manage_worktree"), upfront)
+			checkPromptInput(t, "HasTool manage_worktree", data.HasTool("manage_worktree"), advertised)
 			checkPromptInput(t, "worktreeDisposeOnly", sess.worktreeDisposeOnly, tc.disposeOnly)
 			checkPromptInput(t, "WorktreeDisposeOnly", data.WorktreeDisposeOnly, tc.disposeOnly)
 			prompt, warning, _ := sess.renderSystemPrompt(sess.env)
@@ -57,8 +53,8 @@ func TestFinishingPromptGating(t *testing.T) {
 				t.Fatalf("render system prompt: %s", warning)
 			}
 			body := operationalPromptBody(t, prompt)
-			if got := strings.Contains(body, "manage_worktree"); got != upfront {
-				t.Fatalf("operational prompt mentions manage_worktree = %v, want %v:\n%s", got, upfront, body)
+			if got := strings.Contains(body, "manage_worktree"); got != advertised {
+				t.Fatalf("operational prompt mentions manage_worktree = %v, want %v:\n%s", got, advertised, body)
 			}
 		})
 	}

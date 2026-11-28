@@ -28,8 +28,7 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 			TurnEndsProcess: true,
 			AgentsDocPath:   filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 		}))
-		defs := s.ToolDefinitions()
-		advertised := toolNameSetFromDefinitions(defs)
+		advertised := toolNameSetFromDefinitions(s.ToolDefinitions())
 		for _, name := range ceremonyTools {
 			if s.reg.Get(name) != nil {
 				t.Errorf("registry still has %q under TurnEndsProcess=true", name)
@@ -45,18 +44,14 @@ func TestOneShotOmitsCeremonyTools(t *testing.T) {
 			t.Error("advertised tools omitted manage_worktree under TurnEndsProcess=true")
 		}
 
-		upfrontWorktree := hasUpfrontToolDef(defs, "manage_worktree")
-		if s.reg.Get("tool_search") == nil && !upfrontWorktree {
-			t.Error("manage_worktree missing full upfront definition when deferred mode is off")
-		}
 		data, _ := s.buildPromptData(s.env)
 		for _, name := range ceremonyTools {
 			if data.HasTool(name) {
 				t.Errorf("promptData.HasTool(%q) = true under TurnEndsProcess=true", name)
 			}
 		}
-		if data.HasTool("manage_worktree") != upfrontWorktree {
-			t.Errorf("promptData.HasTool(\"manage_worktree\") = %v, want %v", data.HasTool("manage_worktree"), upfrontWorktree)
+		if !data.HasTool("manage_worktree") {
+			t.Error("promptData.HasTool(\"manage_worktree\") = false under TurnEndsProcess=true")
 		}
 
 		prompt, warning, _ := s.renderSystemPrompt(s.env)

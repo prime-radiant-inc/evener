@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/bundled"
-	"primeradiant.com/evener/llm"
 )
 
 // Opaque sentinels for the operator inputs the prompt must carry. They prove
@@ -440,17 +439,6 @@ func operationalPromptBody(t *testing.T, prompt string) string {
 		t.Fatalf("system prompt has empty operational body")
 	}
 	return body
-}
-
-// hasUpfrontToolDef reports whether defs advertises name with a full schema
-// (non-empty description), distinguishing upfront tools from deferred stubs.
-func hasUpfrontToolDef(defs []llm.ToolDefinition, name string) bool {
-	for _, td := range defs {
-		if td.Name == name && td.Description != "" {
-			return true
-		}
-	}
-	return false
 }
 
 // promptValue is one value the session computes for its prompt, named for the
