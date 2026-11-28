@@ -59,14 +59,20 @@ export async function measureEditorialTranscript() {
         fill: getComputedStyle(call).backgroundColor,
       };
     }
-    for (const selector of [
-      '[data-testid="user-bubble"]',
-      '[data-testid="tool-call-item"][data-item-id="editorial_source"]',
+    for (const { selector, includeSelf } of [
+      // Delivered user bubbles carry the brand accent fill; check their enclosing
+      // wrappers stay flat while tool rows stay flat including themselves.
+      { selector: '[data-testid="user-bubble"]', includeSelf: false },
+      { selector: '[data-testid="tool-call-item"][data-item-id="editorial_source"]', includeSelf: true },
     ]) {
       const sample = required(host.querySelector<HTMLElement>(selector));
       if (!sample.getBoundingClientRect().height) throw new Error(`Hidden reading sample: ${level} ${selector}`);
       const row = required(sample.closest('[data-testid="transcript-row"]'));
-      for (let el: HTMLElement | null = sample; el && el !== row; el = el.parentElement) {
+      for (
+        let el: HTMLElement | null = includeSelf ? sample : sample.parentElement;
+        el && el !== row;
+        el = el.parentElement
+      ) {
         if (!el.getClientRects().length) continue;
         const { borderInlineStartWidth: edge, backgroundColor: fill, boxShadow: shadow } = getComputedStyle(el);
         surfaces.push({ level, element: el.className, edge, fill, shadow });
@@ -120,6 +126,24 @@ export async function measureEditorialTranscript() {
           const anchorVisible = visibleWithin(anchor, box);
           const user = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]'));
           const userText = required(user.firstElementChild);
+          const tableBubble = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]:has(table)'));
+          const tableHead = required(tableBubble.querySelector<HTMLElement>("thead"));
+          const tableCells = Array.from(tableBubble.querySelectorAll<HTMLElement>("tbody td")).map((cell) => {
+            const rect = cell.getBoundingClientRect();
+            return { width: rect.width, height: rect.height };
+          });
+          const codeBubble = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]:has(pre)'));
+          const codeEl = required(codeBubble.querySelector<HTMLElement>("pre code"));
+          const codeLang = required(codeBubble.querySelector<HTMLElement>("span"));
+          const codeRect = codeEl.getBoundingClientRect();
+          const langRect = codeLang.getBoundingClientRect();
+          const codeOverlap =
+            langRect.left < codeRect.right &&
+            langRect.right > codeRect.left &&
+            langRect.top < codeRect.bottom &&
+            langRect.bottom > codeRect.top;
+          const hrBubble = required(host.querySelector<HTMLElement>('[data-testid="user-bubble"]:has(hr)'));
+          const hrEl = required(hrBubble.querySelector<HTMLElement>("hr"));
           const agent = host.querySelector<HTMLElement>('[data-testid="agent-bubble"] p');
           const quote = required(host.querySelector<HTMLElement>('[data-testid="subagent-quote"]'));
           const card = required(quote.closest<HTMLElement>('[data-testid="subagent-row"]'));
@@ -153,6 +177,15 @@ export async function measureEditorialTranscript() {
             userFont: getComputedStyle(userText).fontFamily,
             userSize: getComputedStyle(userText).fontSize,
             userLineHeight: getComputedStyle(userText).lineHeight,
+            userBackground: getComputedStyle(user).backgroundColor,
+            userColor: getComputedStyle(userText).color,
+            tableBubbleWidth: tableBubble.getBoundingClientRect().width,
+            tableReflowed: getComputedStyle(tableHead).position === "absolute",
+            tableCells,
+            codeBubbleWidth: codeBubble.getBoundingClientRect().width,
+            codeLangOverlap: codeOverlap,
+            codeLangClippedLeft: langRect.left < codeBubble.getBoundingClientRect().left,
+            hrWidth: hrEl.getBoundingClientRect().width,
             agentLineHeight: agent && getComputedStyle(agent).lineHeight,
             agentFont: agent && getComputedStyle(agent).fontFamily,
             quoteFont: getComputedStyle(quote).fontFamily,

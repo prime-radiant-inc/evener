@@ -39,10 +39,10 @@ export interface Palette {
 	accentInk: string;
 	accentBg: string;
 	accentEdge: string;
-	/** Filled buttons: white on it is 4.8:1 in both themes. */
+	/** Filled buttons and user bubbles: white on it is 5.06:1 in both themes. */
 	accentFill: string;
 	onFill: string;
-	/** Your message bubble: the accent tint, as on the web. */
+	/** Your message bubble: the solid brand accent fill, paired with onFill. */
 	bubble: string;
 	diffAdd: string;
 	diffDel: string;
@@ -55,8 +55,8 @@ type NativeRole = Exclude<keyof Palette, "scheme">;
 // pressed wash) while their values are the web's. `pressed` is the shared
 // pressed/selected wash (--hover-2); its light value and the light -ink
 // companions are tuned together so every ink clears 4.5:1 on it while the
-// wash stays visibly distinct from the page. prose/accentFill/onFill are the
-// module's NativeExtras: roles only the phone declares.
+// wash stays visibly distinct from the page. `prose` is the module's
+// NativeExtras: the one role only the phone declares.
 const NATIVE_ALIASES = {
 	page: "surface-0",
 	canvas: "surface-canvas",
@@ -87,7 +87,7 @@ const NATIVE_ALIASES = {
 	accentEdge: "accent-edge",
 	accentFill: "accent-fill",
 	onFill: "on-fill",
-	bubble: "accent-bg",
+	bubble: "accent-fill",
 	diffAdd: "diff-add-bg",
 	diffDel: "diff-del-bg",
 } as const satisfies Record<NativeRole, keyof ThemePalette>;

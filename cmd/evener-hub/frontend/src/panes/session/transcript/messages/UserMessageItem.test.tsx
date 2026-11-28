@@ -9,7 +9,7 @@ import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "
 import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
-import { readModuleCss } from "../../../../styles/cssBlock";
+import { readModuleCss, topRuleBlock } from "../../../../styles/cssBlock";
 import { ALL_CAPABILITIES as FORK_CAPABILITIES } from "../../../../threadTestUtils";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import "../../../doc";
@@ -197,18 +197,91 @@ test("the body renders as a bubble wrapping the text and attachments", () => {
 
 test("user prose spans its content column, pins the prose size, and avoids pre-wrap on markdown", () => {
   const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
-  const body = /\.body\s*\{([^}]*)\}/.exec(css);
-  expect(body).not.toBeNull();
-  expect(body![1]).toMatch(/(?:^|\n)\s*width:\s*100%/);
-  expect(body![1]).toMatch(/max-width:\s*100%/);
-  expect(body![1]).toMatch(/--prose-font-size:\s*var\(--font-size-prose\)/);
-  expect(body![1]).not.toMatch(/white-space:\s*pre-wrap/);
-  expect(body![1]).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-  const text = /\.text\s*\{([^}]*)\}/.exec(css);
-  expect(text?.[1]).toMatch(/font-family:\s*var\(--font-prose\)/);
-  expect(text?.[1]).toMatch(/font-size:\s*var\(--font-size-prose\)/);
-  const provisionalBody = /\.provisional\s+\.body\s*\{([^}]*)\}/.exec(css);
-  expect(provisionalBody?.[1]).toMatch(/width:\s*fit-content/);
+  const body = topRuleBlock(css, ".body");
+  expect(body).toMatch(/(?:^|\n)\s*width:\s*100%/);
+  expect(body).toMatch(/max-width:\s*100%/);
+  expect(body).toMatch(/--prose-font-size:\s*var\(--font-size-prose\)/);
+  expect(body).not.toMatch(/white-space:\s*pre-wrap/);
+  expect(body).not.toMatch(/background:\s*var\(--accent-fill\)/);
+  expect(body).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  const text = topRuleBlock(css, ".text");
+  expect(text).toMatch(/font-family:\s*var\(--font-prose\)/);
+  expect(text).toMatch(/font-size:\s*var\(--font-size-prose\)/);
+  const provisionalBody = topRuleBlock(css, ".provisional .body");
+  expect(provisionalBody).toMatch(/width:\s*fit-content/);
+  expect(provisionalBody).toMatch(/background:\s*var\(--surface-1\)/);
+  expect(provisionalBody).toMatch(/border:\s*1px dashed var\(--accent\)/);
+});
+
+test("delivered user bubbles paint white on accent-fill while leaving agent and provisional rows neutral", () => {
+  const css = readModuleCss(import.meta.url, "usermessageitem.module.css");
+  const deliveredBody = topRuleBlock(css, '.message[data-speaker="user"]:not(.provisional) .body');
+  expect(deliveredBody).toMatch(/width:\s*fit-content/);
+  expect(deliveredBody).toMatch(/align-self:\s*flex-start/);
+  expect(deliveredBody).toMatch(/justify-self:\s*start/);
+  expect(deliveredBody).toMatch(/padding:\s*var\(--space-2\)\s+var\(--space-3\)/);
+  expect(deliveredBody).toMatch(/background:\s*var\(--accent-fill\)/);
+  expect(deliveredBody).toMatch(/color:\s*var\(--on-fill\)/);
+  expect(deliveredBody).toMatch(
+    /border-radius:\s*var\(--radius-chip\)\s+var\(--radius-pane\)\s+var\(--radius-pane\)\s+var\(--radius-pane\)/,
+  );
+  expect(deliveredBody).toMatch(/--markdown-ink:\s*var\(--on-fill\)/);
+  expect(deliveredBody).toMatch(/--markdown-link:\s*var\(--on-fill\)/);
+  expect(deliveredBody).toMatch(/--quiet-ink:\s*var\(--on-fill\)/);
+  expect(deliveredBody).toMatch(/--selection-surface:\s*var\(--on-fill\)/);
+  expect(deliveredBody).toMatch(/--selection-ink:\s*var\(--accent-fill\)/);
+  expect(deliveredBody).toMatch(/--mermaid-surface:\s*var\(--surface-1\)/);
+  expect(deliveredBody).toMatch(/--mermaid-radius:\s*var\(--radius-pane\)/);
+  expect(deliveredBody).toMatch(/--mermaid-pad:\s*var\(--space-2\)/);
+  expect(css).toMatch(
+    /\.provisional\s+\.body:has\(pre,\s*hr,\s*table\),\s*\.message\[data-speaker="user"\]:not\(\.provisional\)\s+\.body:has\(pre,\s*hr,\s*table\)\s*\{[^}]*width:\s*100%/,
+  );
+  expect(css).not.toMatch(/\.message\[data-speaker="user"\]:not\(\.provisional\)\s+\.text\s*\{/);
+});
+
+test("inline markdown, entity triggers, quiet controls, and selection honor host overrides while self-surfaced blocks reset them", () => {
+  const globalCss = readModuleCss(import.meta.url, "../../../../styles/global.css");
+  const selection = topRuleBlock(globalCss, "::selection");
+  expect(selection).toMatch(/background:\s*var\(--selection-surface,\s*var\(--selection-bg\)\)/);
+  expect(selection).toMatch(/color:\s*var\(--selection-ink,\s*var\(--ink-hi\)\)/);
+
+  const markdownCss = readModuleCss(import.meta.url, "../../../../widgets/markdown/markdown.module.css");
+  expect(topRuleBlock(markdownCss, ".root a")).toMatch(/color:\s*var\(--markdown-link,\s*var\(--accent-ink\)\)/);
+  expect(topRuleBlock(markdownCss, ".inlineCode")).toMatch(/color:\s*var\(--markdown-ink,\s*var\(--ink-hi\)\)/);
+  expect(topRuleBlock(markdownCss, ".tableReflow")).toMatch(
+    /contain-intrinsic-inline-size:\s*var\(--session-measure\)/,
+  );
+  expect(markdownCss).toMatch(
+    /@container\s*\(max-width:\s*559px\)\s*\{[\s\S]*\.root \.tableReflow :where\(tbody tr\)\s*\{[^}]*--markdown-ink:\s*var\(--ink-hi\)/,
+  );
+  expect(markdownCss).toMatch(
+    /@container\s*\(max-width:\s*559px\)\s*\{[\s\S]*\.root \.tableReflow :where\(tbody tr\)\s*\{[^}]*--selection-surface:\s*var\(--selection-bg\)/,
+  );
+  expect(markdownCss).not.toMatch(/--markdown-hover:\s*var\(--hover-1\)/);
+
+  const codeblockCss = readModuleCss(import.meta.url, "../../../../widgets/codeblock/codeblock.module.css");
+  const codeRoot = topRuleBlock(codeblockCss, ".root");
+  expect(codeRoot).not.toMatch(/--quiet-/);
+  expect(codeRoot).toMatch(/--selection-surface:\s*var\(--selection-bg\)/);
+  expect(codeRoot).toMatch(/--selection-ink:\s*var\(--ink-hi\)/);
+
+  const galleryCss = readModuleCss(import.meta.url, "../flow/imagegallery.module.css");
+  const thumb = topRuleBlock(galleryCss, ".thumb");
+  expect(thumb).toMatch(/--selection-surface:\s*var\(--selection-bg\)/);
+  expect(thumb).toMatch(/--selection-ink:\s*var\(--ink-hi\)/);
+
+  const entityCss = readModuleCss(import.meta.url, "../entityref.module.css");
+  const trigger = topRuleBlock(entityCss, ".trigger");
+  expect(trigger).toMatch(/color:\s*var\(--markdown-link,\s*var\(--accent-ink\)\)/);
+
+  const buttonCss = readModuleCss(import.meta.url, "../../../../widgets/button/button.module.css");
+  expect(topRuleBlock(buttonCss, ".quiet")).toMatch(/color:\s*var\(--quiet-ink,\s*var\(--ink-hi\)\)/);
+
+  const mermaidCss = readModuleCss(import.meta.url, "../../../../widgets/mermaid/mermaid.module.css");
+  const mermaidSvg = topRuleBlock(mermaidCss, ".svg");
+  expect(mermaidSvg).toMatch(/background:\s*var\(--mermaid-surface,\s*transparent\)/);
+  expect(mermaidSvg).toMatch(/border-radius:\s*var\(--mermaid-radius,\s*0\)/);
+  expect(mermaidSvg).toMatch(/padding:\s*var\(--mermaid-pad,\s*0\)/);
 });
 
 test("renders GFM markdown in user messages and escapes raw HTML", () => {

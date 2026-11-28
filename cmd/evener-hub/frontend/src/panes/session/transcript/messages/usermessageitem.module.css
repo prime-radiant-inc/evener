@@ -4,14 +4,9 @@
  * avatar tile beside a content column whose first line is the speaker header
  * (avatar + "You" + clock time, actions right-anchored) - so speaker
  * identity reads as structure, the way a chat app's avatar column does.
- * The user's words sit directly on the page. On a narrow screen they run
- * full-width below the speaker row, just as the agent's words do.
- *
- * Decision 5, recorded: the body text is --ink-hi, reversing the old
- * tiered-density demotion ("the user knows what they said", which muted it
- * to --ink-mid). The demotion was doing hierarchy work - keeping the
- * exchange boundary scannable - that the new speaker header now does better;
- * the boundary no longer needs the words themselves muted.
+ * Delivered user messages render white text on the brand indigo fill
+ * (--accent-fill / --on-fill) in both themes; non-user callers (delegate_send
+ * with speaker="agent") and provisional pending rows keep neutral surfaces.
  *
  * The exchange boundary is marked by the speaker header AND one
  * --rhythm-exchange step above the message. The 2026-07-30 ruling against
@@ -86,8 +81,9 @@
   opacity: 1;
 }
 
-/* Text and attachments share a column. Only a message awaiting delivery
- * needs a boundary of its own. */
+/* Text and attachments share a column. Non-user callers (delegate_send) use
+ * this bare neutral base; delivered user messages take the solid accent bubble
+ * below, and pending rows take the dashed provisional bubble. */
 .body {
   display: flex;
   flex-direction: column;
@@ -102,13 +98,47 @@
   --prose-font-size: var(--font-size-prose);
 }
 
+/* Delivered user messages render white text on the brand indigo fill in both
+ * themes, hugging short replies and expanding up to the reading column.
+ * Custom-property hooks keep nested markdown, entity links, quiet open buttons,
+ * focus rings, and text selection legible on indigo while self-surfaced blocks
+ * (CodeBlock, Mermaid diagrams, narrow reflowed table cards, image thumbnails)
+ * paint or reset back to neutral surfaces. */
+.message[data-speaker="user"]:not(.provisional) .body {
+  align-self: flex-start;
+  justify-self: start;
+  width: fit-content;
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-fill);
+  border: 1px solid transparent;
+  border-radius: var(--radius-chip) var(--radius-pane) var(--radius-pane) var(--radius-pane);
+  box-shadow: var(--shadow-card);
+  color: var(--on-fill);
+  --markdown-ink: var(--on-fill);
+  --markdown-muted: var(--on-fill);
+  --markdown-link: var(--on-fill);
+  --markdown-edge: color-mix(in oklab, var(--on-fill) 45%, transparent);
+  --markdown-edge-strong: color-mix(in oklab, var(--on-fill) 75%, transparent);
+  --markdown-hover: color-mix(in oklab, var(--on-fill) 6%, transparent);
+  --markdown-focus-ring: var(--focus-ring-width) solid var(--on-fill);
+  --quiet-ink: var(--on-fill);
+  --quiet-hover: color-mix(in oklab, var(--on-fill) 16%, transparent);
+  --quiet-active: color-mix(in oklab, var(--on-fill) 22%, transparent);
+  --quiet-focus-ring: var(--focus-ring-width) solid var(--on-fill);
+  --selection-surface: var(--on-fill);
+  --selection-ink: var(--accent-fill);
+  --mermaid-surface: var(--surface-1);
+  --mermaid-radius: var(--radius-pane);
+  --mermaid-pad: var(--space-2);
+}
+
 .text {
   white-space: pre-wrap;
   overflow-wrap: break-word;
   font-family: var(--font-prose);
   font-size: var(--font-size-prose);
   line-height: var(--line-height-prose);
-  /* --ink-hi: spec decision 5 - see this file's header comment. */
+  /* --ink-hi: neutral base for non-user plain-text callers (delegate_send). */
   color: var(--ink-hi);
 }
 
@@ -159,6 +189,7 @@
 
 .provisional .body {
   align-self: flex-start;
+  justify-self: start;
   width: fit-content;
   padding: var(--space-2) var(--space-3);
   background: var(--surface-1);
@@ -166,6 +197,17 @@
   border-radius: var(--radius-chip) var(--radius-pane) var(--radius-pane) var(--radius-pane);
   box-shadow: var(--shadow-card);
   position: relative;
+}
+
+/* Column-spanning markdown blocks (fenced code, horizontal rules, tables) have
+ * either no intrinsic inline size (hr, container-type tables) or an overlay
+ * language header (CodeBlock) that collides with short snippets when shrunk to
+ * fit-content. Expand only bubbles carrying those blocks to the reading column
+ * while short prose bubbles stay fit-content. Declared after .provisional .body
+ * in ascending specificity order. */
+.provisional .body:has(pre, hr, table),
+.message[data-speaker="user"]:not(.provisional) .body:has(pre, hr, table) {
+  width: 100%;
 }
 
 .provisional .railmark {

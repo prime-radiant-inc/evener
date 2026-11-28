@@ -51,29 +51,44 @@ function userMessageTextProps() {
 	return renderUserRow().findAllByType("Text" as never)[0].props;
 }
 
-it("fills your message bubble with the accent tint in both themes", () => {
+it("fills your message bubble with the solid accent fill in both themes", () => {
 	mode.scheme = "light";
-	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#E1E8FF" });
+	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#4F5BF5" });
 
 	mode.scheme = "dark";
-	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#2B3041" });
+	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#4F5BF5" });
 });
 
-it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keeping the text and label", () => {
+it("sets your message text in Source Serif 4 at 17/25 with white on-fill ink, keeping the text and label", () => {
 	mode.scheme = "light";
 	const light = userMessageTextProps();
 	expect(light.style).toMatchObject({
 		fontFamily: "SourceSerif4-Regular",
 		fontSize: 17,
 		lineHeight: 25,
-		color: "#1C1C1E",
+		color: "#FFFFFF",
 	});
 	expect(light.children).toBe("Ship it");
 	expect(light.accessibilityLabel).toBe("You: Ship it");
 
 	mode.scheme = "dark";
 	const dark = userMessageTextProps();
-	expect(dark.style).toMatchObject({ color: "#E3E3E8" });
+	expect(dark.style).toMatchObject({ color: "#FFFFFF" });
+});
+
+it("keeps NoteRow text in prose ink on the bare page in both themes", () => {
+	const noteRow: MobileTimelineItem = { kind: "note", id: "n-1", text: "Keep this readable" };
+	mode.scheme = "light";
+	const lightTexts = render(<TimelineItem item={noteRow} hubId="hub" sessionRef="session" />).root.findAllByType(
+		"Text" as never,
+	);
+	expect(lightTexts.at(-1)?.props.style).toMatchObject({ color: "#1C1C1E" });
+
+	mode.scheme = "dark";
+	const darkTexts = render(<TimelineItem item={noteRow} hubId="hub" sessionRef="session" />).root.findAllByType(
+		"Text" as never,
+	);
+	expect(darkTexts.at(-1)?.props.style).toMatchObject({ color: "#E3E3E8" });
 });
 
 const INK_LOW = "#5C626D";

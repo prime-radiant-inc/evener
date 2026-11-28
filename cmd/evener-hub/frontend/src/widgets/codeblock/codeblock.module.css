@@ -14,6 +14,10 @@
   border-radius: var(--radius-pane);
   background: var(--surface-1);
   overflow: var(--codeblock-overflow, visible);
+  /* Code blocks paint their own neutral surface, so reset host-inverted
+   * selection hooks inherited from an accent user bubble. */
+  --selection-surface: var(--selection-bg);
+  --selection-ink: var(--ink-hi);
 }
 
 /* The positioning context .header's absolute offset is relative to - split

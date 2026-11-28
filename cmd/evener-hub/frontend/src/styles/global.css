@@ -92,8 +92,8 @@ body {
 }
 
 ::selection {
-  background: var(--selection-bg);
-  color: var(--ink-hi);
+  background: var(--selection-surface, var(--selection-bg));
+  color: var(--selection-ink, var(--ink-hi));
 }
 
 /* One scrollbar treatment for every app-owned scroller: a thin ink-low thumb

@@ -37,7 +37,7 @@ const NATIVE_ALIASES: Record<string, keyof ThemePalette> = {
 	accentEdge: "accent-edge",
 	accentFill: "accent-fill",
 	onFill: "on-fill",
-	bubble: "accent-bg",
+	bubble: "accent-fill",
 	diffAdd: "diff-add-bg",
 	diffDel: "diff-del-bg",
 };
@@ -138,8 +138,13 @@ describe.each(Object.entries(palettes))("%s text contrast", (_scheme, palette) =
 			[palette.dangerInk, palette.dangerBg],
 			[palette.accentInk, palette.accentBg],
 			[palette.onFill, palette.accentFill],
+			[palette.onFill, palette.bubble],
 		])
 			expect(contrast(ink, surface), `${ink} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+	});
+
+	it("keeps the user message bubble distinct from the page in both themes", () => {
+		expect(contrast(palette.bubble, palette.page), `${palette.bubble} on ${palette.page}`).toBeGreaterThanOrEqual(3);
 	});
 
 	it("keeps the pressed wash visibly distinct from every neutral surface", () => {

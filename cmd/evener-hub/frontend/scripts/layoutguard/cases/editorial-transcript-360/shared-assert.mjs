@@ -22,6 +22,23 @@ export default function assert({ measurements, surfaces, collapsedFailure }) {
     if (!m.collapsedStatusVisible) failures.push(`${id}: collapsed status hidden`);
     if (![m.userFont, m.agentFont, m.quoteFont].every((f) => f?.includes("Source Serif 4")))
       failures.push(`${id}: prose not serif ${JSON.stringify(m)}`);
+    if (m.userBackground !== "rgb(79, 91, 245)" || m.userColor !== "rgb(255, 255, 255)")
+      failures.push(`${id}: user bubble is not white on accent fill (bg ${m.userBackground}, color ${m.userColor})`);
+    if (
+      !Array.isArray(m.tableCells) ||
+      m.tableCells.length !== 5 ||
+      m.tableCells.some((cell) => cell.width < 30 || cell.height < 16)
+    )
+      failures.push(`${id}: 5-column user table collapsed (bubble ${m.tableBubbleWidth}px, cells ${JSON.stringify(m.tableCells)})`);
+    if (m.width >= 900 && (m.tableBubbleWidth < 500 || m.tableReflowed))
+      failures.push(`${id}: wide 5-column user table unexpectedly collapsed or reflowed (bubble ${m.tableBubbleWidth}px, reflowed ${m.tableReflowed})`);
+    if (m.width < 900 && m.tableBubbleWidth < 260)
+      failures.push(`${id}: narrow 5-column user table collapsed to ${m.tableBubbleWidth}px`);
+    if (m.codeLangOverlap || m.codeLangClippedLeft || m.codeBubbleWidth < 200)
+      failures.push(
+        `${id}: fenced code user bubble collided or collapsed (width ${m.codeBubbleWidth}px, overlap ${m.codeLangOverlap}, clippedLeft ${m.codeLangClippedLeft})`,
+      );
+    if (m.hrWidth < 160) failures.push(`${id}: standalone hr user bubble collapsed (hr width ${m.hrWidth}px)`);
     if (m.userSize !== (m.scale === "xl" ? "20px" : "16px"))
       failures.push(`${id}: reading preference did not scale: ${m.userSize}`);
     const expectedLineHeight = (m.scale === "xl" ? 29 : 23.2) * (m.density === "comfortable" ? 1.25 : 1);

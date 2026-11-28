@@ -84,6 +84,9 @@
   --danger-ink: #F17478;
   --accent-ink: #96A1FF;
   --on-accent: #111214;
+  /* Theme-invariant brand indigo fill with white ink (user message bubbles). */
+  --accent-fill: #4F5BF5;
+  --on-fill: #FFFFFF;
 
   /* --- tooltip (inverted mini-palette, both themes near-black) --------- */
   --tooltip-bg: #111214;
@@ -352,6 +355,8 @@
   --accent-ink: #3A44D6;
   /* The light accent is deep enough to carry white. */
   --on-accent: #FFFFFF;
+  --accent-fill: #4F5BF5;
+  --on-fill: #FFFFFF;
 
   /* Tooltip stays inverted (near-black) in the light theme too. */
   --tooltip-bg: #25272B;

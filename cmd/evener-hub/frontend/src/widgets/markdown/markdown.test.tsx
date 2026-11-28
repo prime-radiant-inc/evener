@@ -259,7 +259,7 @@ test("inline code is a quiet underline, not a filled chip: no background, no rad
   expect(rule).not.toMatch(/background/);
   expect(rule).not.toMatch(/border-radius/);
   expect(rule).not.toMatch(/padding/);
-  expect(rule).toContain("border-bottom: 1px solid var(--edge)");
+  expect(rule).toContain("border-bottom: 1px solid var(--markdown-edge, var(--edge))");
   // Relative (em), not a ramp token: this same rule renders at more than one
   // size across hosts (reading surfaces pin the 18px prose step; dense chrome
   // inherits its host's smaller step), and only a relative size tracks both.

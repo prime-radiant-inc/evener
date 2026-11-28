@@ -662,6 +662,8 @@ web's custom properties, and `@evener/appwire-client/palette` for the values the
 | Accent `--accent` | `#8A96FF` | `#4F5BF5` |
 | Accent as text `--accent-ink` | `#96A1FF` | `#3A44D6` |
 | On a solid accent fill `--on-accent` | `#111214` | `#FFFFFF` |
+| Theme-invariant accent fill `--accent-fill` | `#4F5BF5` | `#4F5BF5` |
+| White ink on `--accent-fill` `--on-fill` | `#FFFFFF` | `#FFFFFF` |
 
 PaneScaffold shares the page ground. `Card`, the prompt card and the
 selected rail row sit on `--surface-1`, one step up from the page. Evidence and overlays still have their own grounds. Fine borders are structure,
@@ -677,10 +679,13 @@ The tests compute every semantic pairing, including each hue's own wash, at ≥4
 Accent is the brand indigo. It carries focus, selection, links and the one primary action:
 the filled primary `Button` (which is also the composer's Send) and the agent's
 `SpeakerAvatar` tile are solid `--accent` with `--on-accent` content. `--on-accent` is the
-only ink that may sit on a solid accent fill; it turns with the theme because the accent
+only ink that may sit on a solid `--accent` fill; it turns with the theme because `--accent`
 does (white on the deep light indigo, the dark page ground on the pale dark one) and the
 contract holds the pair to ≥4.5:1 (light 5.06, dark 7.04) and the fill to ≥3:1 against the
-page, well and evidence grounds. The primary's hover and pressed fills mix the accent toward
+page, well and evidence grounds. Where a filled accent surface stays white-on-indigo in
+both themes (delivered user message bubbles on both clients, and filled native actions), it
+uses `--accent-fill` (`#4F5BF5`) with `--on-fill` (`#FFFFFF`), clearing 5.06:1 text contrast
+and ≥3:1 surface separation in both light and dark themes. The primary's hover and pressed fills mix the accent toward
 `--ink-hi`, which is away from `--on-accent` in both themes, so each state gains contrast.
 Tooltips retain their inverted mini-palette. ANSI roles and values are unchanged.
 
@@ -696,8 +701,12 @@ may replace them. The accent is the one chromatic signature laid over them. The 
 the Overview sidebar share the page's `--surface-0`; their split from it is the 1px `--edge`
 hairline plus the one-sided `--shadow-rail`/`--shadow-overview` casts, and `--surface-canvas`
 belongs to wells (the dock tab strip and its inactive tabs, status bar pills, the
-segmented-control track, diagram and preview wells). Delivered user and agent messages share the page ground; the speaker
-row identifies the voice. Keep the dashed accent edge for a message awaiting delivery.
+segmented-control track, diagram and preview wells). Delivered agent messages share the page
+ground, while delivered user messages sit in a `fit-content` rounded `--accent-fill` bubble
+with `--on-fill` white text (`--radius-chip` toward the avatar, `--radius-pane` on the other
+three corners) in both light and dark themes; non-user `UserMessageView` callers (`delegate_send`)
+and dashed provisional pending rows keep neutral surfaces. Keep the dashed accent edge for a
+message awaiting delivery.
 `token-contract.test.ts`, `pwa-manifest-colors.test.ts`, `prefs.test.ts` and the
 `zscn-theme-flip-dark-surface` layoutguard case pin the palette; change them together
 with the tokens, never one at a time.

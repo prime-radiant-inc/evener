@@ -12,10 +12,11 @@
  * them; it holds no palette hex of its own. Its surface roles keep the
  * phone's vocabulary (page, canvas, surface, inset, pressed) but take the
  * shared values, so the two clients render one palette rather than two
- * transcriptions of the same idea. `NativeExtras` is the three roles only the
- * phone declares: its reading ink, and a filled-action pair that holds one
- * value in both themes where the web's accent/on-accent pair turns with the
- * theme.
+ * transcriptions of the same idea. `NativeExtras` is the one role only the
+ * phone declares: its long-form reading ink. `accent-fill` and `on-fill` are
+ * shared across both clients: the brand indigo fill and white ink held fixed
+ * in both themes (for user message bubbles on both clients and filled native
+ * actions), where `accent`/`on-accent` turns with the theme.
  *
  * Role names are the web custom properties without the leading `--`, which
  * keeps the drift check, the aliases and this source on one vocabulary.
@@ -64,6 +65,13 @@ export interface WebPalette {
   /** Text and glyphs on a solid accent fill (the one primary action). It
    * clears 4.5:1 on accent in both themes. */
   "on-accent": string;
+  /** The brand indigo fill held at one value in both themes (user message
+   * bubbles on both clients, and filled native actions), where `accent`
+   * lightens in dark mode and takes a dark `on-accent`. `on-fill` clears
+   * 4.5:1 on it in both themes. */
+  "accent-fill": string;
+  /** White text and glyphs that ride on `accent-fill` in both themes. */
+  "on-fill": string;
   "tooltip-bg": string;
   "tooltip-fg": string;
   "tooltip-muted": string;
@@ -89,17 +97,11 @@ export interface WebPalette {
   "shadow-color": string;
 }
 
-/** The roles only the phone declares; the web has no matching token. */
+/** The role only the phone declares; the web has no matching token. */
 export interface NativeExtras {
   /** The phone's long-form reading ink, a step below ink-hi in dark mode to
    * cut glare. The web's reading surfaces use ink-hi. */
   "prose-ink": string;
-  /** The phone's filled action's fill: the brand indigo at one value in both
-   * themes, where the web's accent lightens in dark and takes a dark
-   * on-accent. on-fill clears 4.5:1 on it. */
-  "accent-fill": string;
-  /** The symbol and label that ride on accent-fill. */
-  "on-fill": string;
 }
 
 export type ThemePalette = WebPalette & NativeExtras;
@@ -219,6 +221,8 @@ export const webPalettes: Record<Scheme, WebPalette> = {
     "danger-ink": "#BD1B21",
     "accent-ink": "#3A44D6",
     "on-accent": "#FFFFFF",
+    "accent-fill": "#4F5BF5",
+    "on-fill": "#FFFFFF",
     "tooltip-bg": "#25272B",
     "tooltip-fg": "#F6F7F8",
     "tooltip-muted": "#A5A8AD",
@@ -266,6 +270,8 @@ export const webPalettes: Record<Scheme, WebPalette> = {
     "danger-ink": "#F17478",
     "accent-ink": "#96A1FF",
     "on-accent": "#111214",
+    "accent-fill": "#4F5BF5",
+    "on-fill": "#FFFFFF",
     "tooltip-bg": "#111214",
     "tooltip-fg": "#F2F3F4",
     "tooltip-muted": "#A5A8AD",
@@ -292,21 +298,12 @@ export const webPalettes: Record<Scheme, WebPalette> = {
   }),
 };
 
-// The phone's primary fill holds one value in both themes: the web's light
-// accent and the ink that rides it.
-const NATIVE_ACCENT_FILL = webPalettes.light.accent;
-const NATIVE_ON_FILL = webPalettes.light["on-accent"];
-
 const NATIVE_EXTRAS: Record<Scheme, NativeExtras> = {
   light: {
     "prose-ink": "#1C1C1E",
-    "accent-fill": NATIVE_ACCENT_FILL,
-    "on-fill": NATIVE_ON_FILL,
   },
   dark: {
     "prose-ink": "#E3E3E8",
-    "accent-fill": NATIVE_ACCENT_FILL,
-    "on-fill": NATIVE_ON_FILL,
   },
 };
 

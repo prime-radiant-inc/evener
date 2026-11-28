@@ -131,15 +131,19 @@
 
 .quiet {
   background: transparent;
-  color: var(--ink-hi);
+  color: var(--quiet-ink, var(--ink-hi));
 }
 
 .quiet:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: var(--hover-1);
+  background: var(--quiet-hover, var(--hover-1));
 }
 
 .quiet:active:not(:disabled):not([aria-disabled="true"]) {
-  background: var(--hover-2);
+  background: var(--quiet-active, var(--hover-2));
+}
+
+.quiet:focus-visible {
+  outline: var(--quiet-focus-ring, var(--focus-ring));
 }
 
 .danger {
