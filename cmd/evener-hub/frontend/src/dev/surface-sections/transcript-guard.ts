@@ -59,17 +59,20 @@ export async function measureEditorialTranscript() {
         fill: getComputedStyle(call).backgroundColor,
       };
     }
-    for (const selector of [
-      '[data-testid="user-bubble"]',
-      '[data-testid="tool-call-item"][data-item-id="editorial_source"]',
+    for (const { selector, includeSelf } of [
+      // Delivered user bubbles carry the brand accent fill; check their enclosing
+      // wrappers stay flat while tool rows stay flat including themselves.
+      { selector: '[data-testid="user-bubble"]', includeSelf: false },
+      { selector: '[data-testid="tool-call-item"][data-item-id="editorial_source"]', includeSelf: true },
     ]) {
       const sample = required(host.querySelector<HTMLElement>(selector));
       if (!sample.getBoundingClientRect().height) throw new Error(`Hidden reading sample: ${level} ${selector}`);
       const row = required(sample.closest('[data-testid="transcript-row"]'));
-      // Delivered user bubbles carry the brand accent fill; their enclosing
-      // wrappers and tool rows stay flat on the page ground.
-      const start = selector === '[data-testid="user-bubble"]' ? sample.parentElement : sample;
-      for (let el: HTMLElement | null = start; el && el !== row; el = el.parentElement) {
+      for (
+        let el: HTMLElement | null = includeSelf ? sample : sample.parentElement;
+        el && el !== row;
+        el = el.parentElement
+      ) {
         if (!el.getClientRects().length) continue;
         const { borderInlineStartWidth: edge, backgroundColor: fill, boxShadow: shadow } = getComputedStyle(el);
         surfaces.push({ level, element: el.className, edge, fill, shadow });
