@@ -162,3 +162,23 @@ it("seats both panes on the one page ground with the sidebar's shadow cast onto 
 		});
 	}
 });
+
+const flattenStyle = (style: unknown): Record<string, unknown> =>
+	Object.assign({}, ...([style].flat().filter(Boolean) as Record<string, unknown>[]));
+
+it("applies the sidebar's shadow style to the rendered Board wrapper", async () => {
+	const { tree } = mount();
+	await settle();
+	const sidebar = tree.root.findAll(
+		(node) => node.type === ("View" as never) && flattenStyle(node.props.style).shadowOpacity === 0.12,
+	);
+	expect(sidebar).toHaveLength(1);
+	expect(flattenStyle(sidebar[0]?.props.style)).toMatchObject({
+		shadowColor: "#000",
+		shadowOpacity: 0.12,
+		shadowRadius: 8,
+		shadowOffset: { width: 2, height: 0 },
+		elevation: 3,
+		zIndex: 1,
+	});
+});

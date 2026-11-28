@@ -103,7 +103,16 @@ git add cmd/evener-hub/frontend/src/styles/tokens.css cmd/evener-hub/frontend/sr
 git commit -m "feat(web): rail and Overview share the page ground and cast a soft shadow"
 ```
 
-### Task 3: iPad detail pane joins the page ground; sidebar casts the shadow
+### Task 3: iPad sidebar casts the shadow on the already-unified ground
+
+> Corrected after implementation (the original text wrongly directed a
+> `DetailStack.Group screenOptions.contentStyle` change to `palette.page`):
+> the split was already one ground — the conversation inherits
+> `palette.page` from `useRootStackOptions`, and the `palette.canvas` at
+> `DuoSplit.tsx`'s `DetailStack.Group` is the grouped *sheet* routes'
+> ground, which stays canvas per the Grouped List Rule. What shipped is the
+> sidebar's shadow and the `zIndex` that keeps the cast visible, plus the
+> exported helper.
 
 **Files:**
 - Modify: `mobile-native/src/duo/DuoSplit.tsx` (~lines 94-150; extract the surface styles into an exported pure helper beside the component, the `FloatingStack` pattern)
@@ -111,25 +120,25 @@ git commit -m "feat(web): rail and Overview share the page ground and cast a sof
 
 **Interfaces:**
 - Consumes: `palette` from the design tokens; the test file's existing palette fixtures/harness.
-- Produces: `duoSurfaceStyles(palette)` returning `{ root, sidebar, divider, detail }` style objects — `root.backgroundColor: palette.page`, `sidebar` carrying the spec shadow + `zIndex: 1`, `divider: { width: 1, backgroundColor: palette.edge }`, `detail.backgroundColor: palette.page`. `DuoSplit.tsx` consumes it; no other caller.
+- Produces: `duoSurfaceStyles(palette)` returning `{ root, sidebar, divider }` style objects — `root.backgroundColor: palette.page`, `sidebar.backgroundColor: palette.page` carrying the spec shadow + `zIndex: 1`, `divider: { width: 1, backgroundColor: palette.edge }`. `DuoSplit.tsx` consumes it; no other caller.
 
 - [ ] **Step 1: Write the failing contract test**
 
-In `DuoSplit.test.tsx`, add a test that calls `duoSurfaceStyles` with each scheme's palette and asserts: `detail.backgroundColor === palette.page`; `root.backgroundColor === palette.page`; `divider` is `{ width: 1, backgroundColor: palette.edge }`; `sidebar` carries `shadowColor: "#000"`, `shadowOpacity: 0.12`, `shadowRadius: 8`, `shadowOffset: { width: 2, height: 0 }`, `elevation: 3`, `zIndex: 1`. Match the file's existing style for obtaining palettes (its current fixtures).
+In `DuoSplit.test.tsx`, add a test that calls `duoSurfaceStyles` with each scheme's palette and asserts: `root.backgroundColor === palette.page`; `sidebar.backgroundColor === palette.page`; `divider` is `{ width: 1, backgroundColor: palette.edge }`; `sidebar` carries `shadowColor: "#000"`, `shadowOpacity: 0.12`, `shadowRadius: 8`, `shadowOffset: { width: 2, height: 0 }`, `elevation: 3`, `zIndex: 1`. Match the file's existing style for obtaining palettes (its current fixtures). Add a wiring test that mounts the split and asserts the rendered Board wrapper View carries the shadow style (catches the helper being dropped from the render).
 
 - [ ] **Step 2: Run the test and verify it fails**
 
 Run: `cd mobile-native && npx vitest run src/duo/DuoSplit.test.tsx`
-Expected: FAIL — `duoSurfaceStyles` is not exported / detail is `palette.canvas`.
+Expected: FAIL — `duoSurfaceStyles` is not a function.
 
 - [ ] **Step 3: Implement `duoSurfaceStyles` and rewire `DuoSplit`**
 
-Export `duoSurfaceStyles(palette)` from `DuoSplit.tsx` (or a sibling module if the file's convention prefers, matching `FloatingStack`'s placement) and use it for the root `View`, the sidebar container `View`, the divider `View` (unchanged 1px `palette.edge`), and the `DetailStack.Group` `screenOptions.contentStyle` (now `palette.page`). The sidebar container gets the spec shadow plus `zIndex: 1`.
+Export `duoSurfaceStyles(palette)` from `DuoSplit.tsx` and use it for the root `View`, the sidebar container `View` (the spec shadow plus `zIndex: 1`), and the divider `View` (unchanged 1px `palette.edge`). The `DetailStack.Group` `screenOptions.contentStyle` stays `palette.canvas` (grouped sheets).
 
 - [ ] **Step 4: Run the test and verify it passes**
 
 Run: `cd mobile-native && npx vitest run src/duo/DuoSplit.test.tsx`
-Expected: PASS, including the pre-existing cases.
+Expected: PASS, including the pre-existing cases. Mutation-prove the wiring test: drop the sidebar style from the rendered wrapper, watch it fail, restore.
 
 - [ ] **Step 5: Typecheck and Biome the touched files**
 
@@ -140,7 +149,7 @@ Expected: tsc clean; Biome reports no changes.
 
 ```bash
 git add mobile-native/src/duo/DuoSplit.tsx mobile-native/src/duo/DuoSplit.test.tsx
-git commit -m "feat(native): iPad split shares one page ground with a sidebar shadow"
+git commit -m "feat(native): iPad split sidebar casts the one-ground shadow"
 ```
 
 ### Task 4: Evergreen docs in the same change

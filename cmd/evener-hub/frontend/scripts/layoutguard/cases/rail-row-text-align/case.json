@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "widgets/tree/tree.module.css",
     "shell/rail/Rail.module.css",
     "shell/rail/RailRow.module.css"

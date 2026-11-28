@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/surface.module.css",
     "widgets/tree/tree.module.css",
     "widgets/badge/badge.module.css",
     "shell/rail/Rail.module.css",
@@ -16,8 +17,18 @@
     "mobile": false
   },
   "forcePseudoStates": [
-    { "selector": "#band-row", "pseudoClasses": ["hover"] },
-    { "selector": "#probe-row", "pseudoClasses": ["hover"] }
+    {
+      "selector": "#band-row",
+      "pseudoClasses": [
+        "hover"
+      ]
+    },
+    {
+      "selector": "#probe-row",
+      "pseudoClasses": [
+        "hover"
+      ]
+    }
   ],
   "mutation": {
     "declaration": "harness: the Badge wrapper's class bandCount swapped for rightSlot, i.e. the count back in the shared slot the hover-hide rule targets",
