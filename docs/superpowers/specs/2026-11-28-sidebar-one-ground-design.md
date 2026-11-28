@@ -67,14 +67,17 @@ no border and no shadow (the Sheet frames it), and `.sidebarMobile`
 likewise drops border and shadow. Light-theme shadows stay ink-tinted and
 much fainter than dark's, per the shadow tokens' own rule.
 
-**iPad.** `DuoSplit.tsx`: the detail stack's `contentStyle.backgroundColor`
-goes `palette.canvas` → `palette.page`. The sidebar container gains
-`FloatingStack`'s shadow recipe turned sideways — `shadowColor: "#000"`,
-`shadowOpacity: 0.12`, `shadowRadius: 8`, `shadowOffset: {width: 2, height:
-0}`, `elevation: 3` — plus `zIndex: 1` so the detail pane does not paint
-over the cast. The surface values are computed by a pure exported helper,
+**iPad.** The split was already one ground (see the correction above):
+`DuoSplit.tsx` seats the Board sidebar and the conversation on
+`palette.page`, divided by a 1px `palette.edge` hairline. What it lacked is
+the layering: the sidebar container gains `FloatingStack`'s shadow recipe
+turned sideways — `shadowColor: "#000"`, `shadowOpacity: 0.12`,
+`shadowRadius: 8`, `shadowOffset: {width: 2, height: 0}`, `elevation: 3` —
+plus `zIndex: 1` so the detail pane does not paint over the cast. The
+surface values are computed by a pure exported helper,
 `duoSurfaceStyles(palette)`, beside the component, in the `FloatingStack`
-exported-helper pattern.
+exported-helper pattern. The grouped sheets keep their `palette.canvas`
+ground (the iOS grouped-list convention).
 
 ## Recovery and preservation
 

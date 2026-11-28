@@ -373,8 +373,8 @@ not establish reading comfort or usability. The accessibility gaps in §8 remain
 ## 1. Direction (the design law)
 
 **Reading before chrome.** Cool neutral paper/ink with one indigo signature, not sepia
-decoration, with the rail one
-visible step from the page. Dark remains the
+decoration, the sidebars seated on the page itself with their split carried by a hairline
+and a soft cast. Dark remains the
 default; `system`, `light`, and `dark` preferences keep their existing behavior. A page is
 flat, a field is visibly editable, an object the reader acts on is a rounded surface with a
 quiet lift, and a floating layer retains a boundary and depth. Use whitespace, aligned
@@ -519,7 +519,7 @@ web's custom properties, and `@evener/appwire-client/palette` for the values the
 | Role | Dark | Light |
 |---|---|---|
 | Page `--surface-0` | `#111214` | `#F6F7F9` |
-| Wells/rail `--surface-canvas` | `#16181C` | `#EEF0F3` |
+| Wells `--surface-canvas` | `#16181C` | `#EEF0F3` |
 | Evidence/structural fill `--surface-1` | `#1D2025` | `#FFFFFF` |
 | Floating layer `--surface-2` | `#1D2025` | `#FFFFFF` |
 | Evidence inset `--surface-inset` | `#191C21` | `#F2F4F7` |
@@ -532,8 +532,7 @@ web's custom properties, and `@evener/appwire-client/palette` for the values the
 | On a solid accent fill `--on-accent` | `#111214` | `#FFFFFF` |
 
 PaneScaffold shares the page ground. `Card`, the tool card, the prompt card and the
-selected rail row sit on `--surface-1`, one step up from the page and two from the rail's
-canvas. Evidence and overlays still have their own grounds. Fine borders are structure,
+selected rail row sit on `--surface-1`, one step up from the page. Evidence and overlays still have their own grounds. Fine borders are structure,
 not text. Low ink clears 4.5:1 on page and evidence surfaces: dark 7.20/6.56, light 5.72/6.14.
 Readable secondary metadata uses medium ink; low ink stays placeholders, disabled and timestamps.
 
@@ -561,9 +560,11 @@ theme is applied, `applyTheme` rewrites the meta to the active page ground so li
 browser chrome does not stay dark.
 
 The neutral grounds are the cool-neutral ruling, not a preference: no warm or beige ground
-may replace them. The accent is the one chromatic signature laid over them. The rail stays
-one visible step from the page (`--surface-canvas` over
-`--surface-0`), and the user's message slip sits on `--surface-1` with a `--edge` hairline,
+may replace them. The accent is the one chromatic signature laid over them. The rail and
+the Overview sidebar share the page's `--surface-0`; their split from it is the 1px `--edge`
+hairline plus the one-sided `--shadow-rail`/`--shadow-overview` casts, and `--surface-canvas`
+belongs to wells (the dock tab strip and its inactive tabs, status bar pills, the
+segmented-control track, diagram and preview wells). The user's message slip sits on `--surface-1` with a `--edge` hairline,
 `--shadow-card` and a tight top-left corner pointing at the speaker's avatar: the corners
 are ladder steps, `--radius-chip` toward the avatar and `--radius-pane` on the other three.
 `token-contract.test.ts`, `pwa-manifest-colors.test.ts`, `prefs.test.ts` and the
@@ -723,7 +724,8 @@ dockview's stylesheet sits outside the ladder: its drag overlay is 999 (`--z-dia
 clears it deliberately) and its drop-target container is 9999, which sits above everything for
 the duration of a dock drag.
 
-**Elevation** — depth is quiet and has three steps plus a focus halo. Each shadow token is
+**Elevation** — depth is quiet and has three steps plus the docked sidebars' casts and a
+focus halo. Each shadow token is
 declared in both theme blocks, because the shadow ink differs by theme.
 
 | Token | Value (light / dark shadow ink) | Used by |
@@ -731,6 +733,8 @@ declared in both theme blocks, because the shadow ink differs by theme.
 | `--shadow-card` | `0 1px 2px` at 6% ink / 35% black | things that sit on the page and carry their own border: the outlined `Card`, the tool card, the user's message slip, the raised segmented-control thumb, secondary buttons, summary tiles, grouped phone lists |
 | `--shadow-card-ringed` | a 1px `--edge` ring plus `--shadow-card` | a raised surface with no border of its own, so the ring costs no box size: the flat `Card`, the selected row (rail and settings nav), the active dock tab |
 | `--shadow-raised` | `--shadow-card` plus a wide soft ambient, `0 8px 24px` at 6% ink / 40% black | the one surface a pane is about: the prompt card (the session composer and the New session task card) |
+| `--shadow-rail` | one-sided `8px 0 24px -12px` at 6% ink / 40% black | the docked Sessions rail's cast onto the page it overlays |
+| `--shadow-overview` | the left-pointing mirror, `-8px 0 24px -12px` | the docked Overview sidebar's cast onto the page it overlays |
 | `--shadow-overlay` | a 1px `--edge` ring plus `0 12px 40px` | floating layers: menus, popovers, toasts, dialogs, sheets, hover cards, floating dock groups |
 | `--focus-halo` | `0 0 0 4px var(--accent-bg)` | under the prompt card's accent hairline while focus is inside it |
 

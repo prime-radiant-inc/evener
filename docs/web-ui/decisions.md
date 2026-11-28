@@ -5,6 +5,42 @@ alternatives, and what source review found at the time. The current
 [design system](design-system.md#design-model-an-editorial-instrument) governs new work;
 dated verdicts below are not a competing current mandate.
 
+## 2026-11-28 sidebars share the page ground and carry the layering
+
+Jesse found the sidebars and main body's two background colors crappy and
+asked for one ground with a little more visual weight showing the sidebars on
+top. From the mockup page (artifact `evener-sidebar-mockups` v2) he picked
+the one-ground + hairline + soft-shadow proposal over hairline-only and over
+landing the unshipped warm glow-up palette.
+
+- The rail and the Overview sidebar move from `--surface-canvas` to the
+  page's `--surface-0`. Their split is the 1px `--edge` hairline both already
+  drew plus new one-sided `--shadow-rail` (`8px 0 24px -12px`) and
+  `--shadow-overview` (mirrored) tokens, declared in both theme blocks with
+  the `--shadow-raised` alphas (6% ink light, 40% black dark), and
+  `--z-raised` so the workspace's paint cannot cover the cast. The
+  drawer-hosted rail (≤899px) keeps no border and no shadow.
+- This retires the "rail one visible step from the page" ruling from the
+  2026-11 restyle. The investigation found the tint relationship was not even
+  consistent: in light theme canvas is darker than page, in dark it is
+  lighter, so the rail floated in dark and sank in light.
+- `--surface-canvas` keeps its wells: the dock tab strip and inactive tabs,
+  status bar pills, the segmented-control track, diagram and preview wells.
+  The tab strip stays canvas deliberately (the pane well); it was flagged on
+  the mockup page and not overridden.
+- The iPad split turned out to be already one ground (the conversation's
+  content comes from `rootStack`'s `palette.page` contentStyle, the Board
+  fills `palette.page`; verified by pixel-sampling the screenshot Jesse
+  sent). The only native change is the sidebar's shadow:
+  `FloatingStack`'s recipe turned sideways via the exported
+  `duoSurfaceStyles` helper, with `zIndex: 1` so the detail pane cannot
+  paint over the cast. The grouped sheets keep their canvas ground per the
+  Grouped List Rule.
+- Pinned by the layoutguard cases `sidebar-one-ground` (both themes, both
+  sidebars: page ground, hairline, mirrored casts, `--z-raised`) and
+  `sidebar-one-ground-mobile` (drawer: page ground, no border, no shadow),
+  and by `DuoSplit.test.tsx`'s surface contract in both schemes.
+
 ## 2026-11-13 the accent becomes an indigo and the primary action wears it
 
 Jesse asked for a friendlier, more distinctive UI and lifted the earlier

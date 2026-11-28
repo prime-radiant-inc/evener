@@ -200,7 +200,7 @@ The implementation follows the phone’s appearance unless Display selects Light
 - **Accent ink:** Links, actions and checks. Accent-fill with on-fill text is the primary button pair; the brighter accent mark identifies interactive or unread state.
 
 ### Neutral
-- **Page:** Near-white in light appearance, near-black in dark; the reading and Board ground.
+- **Page:** Near-white in light appearance, near-black in dark; the reading and Board ground. On the Duo's split it is both panes' ground: the Board sidebar and the conversation share it, the 1-unit edge hairline divides them, and the sidebar casts the floating stack's shadow recipe sideways (`duoSurfaceStyles`) so it reads as a layer over the detail.
 - **Inset surface:** A neutral gray well for fields and compact controls, distinct from the grouped canvas.
 - **Raised surface:** White in light appearance and charcoal in dark; grouped rows, the composer and ask dock.
 - **Grouped canvas:** Pale gray in light appearance and one step above the page in dark; behind sheet groups and their headers.
