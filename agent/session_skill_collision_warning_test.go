@@ -177,3 +177,60 @@ func TestSkillCollision_WarnsWhenControlsDenyTheSelectedCopy(t *testing.T) {
 		t.Fatalf("collision warning does not name the shadowed user copy %q: %+v", loser, got[0])
 	}
 }
+
+// TestSkillCollision_PluginManifestCollisionIsNotADisplacement covers two plugin
+// dirs whose manifests share a name, beside a project skill of that same name.
+// The manifest collision stays in the session's diagnostics and the duplicate
+// plugin is still reported at startup, but activating the project skill must
+// not claim it displaced either plugin: the collision was between the plugins.
+func TestSkillCollision_PluginManifestCollisionIsNotADisplacement(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := skillFixtureRoot(t)
+	writeSkillMD(t, root, "dup", collisionSkillBody)
+	firstPlugin := makePluginDir(t, "dup")
+	secondPlugin := makePluginDir(t, "dup")
+	sess, err := NewSession(llm.NewClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{
+		PluginDirs: []string{firstPlugin, secondPlugin},
+		testOnly:   testConfig{skipGitSnapshot: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, d := range sess.DetailedStatus().SkillDiagnostics {
+		if d.Category == "collision" && d.Name == "dup" && d.Source == firstPlugin && d.OtherSource == secondPlugin {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("plugin manifest collision missing from status: %+v", sess.DetailedStatus().SkillDiagnostics)
+	}
+
+	for _, invocationID := range []string{"inv-1", "inv-2"} {
+		batch, err := sess.prepareSkillActivations(context.Background(), []skillInvocation{{
+			Name:         "dup",
+			Route:        "user_slash",
+			InvocationID: invocationID,
+		}})
+		if err != nil || batch == nil || len(batch.Items) != 1 {
+			t.Fatalf("prepare %s: batch=%+v err=%v", invocationID, batch, err)
+		}
+	}
+
+	warnings := drainWarnings(t, sess)
+	if got := warningsForPaths(warnings, firstPlugin, secondPlugin); len(got) != 0 {
+		t.Fatalf("plugin manifest collision produced %d skill diagnostic warnings, want none: %+v", len(got), got)
+	}
+	duplicates := 0
+	for _, w := range warnings {
+		if w.PluginName == "dup" {
+			duplicates++
+		}
+	}
+	if duplicates != 1 {
+		t.Fatalf("duplicate plugin warnings = %d, want 1: %+v", duplicates, warnings)
+	}
+}

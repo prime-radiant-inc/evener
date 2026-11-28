@@ -136,9 +136,13 @@ bytes. Unrecoverable metadata leaves only that skill unavailable. The session
 emits a `skill_diagnostic` warning with source-specific guidance for malformed
 skills and invalid controls at startup, and for a collision on the first
 activation that resolves the colliding name, rather than a session failure or
-daemon repair advice. CLI, web and native clients consume the shared warning
-fields. Correcting a source restores availability at the next catalog discovery
-or session startup. Retained descriptors revalidate current bytes when loaded;
+daemon repair advice. Two plugin directories whose manifests share a name are
+not a skill collision: the first manifest keeps the name, startup reports the
+skipped duplicate plugin, and `skillDiagnostics` keeps the manifest collision,
+but activating a skill of that name does not warn that it displaced either
+plugin. CLI, web and native clients consume the shared warning fields.
+Correcting a source restores availability at the next catalog discovery or
+session startup. Retained descriptors revalidate current bytes when loaded;
 there is no live filesystem watcher.
 
 `allowed-tools` may be one string or an ordered array of strings. Evener

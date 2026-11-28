@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1872,9 +1873,21 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 		ExtraDirs:     s.cfg.SkillsDirs,
 		Plugins:       sources,
 	})
-	s.skills.Diagnostics = append(diagnostics, s.skills.Diagnostics...)
+	discovered := s.skills.Diagnostics
+	s.skills.Diagnostics = slices.Concat(diagnostics, discovered)
+	for _, diagnostic := range diagnostics {
+		// A plugin-manifest collision is between two plugin dirs that share a
+		// manifest name, not between skills. It stays in the diagnostics for
+		// session inspection, and initPlugins reports the skipped duplicate
+		// plugin, but it must not reach the activation warning: a project skill
+		// that happens to share the plugin's name never displaced either plugin.
+		if diagnostic.Category == "collision" {
+			continue
+		}
+		s.pendingHookWarnings = append(s.pendingHookWarnings, skillDiagnosticWarning(diagnostic))
+	}
 	s.skillCollisions = nil
-	for _, diagnostic := range s.skills.Diagnostics {
+	for _, diagnostic := range discovered {
 		// A collision is about which source an invocation resolves to, so it is
 		// reported when a genuine activation resolves that name, not at startup.
 		// Other diagnostics still describe discovery problems the user should

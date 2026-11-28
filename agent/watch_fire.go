@@ -703,11 +703,13 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	return true
 }
 
-// runTerminalCatchup serves an output_match-only watch on an already-terminal job
-// as a one-shot catch-up: it scans the terminal job's retained output and, if it
-// matches, fires once (spec §7.1 "Terminal target"). No live watch is installed
-// either way; the result reports terminal_catchup with the terminal status, and
-// Fired distinguishes a matched scan from an unmatched one.
+// runTerminalCatchup serves an output_match-only or progress_interval_ms-only
+// watch on an already-terminal owned concrete job as a one-shot catch-up. For
+// output_match, it scans the terminal job's retained output and fires once on a
+// match; for progress_interval_ms, it returns the terminal status without
+// reading output or emitting a progress tick. No live watch is installed either
+// way; the result reports terminal_catchup with the terminal status, and Fired
+// distinguishes a matched output scan from a non-firing catch-up.
 //
 // The scan is the SAME windowed level scan the attach path runs (ScanRetained)
 // over the same retained bytes jm.readOutput serves for both running-but-terminal
@@ -734,12 +736,16 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 
 	result := watchResult{WatchID: cfg.watchID, Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status), Reason: terminalReason}
 
-	// maxJobOutputRetentionBytes caps retention, so it doubles as the scan budget.
-	data, _, _, err := jm.readOutput(key.Target, maxJobOutputRetentionBytes)
-	if err != nil {
-		return watchResult{}, err
+	var last string
+	var matched bool
+	if cfg.outputMatcher != nil {
+		// maxJobOutputRetentionBytes caps retention, so it doubles as the scan budget.
+		data, _, _, err := jm.readOutput(key.Target, maxJobOutputRetentionBytes)
+		if err != nil {
+			return watchResult{}, err
+		}
+		last, matched = cfg.outputMatcher.ScanRetained([]byte(data))
 	}
-	last, matched := cfg.outputMatcher.ScanRetained([]byte(data))
 	if !matched {
 		registryEvents := []jobstore.Event{
 			watchRegisteredEvent(jm, cfg),

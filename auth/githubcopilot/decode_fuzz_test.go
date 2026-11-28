@@ -41,7 +41,11 @@ func FuzzGitHubResponseDecoding(f *testing.F) {
 		{0, 0, []byte(`{"expires_in":"nope"}`)},
 		{0, 0, []byte(`{`)},
 		{0, 200, []byte(`{"access_token":"at"}`)},
+		// One second past time.Duration's range must not wrap into a past expiry (#7721).
+		{0, 0, []byte(`{"access_token":"at","expires_in":9223372037}`)},
+		{0, 0, []byte(`{"access_token":"at","refresh_token":"rt","refresh_token_expires_in":9223372037}`)},
 		{1, 0, []byte(`{"device_code":"dc","user_code":"uc","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}`)},
+		{1, 0, []byte(`{"device_code":"dc","user_code":"uc","verification_uri":"https://github.com/login/device","expires_in":9223372037}`)},
 		{1, 0, []byte(`{"device_code":"dc"}`)},
 		{1, 0, []byte(`{`)},
 		{2, 0, []byte(`{"token":"copilot-session","expires_at":1764000000}`)},

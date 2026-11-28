@@ -3,6 +3,9 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -167,9 +170,59 @@ func TestTokenResponseExpiryTime(t *testing.T) {
 		ExpiresIn:    60,
 	}
 
-	tokens := resp.intoTokenSet(before)
+	tokens, err := resp.intoTokenSet(before)
+	if err != nil {
+		t.Fatalf("intoTokenSet() error = %v", err)
+	}
 	want := before.Add(60 * time.Second)
 	if !tokens.Expiry.Equal(want) {
 		t.Fatalf("Expiry = %s, want %s", tokens.Expiry, want)
+	}
+}
+
+// TestTokenEndpointRejectsExpiresInBeyondDuration pins the time.Duration
+// boundary: the longest representable lifetime still yields a future expiry,
+// and one second more is refused instead of wrapping into an expiry before the
+// request.
+func TestTokenEndpointRejectsExpiresInBeyondDuration(t *testing.T) {
+	maxSeconds := math.MaxInt64 / int64(time.Second)
+	for name, tc := range map[string]struct {
+		expiresIn int64
+		wantErr   bool
+	}{
+		"largest representable": {maxSeconds, false},
+		"one second past":       {maxSeconds + 1, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"access_token":"at","refresh_token":"rt","token_type":"Bearer","expires_in":%d}`, tc.expiresIn)
+			}))
+			defer srv.Close()
+
+			cfg := DefaultConfig()
+			cfg.IssuerBaseURL = srv.URL
+			before := time.Now()
+			tokens, err := ExchangeCode(context.Background(), srv.Client(), cfg, TokenExchangeRequest{
+				Code:         "auth-code",
+				RedirectURI:  "http://localhost:1455/auth/callback",
+				CodeVerifier: "verifier-123",
+			})
+			if tc.wantErr {
+				if !errors.Is(err, errTokenLifetimeOutOfRange) {
+					t.Fatalf("ExchangeCode() error = %v, want errTokenLifetimeOutOfRange", err)
+				}
+				if tokens != (TokenSet{}) {
+					t.Fatalf("ExchangeCode() returned tokens alongside error %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ExchangeCode() error = %v", err)
+			}
+			if !tokens.Expiry.After(before) {
+				t.Fatalf("Expiry = %s, want after request time %s", tokens.Expiry, before)
+			}
+		})
 	}
 }

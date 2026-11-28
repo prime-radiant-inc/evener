@@ -458,6 +458,7 @@ type jobWatchToolResult struct {
 	TerminalCatchup  bool   `json:"terminal_catchup,omitempty"`
 	Status           string `json:"status,omitempty"`
 	Reason           string `json:"reason,omitempty"`
+	TranscriptRef    string `json:"transcript_ref,omitempty"`
 }
 
 type jobWatchToolEventFilter struct {
@@ -507,6 +508,9 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		Status:             res.Status,
 		Reason:             res.Reason,
 	}
+	if out.TerminalCatchup && strings.HasPrefix(out.Source, "job_") {
+		out.TranscriptRef = shellTranscriptRef(out.Source)
+	}
 	if res.OneShot {
 		out.AfterSeconds = res.TimerSeconds
 	} else {
@@ -551,6 +555,12 @@ func formatJobWatch(out jobWatchToolResult) string {
 		}
 		if out.Status != "" {
 			parts = append(parts, out.Status)
+		}
+		if out.Reason != "" && out.Reason != out.Status {
+			parts = append(parts, out.Reason)
+		}
+		if out.TranscriptRef != "" {
+			parts = append(parts, fmt.Sprintf("read_transcript(transcript_ref=%q)", out.TranscriptRef))
 		}
 		return "[" + strings.Join(parts, " · ") + "]"
 	}

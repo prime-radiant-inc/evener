@@ -450,11 +450,11 @@ type watchResult struct {
 	// idempotent/replace-no-op/session-target installs leave it false. A terminal
 	// catch-up that matched also sets it.
 	Fired bool
-	// TerminalCatchup reports that the request was an output_match-only watch on an
-	// already-terminal job, served as a one-shot catch-up scan of retained output
-	// rather than a live watch (spec §7.1 "Terminal target"). Watching is always
-	// false when this is set; Fired distinguishes a matched catch-up from an
-	// unmatched one. Status carries the target's terminal status.
+	// TerminalCatchup reports that the request was an output_match-only or
+	// progress_interval_ms-only watch on an already-terminal owned concrete job,
+	// served as a one-shot terminal catch-up rather than a live watch. Watching
+	// is always false when this is set; Fired is true only when an output_match
+	// catch-up matched retained output. Status carries the target's terminal status.
 	TerminalCatchup bool
 	// Status carries the watched job's terminal status for a terminal catch-up
 	// (spec §7.1). Empty for live installs. Reason carries the producer's

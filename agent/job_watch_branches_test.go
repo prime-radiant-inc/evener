@@ -295,6 +295,31 @@ func TestWatchArgsIsOutputMatchOnly(t *testing.T) {
 	})
 }
 
+func TestWatchArgsIsProgressOnly(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args watchArgs
+		want bool
+	}{
+		{name: "progress only", args: watchArgs{ProgressIntervalMS: 1000}, want: true},
+		{name: "progress with note", args: watchArgs{ProgressIntervalMS: 1000, Note: "check"}, want: true},
+		{name: "with output_match", args: watchArgs{ProgressIntervalMS: 1000, OutputMatch: "ready"}, want: false},
+		{name: "with events", args: watchArgs{ProgressIntervalMS: 1000, Events: []string{"job.notification"}}, want: false},
+		{name: "with every", args: watchArgs{ProgressIntervalMS: 1000, Every: 2}, want: false},
+		{name: "with event_filter", args: watchArgs{ProgressIntervalMS: 1000, EventFilter: &watchEventFilter{ToolName: "read_file"}}, want: false},
+		{name: "with after_seconds", args: watchArgs{ProgressIntervalMS: 1000, AfterSeconds: 60}, want: false},
+		{name: "with repeat_seconds", args: watchArgs{ProgressIntervalMS: 1000, RepeatSeconds: 60}, want: false},
+		{name: "zero progress", args: watchArgs{}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := watchArgsIsProgressOnly(tc.args); got != tc.want {
+				t.Fatalf("watchArgsIsProgressOnly(%+v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // validateWatchEventArgs
 // ---------------------------------------------------------------------------
