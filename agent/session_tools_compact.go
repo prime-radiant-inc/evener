@@ -13,23 +13,23 @@ import (
 func defCompact() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "compact_context",
-		Description: "Compact older history into a summary checkpoint (never changes style or files). Call between tasks or before big inputs. `note_to_self` returns verbatim after compaction, then clears; without persistence, dropped detail is unrecoverable.",
+		Description: "Compact older history into a summary checkpoint (preserves style and files). Call between tasks or before big inputs. `note_to_self` returns verbatim once; unpersisted dropped detail is unrecoverable.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"note_to_self": map[string]any{
 					"type":        "string",
-					"description": "Verbatim note returned after compaction (IDs, paths, numbers, decisions, next steps). \"\" clears a pending note and skips compaction only when `compaction_instructions` is empty and `reload_skills` is absent or null (even [] compacts; an earlier request still runs).",
+					"description": "Verbatim note returned after compaction (IDs, paths, numbers, decisions, next steps). \"\" clears a pending note and skips compaction only when `compaction_instructions` is empty and `reload_skills` is omitted or null (`[]` still compacts; an earlier request still runs).",
 				},
 				"compaction_instructions": map[string]any{
 					"type":        "string",
-					"description": "Optional steering on what to keep vs. drop (dropped detail is unrecoverable without persistence).",
+					"description": "Optional steering on what to keep vs. drop.",
 				},
 				"reload_skills": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
-					"description": "Loaded skill names to reload in order ([] reloads none; omit or null skips).",
+					"description": "Loaded skill names to reload in order (`[]` reloads none; omit or null skips).",
 				},
 			},
 			"required": []string{"note_to_self"},

@@ -104,7 +104,7 @@ func (s *Session) delegateCapabilityRoster() string {
 func (s *Session) delegateToolDefinition() llm.ToolDefinition {
 	sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 	sandboxSchema.ModelDescription = s.delegateModelDescription
-	definition := tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
+	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
 	s.applyDelegateCapabilityRoster(&definition)
 	return definition
 }
@@ -293,7 +293,7 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 		case "delegate":
 			sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
 			sandboxSchema.ModelDescription = s.delegateModelDescription
-			defs[i] = tool.DefDelegateWithResultTool(s.delegateAgentTypeNames(), sandboxSchema, s.resultToolName())
+			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
 		case "shell":
 			defs[i] = s.sessionShellDefinition()
 		case "read_file":

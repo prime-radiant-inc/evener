@@ -46,10 +46,10 @@ func FuzzToolDefinitionsProgram(f *testing.F) {
 		// Check both independently, then use the fuzz-varying versions below for
 		// the package-wide registration pass.
 		toolProgramDefinitionShape(t, DefDelegate())
-		toolProgramDefinitionShape(t, DefDelegateWithResultTool([]string{"analysis"}, DelegateSandboxSchema{
+		toolProgramDefinitionShape(t, DefDelegateWithSandbox([]string{"analysis"}, DelegateSandboxSchema{
 			Available: true,
 			Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
-		}, DefaultResultToolName))
+		}))
 		toolProgramDefinitionShape(t, DefJobWatch(nil))
 		toolProgramDefinitionShape(t, DefJobWatch([]string{"output"}))
 		toolProgramDefinitionShape(t, DefTaskList(nil))
@@ -123,10 +123,10 @@ func toolProgramDefinitions(agentTypes, eventKinds, effortLevels []string, custo
 		DefListDir(),
 		DefEditFile(),
 		DefShell(),
-		DefDelegateWithResultTool(agentTypes, DelegateSandboxSchema{
+		DefDelegateWithSandbox(agentTypes, DelegateSandboxSchema{
 			Available: true,
 			Modes:     []string{"off", "read-only", "workspace-write", "restricted"},
-		}, DefaultResultToolName),
+		}),
 		DefDelegateSend(),
 		DefJobWatch(eventKinds),
 		DefJobStatus(),
