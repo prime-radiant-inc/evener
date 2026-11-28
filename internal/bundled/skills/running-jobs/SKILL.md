@@ -15,7 +15,7 @@ user-invocable: false
 ## Background work and turn ends
 - Background jobs and delegates notify you on completion; yield quietly with your configured result tool (default `communicate`, `next="log_quietly_and_end_turn"`) while waiting.
 - Keep user-requested services (including session-owned background jobs when `mode="detached"` is unavailable) and needed checks alive across turns; stop unneeded helpers before ending your turn.
-- In one-shot (`TurnEndsProcess`) runs, delegates survive turn end and wake you; attach `job_watch(operation="create", source=<job_id>, progress_interval_ms=180000)` (or `output_match`) so a needed background shell survives.
+- In one-shot (`TurnEndsProcess`) runs, delegates survive turn end and wake you; attach `job_watch(operation="create", source=<job_id>, progress_interval_ms=180000)` to keep a background shell alive until completion, and reserve `output_match` for waking on a specific output condition.
 - Keep parallel work within `<resource_caps>`, leaving memory for Evener.
 
 ## Observers, watches, and verification
