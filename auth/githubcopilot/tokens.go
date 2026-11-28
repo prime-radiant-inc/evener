@@ -79,7 +79,7 @@ func postFormJSON(ctx context.Context, client *http.Client, cfg Config, path str
 // maxLifetimeSeconds is the longest lifetime, in whole seconds, that a
 // time.Duration can hold. A larger expires_in would wrap when converted and put
 // the computed expiry in the past.
-const maxLifetimeSeconds = int64(math.MaxInt64 / int64(time.Second))
+const maxLifetimeSeconds = math.MaxInt64 / int64(time.Second)
 
 // expiryAfter turns a positive lifetime in seconds into an absolute expiry. A
 // lifetime too long for time.Duration is a malformed response rather than an

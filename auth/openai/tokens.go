@@ -62,7 +62,7 @@ type tokenEndpointResponse struct {
 // maxLifetimeSeconds is the longest expires_in, in whole seconds, that a
 // time.Duration can hold. A larger value would wrap when converted and put the
 // computed expiry in the past.
-const maxLifetimeSeconds = int64(math.MaxInt64 / int64(time.Second))
+const maxLifetimeSeconds = math.MaxInt64 / int64(time.Second)
 
 // errTokenLifetimeOutOfRange reports a token response whose expires_in is too
 // long to represent, so it is refused as malformed rather than stored as an

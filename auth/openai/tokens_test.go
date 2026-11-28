@@ -185,7 +185,7 @@ func TestTokenResponseExpiryTime(t *testing.T) {
 // and one second more is refused instead of wrapping into an expiry before the
 // request.
 func TestTokenEndpointRejectsExpiresInBeyondDuration(t *testing.T) {
-	maxSeconds := int64(math.MaxInt64 / int64(time.Second))
+	maxSeconds := math.MaxInt64 / int64(time.Second)
 	for name, tc := range map[string]struct {
 		expiresIn int64
 		wantErr   bool

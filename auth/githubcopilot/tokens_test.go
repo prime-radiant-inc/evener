@@ -139,7 +139,7 @@ func TestRefreshTokenRejectsMalformedResponses(t *testing.T) {
 func TestLifetimesBeyondDurationAreMalformed(t *testing.T) {
 	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
 	swapNow(t, at)
-	maxSeconds := int64(math.MaxInt64 / int64(time.Second))
+	maxSeconds := math.MaxInt64 / int64(time.Second)
 	cases := map[string]struct {
 		body   func(seconds int64) string
 		expiry func(TokenSet) time.Time
