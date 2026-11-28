@@ -197,7 +197,8 @@ func toolProgramRegistry(t *testing.T) (*Registry, *int, *bool) {
 				return nil, errors.New("apply_patch requires FileMutator")
 			}
 			patch, _ := args["patch"].(string)
-			return ApplyPatch(ctx, fm, patch)
+			out, _, err := ApplyPatch(ctx, fm, patch)
+			return out, err
 		},
 	}); err != nil {
 		t.Fatalf("register apply_patch: %v", err)
@@ -498,16 +499,16 @@ func toolProgramPatchCases(t *testing.T, payload string) {
 
 	m := &toolProgramMemMutator{files: map[string][]byte{"file.txt": []byte("target\nhint\nkeep\n")}}
 	update := "*** Begin Patch\n*** Update File: file.txt\n@@ hint\n-target\n+" + payload + "\n*** End Patch\n"
-	if _, err := ApplyPatch(context.Background(), m, update); err != nil || string(m.files["file.txt"]) != payload+"\nhint\nkeep\n" {
+	if _, _, err := ApplyPatch(context.Background(), m, update); err != nil || string(m.files["file.txt"]) != payload+"\nhint\nkeep\n" {
 		t.Fatalf("hint fallback update = %q err=%v", m.files["file.txt"], err)
 	}
-	if _, err := ApplyPatch(context.Background(), m, "*** Begin Patch\n*** Update File: file.txt\n@@\n+prefix\n*** End Patch\n"); err != nil || !strings.HasPrefix(string(m.files["file.txt"]), "prefix\n") {
+	if _, _, err := ApplyPatch(context.Background(), m, "*** Begin Patch\n*** Update File: file.txt\n@@\n+prefix\n*** End Patch\n"); err != nil || !strings.HasPrefix(string(m.files["file.txt"]), "prefix\n") {
 		t.Fatalf("pure-add update = %q err=%v", m.files["file.txt"], err)
 	}
-	if _, err := ApplyPatch(context.Background(), m, "*** Begin Patch\n*** Update File: file.txt\n*** Move to: moved.txt\n@@\n hint\n+after\n*** End Patch\n"); err != nil || m.files["moved.txt"] == nil || m.files["file.txt"] != nil {
+	if _, _, err := ApplyPatch(context.Background(), m, "*** Begin Patch\n*** Update File: file.txt\n*** Move to: moved.txt\n@@\n hint\n+after\n*** End Patch\n"); err != nil || m.files["moved.txt"] == nil || m.files["file.txt"] != nil {
 		t.Fatalf("move update files=%#v err=%v", m.files, err)
 	}
-	if _, err := ApplyPatch(context.Background(), m, "*** Begin Patch\n*** Delete File: moved.txt\n*** End Patch\n"); err != nil || m.files["moved.txt"] != nil {
+	if _, _, err := ApplyPatch(context.Background(), m, "*** Begin Patch\n*** Delete File: moved.txt\n*** End Patch\n"); err != nil || m.files["moved.txt"] != nil {
 		t.Fatalf("delete update files=%#v err=%v", m.files, err)
 	}
 
@@ -523,11 +524,11 @@ func toolProgramPatchCases(t *testing.T, payload string) {
 		{name: "update rename", fail: "rename", patch: "*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-old\n+new\n*** End Patch\n"},
 	} {
 		m := &toolProgramMemMutator{files: map[string][]byte{"a.txt": []byte("old\n")}, fail: tc.fail}
-		if _, err := ApplyPatch(context.Background(), m, tc.patch); err == nil || !strings.Contains(err.Error(), "program ") {
+		if _, _, err := ApplyPatch(context.Background(), m, tc.patch); err == nil || !strings.Contains(err.Error(), "program ") {
 			t.Fatalf("%s error = %v", tc.name, err)
 		}
 	}
-	if _, err := ApplyPatch(context.Background(), &toolProgramMemMutator{files: map[string][]byte{"a.txt": []byte("one\n")}}, "*** Begin Patch\n*** Update File: a.txt\n@@\n-missing\n+new\n*** End Patch\n"); err == nil || !strings.Contains(err.Error(), "expected lines not found") {
+	if _, _, err := ApplyPatch(context.Background(), &toolProgramMemMutator{files: map[string][]byte{"a.txt": []byte("one\n")}}, "*** Begin Patch\n*** Update File: a.txt\n@@\n-missing\n+new\n*** End Patch\n"); err == nil || !strings.Contains(err.Error(), "expected lines not found") {
 		t.Fatalf("mismatch diagnostic error = %v", err)
 	}
 

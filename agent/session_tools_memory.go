@@ -431,13 +431,15 @@ func (s *Session) execMemorySearch(ctx context.Context, _ execenv.ExecutionEnvir
 func (s *Session) execMemoryDelete(_ context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "delete", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, _ func([]byte) []byte) (any, error) {
 		path := stringArg(forwarded, "file_path")
-		warn := s.fileReadGuard(env).ReadBeforeWriteWarning(path)
+		guard := s.fileReadGuard(env)
+		warn := guard.ReadBeforeWriteWarning(path)
 		// Only a removal can leave a directory empty; deleting a missing
 		// file stays a no-op.
 		existed := env.FileExists(path)
 		if err := env.RemoveConfinedFile(path); err != nil {
 			return nil, err
 		}
+		guard.TrackChange(path, true)
 		if existed {
 			pruneEmptyMemoryDirectories(env, path)
 		}

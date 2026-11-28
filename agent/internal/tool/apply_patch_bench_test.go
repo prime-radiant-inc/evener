@@ -91,7 +91,7 @@ func benchmarkPatchRestoringFile(b *testing.B, patch string) {
 			b.Fatalf("restore %s: %v", path, err)
 		}
 		b.StartTimer()
-		if _, err := ApplyPatch(ctx, fm, patch); err != nil {
+		if _, _, err := ApplyPatch(ctx, fm, patch); err != nil {
 			b.Fatalf("ApplyPatch: %v", err)
 		}
 	}

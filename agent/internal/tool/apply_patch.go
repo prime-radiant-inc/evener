@@ -11,17 +11,24 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 )
 
+// PatchEffect records one file mutation committed by ApplyPatch.
+type PatchEffect struct {
+	Path    string
+	Deleted bool
+}
+
 // ApplyPatch applies a codex-rs-style apply_patch v4a patch through fm, an
 // execenv.FileMutator that owns path containment (and, under a sandbox policy,
 // race-safe fd-anchored enforcement). It threads ctx to each op's read so a
-// cancelled call ends a read parked on a stream. This is a best-effort
-// implementation intended for local agent loops.
-func ApplyPatch(ctx context.Context, fm execenv.FileMutator, patch string) (string, error) {
+// cancelled call ends a read parked on a stream, and returns the committed
+// effects in order, including earlier sections that landed before an error.
+func ApplyPatch(ctx context.Context, fm execenv.FileMutator, patch string) (string, []PatchEffect, error) {
 	ops, err := parseV4APatch(patch)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var touched []string
+	var effects []PatchEffect
 	for i := 0; i < len(ops); {
 		// Consecutive *** Update File: sections naming one file share one read
 		// and one write of it, instead of each one rewriting the whole file
@@ -30,19 +37,35 @@ func ApplyPatch(ctx context.Context, fm execenv.FileMutator, patch string) (stri
 		var paths []string
 		if end-i > 1 {
 			paths, err = applyUpdateRun(ctx, fm, ops[i:end])
-		} else {
-			paths, err = ops[i].apply(ctx, fm)
+			if len(paths) > 0 {
+				effects = append(effects, PatchEffect{Path: ops[i].(updateFileOp).path})
+			}
+		} else if paths, err = ops[i].apply(ctx, fm); err == nil {
+			switch o := ops[i].(type) {
+			case addFileOp:
+				effects = append(effects, PatchEffect{Path: o.path})
+			case deleteFileOp:
+				effects = append(effects, PatchEffect{Path: o.path, Deleted: true})
+			case updateFileOp:
+				if moveTo := o.moveTarget(); moveTo != "" && moveTo != o.path {
+					effects = append(effects, PatchEffect{Path: o.path, Deleted: true}, PatchEffect{Path: moveTo})
+				} else {
+					effects = append(effects, PatchEffect{Path: o.path})
+				}
+			}
+		} else if u, ok := ops[i].(updateFileOp); ok && len(paths) > 0 {
+			effects = append(effects, PatchEffect{Path: u.path})
 		}
 		if err != nil {
-			return "", err
+			return "", effects, err
 		}
 		touched = append(touched, paths...)
 		i = end
 	}
 	if len(touched) == 0 {
-		return "no changes", nil
+		return "no changes", nil, nil
 	}
-	return "applied patch to:\n" + strings.Join(touched, "\n"), nil
+	return "applied patch to:\n" + strings.Join(touched, "\n"), effects, nil
 }
 
 type patchOp interface {
@@ -250,6 +273,7 @@ func failUpdateRun(fm execenv.FileMutator, path string, written patchFileState, 
 		if writeErr := writePatchFileState(fm, path, written); writeErr != nil {
 			return nil, writeErr
 		}
+		return touched, err
 	}
 	return nil, err
 }
@@ -263,7 +287,7 @@ func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]stri
 	moveTo := o.moveTarget()
 	if moveTo != "" && moveTo != o.path {
 		if err := fm.RenamePath(o.path, moveTo); err != nil {
-			return nil, err
+			return []string{"M " + o.path}, err
 		}
 		return []string{fmt.Sprintf("R %s -> %s", o.path, moveTo)}, nil
 	}
@@ -411,6 +435,16 @@ func hintFromHunk(hunkLines []string) string {
 	return ""
 }
 
+// PatchFileState reports whether the target file changed since the session's
+// last read or write.
+type PatchFileState int
+
+const (
+	PatchFileStateUnknown PatchFileState = iota
+	PatchFileStateUnchanged
+	PatchFileStateChanged
+)
+
 // PatchMismatchError reports where an update hunk stopped matching the file;
 // its message is what the model sees. HunkLine is the 0-based index into the
 // hunk's old/context lines (context and '-' lines, in order) of the first one
@@ -426,6 +460,8 @@ type PatchMismatchError struct {
 	// GotEOF is set when the matching prefix ran to the end of the file, so
 	// there is no file line at HunkLine (Got is empty, Line is 0).
 	GotEOF bool
+	// FileState records whether the file changed since the session's last read or write.
+	FileState PatchFileState
 
 	kind      string
 	lines     []string
@@ -479,7 +515,14 @@ func (d *PatchMismatchError) Error() string {
 	}
 
 	if d.kind == "expected lines not found" {
-		fmt.Fprintf(&b, "\n\nthe file has changed since the content this patch was built from; re-read the target region with read_file, then rebuild the patch")
+		switch d.FileState {
+		case PatchFileStateUnchanged:
+			fmt.Fprintf(&b, "\n\nthe file has not changed since your last read or write; inspect the mismatch and snippet above, then rebuild the patch")
+		case PatchFileStateChanged:
+			fmt.Fprintf(&b, "\n\nthe file has changed since your last read or write; re-read the target region with read_file, then rebuild the patch")
+		default:
+			fmt.Fprintf(&b, "\n\nre-read the target region with read_file, then rebuild the patch")
+		}
 	}
 	return b.String()
 }

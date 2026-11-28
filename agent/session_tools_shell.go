@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -351,7 +352,22 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if !ok {
 				return "", errors.New("apply_patch: execution environment does not support file mutation")
 			}
-			return tool.ApplyPatch(ctx, fm, patch)
+			var guard readGuard
+			if deps != nil {
+				guard = deps.readGuard
+			}
+			out, effects, err := tool.ApplyPatch(ctx, fm, patch)
+			if mismatch, ok := errors.AsType[*tool.PatchMismatchError](err); ok && mismatch.Path != "" {
+				mismatch.FileState = guard.PatchFileState(mismatch.Path)
+				target := resolvePathIn(env, mismatch.Path)
+				if slices.ContainsFunc(effects, func(e tool.PatchEffect) bool { return resolvePathIn(env, e.Path) == target }) {
+					mismatch.FileState = tool.PatchFileStateChanged
+				}
+			}
+			for _, e := range effects {
+				guard.TrackChange(e.Path, e.Deleted)
+			}
+			return out, err
 		},
 	})
 

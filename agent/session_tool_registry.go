@@ -210,19 +210,42 @@ type artifactReadSeekCloser interface {
 // the handlers never touch the raw map.
 type readGuard struct {
 	trackRead              func(path string)
+	trackChange            func(path string, deleted bool)
+	patchFileState         func(path string) tool.PatchFileState
 	readBeforeWriteWarning func(path string) string
 }
 
 func (g readGuard) TrackRead(path string) { g.trackRead(path) }
+
+func (g readGuard) TrackChange(path string, deleted bool) {
+	if g.trackChange != nil {
+		g.trackChange(path, deleted)
+	} else if !deleted && g.trackRead != nil {
+		g.trackRead(path)
+	}
+}
+
+func (g readGuard) PatchFileState(path string) tool.PatchFileState {
+	if g.patchFileState != nil {
+		return g.patchFileState(path)
+	}
+	return tool.PatchFileStateUnknown
+}
 
 func (g readGuard) ReadBeforeWriteWarning(path string) string {
 	return g.readBeforeWriteWarning(path)
 }
 
 func (s *Session) fileReadGuard(env execenv.ExecutionEnvironment) readGuard {
+	warn := s.readBeforeWriteWarning
+	if env != nil {
+		warn = func(path string) string { return s.readBeforeWriteWarningIn(env, path) }
+	}
 	return readGuard{
 		trackRead:              s.trackReadFile,
-		readBeforeWriteWarning: func(path string) string { return s.readBeforeWriteWarningIn(env, path) },
+		trackChange:            func(path string, deleted bool) { s.recordFileState(path, true, deleted) },
+		patchFileState:         s.patchFileState,
+		readBeforeWriteWarning: warn,
 	}
 }
 
@@ -315,10 +338,7 @@ func newToolDeps(s *Session) *toolDeps {
 		cmdTimeouts: func() (int, int) {
 			return s.cfg.DefaultCommandTimeoutMS, s.cfg.MaxCommandTimeoutMS
 		},
-		readGuard: readGuard{
-			trackRead:              s.trackReadFile,
-			readBeforeWriteWarning: s.readBeforeWriteWarning,
-		},
+		readGuard: s.fileReadGuard(nil),
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: s.getOrCreateTaskStore,
 			markUsed: func() {
