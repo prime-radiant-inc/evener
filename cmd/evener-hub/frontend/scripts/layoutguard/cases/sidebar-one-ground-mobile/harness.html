@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>sidebar one-ground mobile harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+</head>
+<body>
+<div class="rail" id="rail"></div>
+<script>
+window.measure = () => {
+  const rail = getComputedStyle(document.getElementById("rail"));
+  return {
+    railBg: rail.backgroundColor,
+    railBorderRightWidth: rail.borderRightWidth,
+    railShadow: rail.boxShadow,
+  };
+};
+</script>
+</body>
+</html>

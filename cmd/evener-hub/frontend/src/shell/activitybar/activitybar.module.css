@@ -6,7 +6,11 @@
   width: 320px;
   flex: none;
   border-left: 1px solid var(--edge);
-  background: var(--surface-canvas);
+  background: var(--surface-0);
+  /* Keeps the left-cast shadow above the following workspace sibling's paint. */
+  position: relative;
+  z-index: var(--z-raised);
+  box-shadow: var(--shadow-overview);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -20,7 +24,7 @@
   height: 100%;
   flex: 1 1 auto;
   border-left: none;
-  background: var(--surface-canvas);
+  background: var(--surface-0);
   display: flex;
   flex-direction: column;
   min-height: 0;

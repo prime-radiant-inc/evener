@@ -31,7 +31,7 @@
    * carry their depth via --shadow-overlay instead of a lighter fill.
    */
   --surface-0: #111214; /* app background — page */
-  --surface-canvas: #16181C; /* pane wells, rail — the tinted structural ground */
+  --surface-canvas: #16181C; /* pane wells, tab strip, status pills — the tinted structural ground */
   --surface-1: #1D2025; /* structural content */
   --surface-2: #1D2025; /* raised: menus, dialogs — depth comes from shadow */
   --surface-inset: #191C21; /* evidence insets, gutters */
@@ -258,6 +258,10 @@
   --shadow-raised: 0 1px 2px #00000059, 0 8px 24px #00000066;
   --shadow-overlay: 0 0 0 1px var(--edge), 0 12px 40px #00000073;
   --shadow-inset-field: inset 0 1px 1px #00000033;
+  /* The two docked sidebars' layer cast: one-sided so it lands on the page
+   * they overlay, tinted like --shadow-raised's second component. */
+  --shadow-rail: 8px 0 24px -12px #00000066;
+  --shadow-overview: -8px 0 24px -12px #00000066;
   --shadow-color: #00000057;
   --focus-halo: 0 0 0 4px var(--accent-bg);
 
@@ -385,6 +389,8 @@
   --shadow-raised: 0 1px 2px #1A1D230F, 0 8px 24px #1A1D230F;
   --shadow-overlay: 0 0 0 1px var(--edge), 0 12px 40px #1A1D2324;
   --shadow-inset-field: inset 0 1px 1px #1A1D230A;
+  --shadow-rail: 8px 0 24px -12px #1A1D230F;
+  --shadow-overview: -8px 0 24px -12px #1A1D230F;
   --shadow-color: #00000011;
   --focus-halo: 0 0 0 4px var(--accent-bg);
 }

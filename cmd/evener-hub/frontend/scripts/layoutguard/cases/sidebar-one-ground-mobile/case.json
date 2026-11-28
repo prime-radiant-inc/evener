@@ -1,0 +1,22 @@
+{
+  "name": "sidebar-one-ground-mobile",
+  "description": "at <=899px the drawer-hosted rail keeps the page ground but carries no border and no shadow, because the Sheet frames it (spec 2026-11-28)",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "shell/rail/Rail.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true,
+    "touch": true
+  },
+  "mutation": {
+    "declaration": "shell/rail/Rail.module.css: the <=899px block's box-shadow: none removed while the base .rail carries --shadow-rail",
+    "verified": "2026-11-28",
+    "expect": "fail",
+    "note": "Verified after the fix by deleting the media block's box-shadow reset: the rail's computed boxShadow became the --shadow-rail value instead of none. The background assertion fails against the pre-change code (canvas instead of page)."
+  }
+}

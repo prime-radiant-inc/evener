@@ -28,10 +28,13 @@
   width: var(--rail-width, 280px);
   min-width: 0;
   height: 100%;
-  /* Anchors the absolutely-positioned resize handle to the right edge. */
+  /* Anchors the absolutely-positioned resize handle to the right edge, and
+   * keeps the shadow cast above the following workspace sibling's paint. */
   position: relative;
-  background: var(--surface-canvas);
+  z-index: var(--z-raised);
+  background: var(--surface-0);
   border-right: 1px solid var(--edge);
+  box-shadow: var(--shadow-rail);
 }
 
 /* On mobile the same Rail renders inside StackHost's TreeDrawer Sheet, which
@@ -44,6 +47,7 @@
   .rail {
     width: 100%;
     border-right: none;
+    box-shadow: none;
   }
 }
 
