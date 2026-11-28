@@ -14,6 +14,10 @@ type byteSpan struct {
 // reports for an ambiguous single match.
 const maxAmbiguousLines = 10
 
+// maxBlankReconcileCells caps the interior LCS DP table (om*nm) used to align
+// unchanged non-blank lines on blank-line-tolerant edit_file matches.
+const maxBlankReconcileCells = 16384
+
 // findFuzzyMatchSpans scans the file content for exact byte ranges that match
 // oldString when whitespace is normalized. replaceAll collects every
 // non-overlapping match; otherwise the single match is returned, or its
@@ -24,15 +28,17 @@ const maxAmbiguousLines = 10
 // segment: a line-heavy file at the whole-file read cap would otherwise
 // allocate ~16 bytes of slice header per line for every line in it
 // (issue #4556).
-func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans int) (spans []byteSpan, ambigLines []int, limitExceeded bool) {
+func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans int) (spans []byteSpan, ambigLines []int, limitExceeded, blankTolerant bool) {
 	normOld := normalizeWS(oldString)
 	if normOld == "" {
-		return nil, nil, false
+		return nil, nil, false, false
 	}
-	wSize := len(splitEditLines(oldString, "\n"))
+	oldLines := splitEditLines(oldString, "\n")
+	wSize := len(oldLines)
 	var (
 		windowSpans []byteSpan
 		windowLines []string
+		nonEmptyWin int
 		scanOffset  int
 		lineNo      int
 		firstLine   int
@@ -90,16 +96,22 @@ func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans in
 		if wSize < 2 {
 			return false
 		}
+		if line != "" {
+			nonEmptyWin++
+		}
 		if len(windowSpans) < wSize {
 			windowSpans = append(windowSpans, byteSpan{start: lineStart, end: lineEnd})
 			windowLines = append(windowLines, line)
 		} else {
+			if windowLines[0] != "" {
+				nonEmptyWin--
+			}
 			copy(windowSpans, windowSpans[1:])
 			windowSpans[wSize-1] = byteSpan{start: lineStart, end: lineEnd}
 			copy(windowLines, windowLines[1:])
 			windowLines[wSize-1] = line
 		}
-		if len(windowSpans) < wSize || normalizeWS(strings.Join(windowLines, "\n")) != normOld {
+		if len(windowSpans) < wSize || nonEmptyWin == 0 || normalizeWS(strings.Join(windowLines, "\n")) != normOld {
 			return false
 		}
 		stop := accept(byteSpan{start: windowSpans[0].start, end: windowSpans[wSize-1].end}, thisLine-wSize+1)
@@ -108,17 +120,238 @@ func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans in
 			// re-report bytes this match already covers.
 			windowSpans = windowSpans[:0]
 			windowLines = windowLines[:0]
+			nonEmptyWin = 0
 		}
 		return stop
 	})
 
 	if overflow {
-		return nil, nil, true
+		return nil, nil, true, false
 	}
 	if len(ambigLines) > 0 {
-		return nil, ambigLines, false
+		return nil, ambigLines, false, false
+	}
+	if len(spans) == 0 && !replaceAll {
+		spans, ambigLines, limitExceeded = findBlankTolerantMatchSpan(content, oldLines, maxSpans)
+		return spans, ambigLines, limitExceeded, len(spans) > 0
+	}
+	return spans, nil, false, false
+}
+
+// findBlankTolerantMatchSpan is the last-resort unique-match fallback when
+// exact and fixed-window fuzzy matching find nothing. It streams content in
+// O(len(patNonBlank)) memory, skipping blank lines between non-blank lines;
+// boundary blank lines in oldLines disable it.
+func findBlankTolerantMatchSpan(content string, oldLines []string, maxSpans int) (spans []byteSpan, ambigLines []int, limitExceeded bool) {
+	if len(oldLines) < 2 || normalizeWS(oldLines[0]) == "" || normalizeWS(oldLines[len(oldLines)-1]) == "" {
+		return nil, nil, false
+	}
+	patNonBlank := make([]string, 0, len(oldLines))
+	for _, l := range oldLines {
+		if norm := normalizeWS(l); norm != "" {
+			patNonBlank = append(patNonBlank, norm)
+		}
+	}
+	type nonBlankLine struct {
+		norm               string
+		start, end, lineNo int
+	}
+	m := len(patNonBlank)
+	ring := make([]nonBlankLine, m)
+	var head, count, scanOffset, lineNo, firstLine int
+	eachLine(content, func(line string) bool {
+		lineStart, lineEnd := scanOffset, scanOffset+len(line)
+		scanOffset = lineEnd + 1
+		lineNo++
+		norm := normalizeWS(line)
+		if norm == "" {
+			return false
+		}
+		ring[(head+count)%m] = nonBlankLine{norm: norm, start: lineStart, end: lineEnd, lineNo: lineNo}
+		if count < m {
+			if count++; count < m {
+				return false
+			}
+		} else {
+			head = (head + 1) % m
+		}
+		for i, want := range patNonBlank {
+			if ring[(head+i)%m].norm != want {
+				return false
+			}
+		}
+		first, last := ring[head], ring[(head+m-1)%m]
+		if len(spans) == 0 {
+			if maxSpans < 1 {
+				limitExceeded = true
+				return true
+			}
+			firstLine = first.lineNo
+			spans = []byteSpan{{start: first.start, end: last.end}}
+			return false
+		}
+		if len(ambigLines) == 0 {
+			ambigLines = append(ambigLines, firstLine)
+		}
+		ambigLines = append(ambigLines, first.lineNo)
+		return len(ambigLines) >= maxAmbiguousLines
+	})
+	if limitExceeded || len(ambigLines) > 0 {
+		return nil, ambigLines, limitExceeded
 	}
 	return spans, nil, false
+}
+
+// splitNonBlank partitions s into non-blank lines and the blank-line slices
+// around them: gaps[0] is leading blanks, gaps[i] sits between lines[i-1] and
+// lines[i], and gaps[len(lines)] is trailing blanks.
+func splitNonBlank(s string) (lines []string, gaps [][]string) {
+	var blanks []string
+	for _, l := range splitEditLines(s, "\n") {
+		if normalizeWS(l) == "" {
+			blanks = append(blanks, l)
+			continue
+		}
+		gaps = append(gaps, blanks)
+		blanks = nil
+		lines = append(lines, l)
+	}
+	return lines, append(gaps, blanks)
+}
+
+// alignUnchangedLines returns matched (oldIdx, newIdx) anchor pairs via common
+// prefix/suffix trimming plus bounded LCS DP over the interior. It reports
+// ok=false when the unaligned interior exceeds maxBlankReconcileCells.
+func alignUnchangedLines(matchedLines, oldLines, newLines []string) ([][2]int, bool) {
+	m, k := len(oldLines), len(newLines)
+	same := func(i, j int) bool { return oldLines[i] == newLines[j] || matchedLines[i] == newLines[j] }
+	p, s := 0, 0
+	for p < m && p < k && same(p, p) {
+		p++
+	}
+	for p+s < m && p+s < k && same(m-1-s, k-1-s) {
+		s++
+	}
+	om, nm := m-p-s, k-p-s
+	if om > 0 && nm > 0 && om > maxBlankReconcileCells/nm {
+		return nil, false
+	}
+	anchors := make([][2]int, 0, p+s)
+	for i := range p {
+		anchors = append(anchors, [2]int{i, i})
+	}
+	if om > 0 && nm > 0 {
+		w := nm + 1
+		dp := make([]int, (om+1)*w)
+		for i := om - 1; i >= 0; i-- {
+			for j := nm - 1; j >= 0; j-- {
+				if same(p+i, p+j) {
+					dp[i*w+j] = dp[(i+1)*w+j+1] + 1
+				} else {
+					dp[i*w+j] = max(dp[(i+1)*w+j], dp[i*w+j+1])
+				}
+			}
+		}
+		for i, j := 0, 0; i < om && j < nm; {
+			if same(p+i, p+j) {
+				anchors = append(anchors, [2]int{p + i, p + j})
+				i, j = i+1, j+1
+			} else if dp[(i+1)*w+j] >= dp[i*w+j+1] {
+				i++
+			} else {
+				j++
+			}
+		}
+	}
+	for i := range s {
+		anchors = append(anchors, [2]int{m - s + i, k - s + i})
+	}
+	return anchors, true
+}
+
+// reconcileBlankTolerantReplacement aligns unchanged non-blank lines between
+// oldString and newString and preserves real file lines and untouched blank
+// gaps from matched while honoring explicit blank-line edits in newString. It
+// returns ok=false when the unaligned interior exceeds maxBlankReconcileCells.
+func reconcileBlankTolerantReplacement(matched, oldString, newString string) (string, bool) {
+	mLines, fGaps := splitNonBlank(matched)
+	oLines, oGaps := splitNonBlank(oldString)
+	nLines, nGaps := splitNonBlank(newString)
+	m, k := len(mLines), len(nLines)
+	if m != len(oLines) || k == 0 {
+		return newString, true
+	}
+	anchors, ok := alignUnchangedLines(mLines, oLines, nLines)
+	if !ok {
+		return "", false
+	}
+	if len(anchors) == 0 {
+		return newString, true
+	}
+	var out []string
+	pickGap := func(oi, nj int, preserve bool) []string {
+		if preserve && len(oGaps[oi]) == len(nGaps[nj]) {
+			return fGaps[oi]
+		}
+		return nGaps[nj]
+	}
+	emitNew := func(lo, hi int) {
+		for j := lo; j < hi; j++ {
+			if j > lo {
+				out = append(out, nGaps[j]...)
+			}
+			out = append(out, nLines[j])
+		}
+	}
+	first, last := anchors[0], anchors[len(anchors)-1]
+	out = append(out, nGaps[0]...)
+	if first[1] > 0 {
+		emitNew(0, first[1])
+		out = append(out, pickGap(first[0], first[1], first[0] > 0)...)
+	}
+	out = append(out, mLines[first[0]])
+	for i := 1; i < len(anchors); i++ {
+		prevO, prevN := anchors[i-1][0], anchors[i-1][1]
+		curO, curN := anchors[i][0], anchors[i][1]
+		delCount, insCount := curO-prevO-1, curN-prevN-1
+		switch {
+		case delCount == 0 && insCount == 0:
+			out = append(out, pickGap(curO, curN, true)...)
+		case delCount == 0:
+			leadGap, trailGap := nGaps[prevN+1], nGaps[curN]
+			if len(leadGap) == len(oGaps[curO]) && len(trailGap) == 0 {
+				if len(oGaps[curO]) == 0 {
+					trailGap = fGaps[curO]
+				} else {
+					leadGap = fGaps[curO]
+				}
+			} else if len(trailGap) == len(oGaps[curO]) && len(leadGap) == 0 {
+				trailGap = fGaps[curO]
+			}
+			out = append(out, leadGap...)
+			emitNew(prevN+1, curN)
+			out = append(out, trailGap...)
+		case insCount == 0:
+			if len(nGaps[curN]) > 0 || len(oGaps[prevO+1]) > 0 || len(oGaps[curO]) > 0 {
+				out = append(out, nGaps[curN]...)
+			} else if len(fGaps[prevO+1]) > 0 {
+				out = append(out, fGaps[prevO+1]...)
+			} else {
+				out = append(out, fGaps[curO]...)
+			}
+		default:
+			out = append(out, pickGap(prevO+1, prevN+1, true)...)
+			emitNew(prevN+1, curN)
+			out = append(out, pickGap(curO, curN, true)...)
+		}
+		out = append(out, mLines[curO])
+	}
+	if last[1]+1 < k {
+		out = append(out, pickGap(last[0]+1, last[1]+1, last[0]+1 < m)...)
+		emitNew(last[1]+1, k)
+	}
+	out = append(out, nGaps[k]...)
+	return strings.Join(out, "\n"), true
 }
 
 // normalizeWS collapses all whitespace runs to single spaces and trims ends.

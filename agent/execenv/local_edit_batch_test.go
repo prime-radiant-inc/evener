@@ -1072,3 +1072,440 @@ func TestEditFileBatch_ConfinedAtomicityAndSymlinkRefusal(t *testing.T) {
 		t.Fatalf("expected sandbox.DeniedError before input/match check on outside path, got %v", err)
 	}
 }
+
+func TestEditFile_BlankLineTolerantUniqueFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing blank line replaces exact unique span", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "function a() {\n  return 1\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("rank.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("rank.js", "}\nfunction boundaryRank(x) {", "}\n\nfunction boundaryRank(x, y) {", false); err != nil {
+			t.Fatalf("EditFile missing blank line failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "rank.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "function a() {\n  return 1\n}\n\nfunction boundaryRank(x, y) {\n  return x\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("extra blank line in old_string replaces exact unique span", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "function a() {\n  return 1\n}\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("rank.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("rank.js", "}\n\nfunction boundaryRank(x) {", "}\nfunction boundaryRank(x, y) {", false); err != nil {
+			t.Fatalf("EditFile extra blank line failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "rank.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "function a() {\n  return 1\n}\nfunction boundaryRank(x, y) {\n  return x\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("missing blank line combined with tabs vs spaces", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "func a() {\n\tif ok {\n\t\treturn\n\t}\n\n\tfmt.Println(1)\n}\n"
+		if _, err := env.WriteFile("a.go", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("a.go", "  }\n  fmt.Println(1)", "\t}\n\n\tfmt.Println(2)", false); err != nil {
+			t.Fatalf("EditFile tabs+blank fallback failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "a.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "func a() {\n\tif ok {\n\t\treturn\n\t}\n\n\tfmt.Println(2)\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("ambiguous duplicate fails and leaves file untouched", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "}\n\nfunction dup() {\n  return 1\n}\n\nfunction dup() {\n  return 2\n}\n"
+		if _, err := env.WriteFile("dup.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("dup.js", "}\nfunction dup() {", "}\nfunction renamed() {", false); err == nil {
+			t.Fatal("expected ambiguity error for duplicate blank-line match")
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "dup.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated on ambiguous fallback:\n%q", string(got))
+		}
+	})
+
+	t.Run("replace_all does not use blank-line fallback", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("all.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("all.js", "}\nfunction boundaryRank(x) {", "}\nfunction renamed(x) {", true); err == nil {
+			t.Fatal("expected replace_all with missing blank line to fail")
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "all.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated when replace_all refused:\n%q", string(got))
+		}
+	})
+
+	t.Run("leading or trailing blank line in old_string does not corrupt boundaries", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "top\n}\n\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("edge.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		for _, old := range []string{
+			"\n}\nfunction boundaryRank(x) {",
+			"}\nfunction boundaryRank(x) {\n",
+		} {
+			if _, err := env.EditFile("edge.js", old, "REPLACED", false); err == nil {
+				t.Fatalf("expected failure for boundary-blank old_string %q", old)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "edge.js"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != orig {
+				t.Fatalf("file mutated for old_string %q:\n%q", old, string(got))
+			}
+		}
+	})
+
+	t.Run("batch edits apply atomically and abort on ambiguous fallback", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "const v = 1\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("batch_ok.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "batch_ok.js", []FileEdit{
+			{OldString: "const v = 1", NewString: "const v = 2"},
+			{OldString: "}\nfunction boundaryRank(x) {", NewString: "}\n\nfunction boundaryRank(x, y) {"},
+		}); err != nil {
+			t.Fatalf("atomic batch with blank-line fallback failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "batch_ok.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "const v = 2\n}\n\nfunction boundaryRank(x, y) {\n  return x\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+
+		dupOrig := "const v = 1\n}\n\nfunction dup() {\n  return 1\n}\n\nfunction dup() {\n  return 2\n}\n"
+		if _, err := env.WriteFile("batch_ambig.js", dupOrig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "batch_ambig.js", []FileEdit{
+			{OldString: "const v = 1", NewString: "const v = 2"},
+			{OldString: "}\nfunction dup() {", NewString: "}\nfunction renamed() {"},
+		}); err == nil {
+			t.Fatal("expected atomic batch abort when second edit is ambiguous")
+		}
+		got, err = os.ReadFile(filepath.Join(dir, "batch_ambig.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != dupOrig {
+			t.Fatalf("batch partially mutated file on ambiguous fallback:\n%q", string(got))
+		}
+	})
+
+	t.Run("preserves unchanged blank lines in shared context", func(t *testing.T) {
+		t.Parallel()
+		cases := []struct {
+			name string
+			orig string
+			old  string
+			new  string
+			want string
+		}{
+			{
+				name: "unchanged leading paragraph break",
+				orig: "Overview\n\nDetails\nVersion 1\n",
+				old:  "Overview\nDetails\nVersion 1",
+				new:  "Overview\nDetails\nVersion 2",
+				want: "Overview\n\nDetails\nVersion 2\n",
+			},
+			{
+				name: "boundary blank gap before changed line",
+				orig: "Overview\n\nVersion 1\n",
+				old:  "Overview\nVersion 1",
+				new:  "Overview\nVersion 2",
+				want: "Overview\n\nVersion 2\n",
+			},
+			{
+				name: "explicit blank-line edit is honored",
+				orig: "Overview\n\nVersion 1\n",
+				old:  "Overview\nVersion 1",
+				new:  "Overview\n\n\nVersion 2",
+				want: "Overview\n\n\nVersion 2\n",
+			},
+			{
+				name: "shared prefix and suffix preserve internal and boundary blanks",
+				orig: "a\n\nold\n\nb\n\nc\n",
+				old:  "a\nold\nb\nc",
+				new:  "a\nnew\nb\nc",
+				want: "a\n\nnew\n\nb\n\nc\n",
+			},
+			{
+				name: "pure deletion keeps single paragraph break",
+				orig: "a\n\ndrop\n\nb\n",
+				old:  "a\ndrop\nb",
+				new:  "a\nb",
+				want: "a\n\nb\n",
+			},
+			{
+				name: "pure insertion preserves blank break once",
+				orig: "a\n\nb\n",
+				old:  "a\nb",
+				new:  "a\nmid\nb",
+				want: "a\nmid\n\nb\n",
+			},
+			{
+				name: "pure append and prepend preserve internal blank line",
+				orig: "a\n\nb\n",
+				old:  "a\nb",
+				new:  "a\nb\nc",
+				want: "a\n\nb\nc\n",
+			},
+			{
+				name: "pure prepend preserves internal blank line",
+				orig: "a\n\nb\n",
+				old:  "a\nb",
+				new:  "z\na\nb",
+				want: "z\na\n\nb\n",
+			},
+			{
+				name: "CRLF file preserves CRLF endings and blank break",
+				orig: "Overview\r\n\r\nDetails\r\nVersion 1\r\n",
+				old:  "Overview\nDetails\nVersion 1",
+				new:  "Overview\nDetails\nVersion 2",
+				want: "Overview\r\n\r\nDetails\r\nVersion 2\r\n",
+			},
+			{
+				name: "tab-indented unchanged context keeps real indentation and blank line",
+				orig: "\tOverview\n\n\tDetails\n\tVersion 1\n",
+				old:  "  Overview\n  Details\n  Version 1",
+				new:  "  Overview\n  Details\n\tVersion 2",
+				want: "\tOverview\n\n\tDetails\n\tVersion 2\n",
+			},
+			{
+				name: "changed first and last lines preserve interior paragraph breaks",
+				orig: "Status 1\n\nP1\n\nP2\n\nOwner 1\n",
+				old:  "Status 1\nP1\nP2\nOwner 1",
+				new:  "Status 2\nP1\nP2\nOwner 2",
+				want: "Status 2\n\nP1\n\nP2\n\nOwner 2\n",
+			},
+			{
+				name: "explicit blank-line reduction before changed line is honored",
+				orig: "Heading\n\nOld text\n\nFooter\n",
+				old:  "Heading\n\nOld text\nFooter",
+				new:  "Heading\nNew text\nFooter",
+				want: "Heading\nNew text\n\nFooter\n",
+			},
+			{
+				name: "explicit blank-line removal between unchanged lines is honored",
+				orig: "Heading\n\nBody\n\nFooter\n",
+				old:  "Heading\n\nBody\nFooter",
+				new:  "Heading\nBody\nFooter",
+				want: "Heading\nBody\n\nFooter\n",
+			},
+			{
+				name: "file-indented new_string with unindented old_string preserves interior paragraph break",
+				orig: "Status 1\n\tP1\n\n\tP2\nOwner 1\n",
+				old:  "Status 1\nP1\nP2\nOwner 1",
+				new:  "Status 2\n\tP1\n\tP2\nOwner 2",
+				want: "Status 2\n\tP1\n\n\tP2\nOwner 2\n",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				dir := t.TempDir()
+				env := NewLocalExecutionEnvironment(dir)
+				if _, err := env.WriteFile("doc.txt", tc.orig); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := env.EditFile("doc.txt", tc.old, tc.new, false); err != nil {
+					t.Fatalf("EditFile failed: %v", err)
+				}
+				got, err := os.ReadFile(filepath.Join(dir, "doc.txt"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != tc.want {
+					t.Fatalf("got:\n%q\nwant:\n%q", string(got), tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("identical old and new on blank-tolerant match fails as no-op", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "Overview\n\nVersion 1\n"
+		if _, err := env.WriteFile("noop.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("noop.txt", "Overview\nVersion 1", "Overview\nVersion 1", false); err == nil {
+			t.Fatal("expected no-op error when old_string equals new_string")
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "noop.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated on no-op:\n%q", string(got))
+		}
+	})
+
+	t.Run("batch preserves blanks and keeps full matched span for overlap detection", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "Header\nOverview\n\nDetails\nVersion 1\n"
+		if _, err := env.WriteFile("ok.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "ok.txt", []FileEdit{
+			{OldString: "Header", NewString: "Title"},
+			{OldString: "Overview\nDetails\nVersion 1", NewString: "Overview\nDetails\nVersion 2"},
+		}); err != nil {
+			t.Fatalf("EditFileBatchCtx failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "ok.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "Title\nOverview\n\nDetails\nVersion 2\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+
+		// Second edit touches "Overview", which sits inside the full blank-tolerant
+		// matched span even though it is unchanged context: overlap must still reject.
+		if _, err := env.WriteFile("ov.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "ov.txt", []FileEdit{
+			{OldString: "Overview", NewString: "Summary"},
+			{OldString: "Overview\nDetails\nVersion 1", NewString: "Overview\nDetails\nVersion 2"},
+		}); err == nil {
+			t.Fatal("expected overlap rejection across full blank-tolerant matched span")
+		}
+		got, err = os.ReadFile(filepath.Join(dir, "ov.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated on overlapping batch:\n%q", string(got))
+		}
+	})
+
+	t.Run("oversized unaligned interior refuses blank-tolerant fallback while localized large edit succeeds", func(t *testing.T) {
+		t.Parallel()
+		var midFile, midOld []string
+		for i := range 127 {
+			line := fmt.Sprintf("interior line %d", i)
+			midFile = append(midFile, line)
+			midOld = append(midOld, line)
+			if i == 60 {
+				midFile = append(midFile, "")
+			}
+		}
+		// 129 non-blank lines with both endpoints changed (om=129, nm=129 > 16384)
+		// and an omitted interior blank line: must refuse cleanly rather than drop the blank line.
+		orig := "Header\nStart 1\n" + strings.Join(midFile, "\n") + "\nEnd 1\n"
+		oldStr := "Start 1\n" + strings.Join(midOld, "\n") + "\nEnd 1"
+		newStr := "Start 2\n" + strings.Join(midOld, "\n") + "\nEnd 2"
+
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		if _, err := env.WriteFile("single.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("single.txt", oldStr, newStr, false); err == nil {
+			t.Fatal("expected blank-tolerant fallback refusal when unaligned interior exceeds alignment cap")
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "single.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatal("single EditFile mutated file after refusing oversized blank-tolerant edit")
+		}
+
+		if _, err := env.WriteFile("batch.txt", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "batch.txt", []FileEdit{
+			{OldString: "Header", NewString: "Title"},
+			{OldString: oldStr, NewString: newStr},
+		}); err == nil {
+			t.Fatal("expected atomic batch refusal when blank-tolerant edit exceeds alignment cap")
+		}
+		got, err = os.ReadFile(filepath.Join(dir, "batch.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatal("batch mutated file after refusing oversized blank-tolerant edit")
+		}
+
+		// Same 130+ line block with only one interior line changed: prefix/suffix
+		// trimming shrinks om*nm to 1 <= 16384, so it still succeeds and keeps the blank line.
+		localNew := append([]string(nil), midOld...)
+		localNew[20] = "interior line 20 updated"
+		localNewStr := "Start 1\n" + strings.Join(localNew, "\n") + "\nEnd 1"
+		wantLocal := append([]string(nil), midFile...)
+		wantLocal[20] = "interior line 20 updated"
+		want := "Header\nStart 1\n" + strings.Join(wantLocal, "\n") + "\nEnd 1\n"
+		if _, err := env.EditFile("single.txt", oldStr, localNewStr, false); err != nil {
+			t.Fatalf("localized edit in 130-line block failed: %v", err)
+		}
+		got, err = os.ReadFile(filepath.Join(dir, "single.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatal("localized large-block edit did not preserve interior blank line")
+		}
+	})
+}

@@ -128,6 +128,24 @@ func TestFindFuzzyMatchBoundsAllocationOnALineHeavyFile(t *testing.T) {
 }
 
 // Not parallel: the allocation measurement must exclude sibling test activity.
+// TestFindFuzzyMatchBlankLineFallbackBoundsAllocationOnALineHeavyFile pins the
+// streaming bound when a multi-line needle misses the fixed-window pass and
+// enters the blank-line-tolerant fallback over a newline-heavy buffer.
+func TestFindFuzzyMatchBlankLineFallbackBoundsAllocationOnALineHeavyFile(t *testing.T) {
+	content := strings.Repeat("\n", 32<<20)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	spans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(content, "absent1\nabsent2", false, 10)
+	runtime.ReadMemStats(&after)
+	if spans != nil || ambigLines != nil || limitExceeded || blankTolerant {
+		t.Fatalf("unexpected match on all-newline buffer: (%v, %v, %v, %v)", spans, ambigLines, limitExceeded, blankTolerant)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<20 {
+		t.Fatalf("blank-line fallback over a %d-byte line-heavy buffer allocated %d bytes, want a streamed scan", len(content), allocated)
+	}
+}
+
+// Not parallel: the allocation measurement must exclude sibling test activity.
 // TestNearestFileRegionBoundsAllocationOnALineHeavyFile pins the same bound on
 // edit_file's nearest-region diagnostic.
 func TestNearestFileRegionBoundsAllocationOnALineHeavyFile(t *testing.T) {

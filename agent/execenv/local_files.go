@@ -450,7 +450,7 @@ matchLoop:
 		}
 
 		remaining := max(MaxEditFileSpans-len(spans), 0)
-		fuzzySpans, ambigLines, limitExceeded := findFuzzyMatchSpans(lfText, pe.oldLF, ed.ReplaceAll, remaining)
+		fuzzySpans, ambigLines, limitExceeded, blankTolerant := findFuzzyMatchSpans(lfText, pe.oldLF, ed.ReplaceAll, remaining)
 		if limitExceeded {
 			editErrs = append(editErrs, fmt.Errorf("%smatched spans exceed the %d-span edit limit", editPrefix(i), MaxEditFileSpans))
 			break matchLoop
@@ -459,6 +459,14 @@ matchLoop:
 			editErrs = append(editErrs, fmt.Errorf("%sold_string not unique in %s (ambiguous whitespace-normalized matches at lines %s); use replace_all=true or provide more context",
 				editPrefix(i), path, formatLineNumbers(ambigLines)))
 			continue
+		}
+		var reconciled string
+		if blankTolerant {
+			var ok bool
+			reconciled, ok = reconcileBlankTolerantReplacement(lfText[fuzzySpans[0].start:fuzzySpans[0].end], pe.oldLF, pe.newLF)
+			if !ok {
+				fuzzySpans = nil
+			}
 		}
 		if len(fuzzySpans) == 0 {
 			var near string
@@ -494,6 +502,9 @@ matchLoop:
 				editErrs = append(editErrs, fmt.Errorf("%sold_string not unique in %s (fuzzy match also appears as a substring at lines %s); provide more context",
 					editPrefix(i), path, formatLineNumbers(lines)))
 				continue
+			}
+			if blankTolerant {
+				prepared[i].newLF = reconciled
 			}
 		}
 		usedFuzzy = true
