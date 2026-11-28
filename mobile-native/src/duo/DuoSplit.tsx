@@ -34,6 +34,7 @@ import { TasksSheet } from "../TasksSheet";
 import { activeConversation } from "../navigationRoutes";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { Palette } from "../design/tokens";
+import { floatingShadow } from "../design/floatingShadow";
 import { DetailPaneWidthContext } from "./paneWidth";
 
 /** The split's one-ground surface treatment: both panes sit on palette.page,
@@ -45,11 +46,7 @@ export function duoSurfaceStyles(palette: Palette) {
 		root: { backgroundColor: palette.page },
 		sidebar: {
 			backgroundColor: palette.page,
-			shadowColor: "#000",
-			shadowOpacity: 0.12,
-			shadowRadius: 8,
-			shadowOffset: { width: 2, height: 0 },
-			elevation: 3,
+			...floatingShadow({ width: 2, height: 0 }, 8),
 			zIndex: 1,
 		},
 		divider: { width: 1, backgroundColor: palette.edge },
