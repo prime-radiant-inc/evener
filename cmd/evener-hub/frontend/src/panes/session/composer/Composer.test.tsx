@@ -599,7 +599,11 @@ test("the focused iPhone composer retries a share after its draft write is rejec
     path,
   });
   const user = userEvent.setup();
-  await user.type(editor, " edit");
+  // Sync ProseMirror's selection to the end before typing so its 20ms
+  // mount-focus selection sync cannot outrace user.type()'s async click
+  // selectionchange in jsdom and snap the caret back to offset 0.
+  selectEditorText(editor, editor.textContent?.length ?? 0);
+  await user.type(editor, " edit", { skipClick: true });
   expect(editor.textContent).toBe("existing draft edit");
   expect(readDraft("local:one")).toBe("existing draft");
   failedWrites.mockRestore();
