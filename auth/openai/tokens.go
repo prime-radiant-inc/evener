@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -57,6 +58,16 @@ type tokenEndpointResponse struct {
 	Scope        string `json:"scope"`
 	ExpiresIn    int    `json:"expires_in"`
 }
+
+// maxLifetimeSeconds is the longest expires_in, in whole seconds, that a
+// time.Duration can hold. A larger value would wrap when converted and put the
+// computed expiry in the past.
+const maxLifetimeSeconds = math.MaxInt64 / int64(time.Second)
+
+// errTokenLifetimeOutOfRange reports a token response whose expires_in is too
+// long to represent, so it is refused as malformed rather than stored as an
+// already-expired credential.
+var errTokenLifetimeOutOfRange = errors.New("expires_in out of range")
 
 type tokenEndpointError struct {
 	Error            string `json:"error"`
@@ -118,7 +129,7 @@ func exchangeTokenRequest(ctx context.Context, client *http.Client, cfg Config, 
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return TokenSet{}, fmt.Errorf("decode token response: %w", err)
 	}
-	return payload.intoTokenSet(time.Now()), nil
+	return payload.intoTokenSet(time.Now())
 }
 
 func compactTokenError(resp *http.Response) error {
@@ -137,7 +148,7 @@ func compactTokenError(resp *http.Response) error {
 	return errors.New(strings.Join(parts, ": "))
 }
 
-func (r tokenEndpointResponse) intoTokenSet(now time.Time) TokenSet {
+func (r tokenEndpointResponse) intoTokenSet(now time.Time) (TokenSet, error) {
 	tokens := TokenSet{
 		AccessToken:  r.AccessToken,
 		RefreshToken: r.RefreshToken,
@@ -146,7 +157,10 @@ func (r tokenEndpointResponse) intoTokenSet(now time.Time) TokenSet {
 		Scope:        r.Scope,
 	}
 	if r.ExpiresIn > 0 {
+		if int64(r.ExpiresIn) > maxLifetimeSeconds {
+			return TokenSet{}, fmt.Errorf("decode token response: %w", errTokenLifetimeOutOfRange)
+		}
 		tokens.Expiry = now.Add(time.Duration(r.ExpiresIn) * time.Second)
 	}
-	return tokens
+	return tokens, nil
 }

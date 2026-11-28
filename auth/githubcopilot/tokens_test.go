@@ -3,6 +3,8 @@ package githubcopilot
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -128,6 +130,71 @@ func TestRefreshTokenRejectsMalformedResponses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLifetimesBeyondDurationAreMalformed pins the time.Duration boundary for
+// every lifetime GitHub sends: the longest representable one still yields a
+// future expiry, and one second more is a malformed response instead of
+// wrapping into an expiry before the request.
+func TestLifetimesBeyondDurationAreMalformed(t *testing.T) {
+	at := time.Date(2026, 11, 22, 2, 0, 0, 0, time.UTC)
+	swapNow(t, at)
+	maxSeconds := math.MaxInt64 / int64(time.Second)
+	cases := map[string]struct {
+		body   func(seconds int64) string
+		expiry func(TokenSet) time.Time
+	}{
+		"expires_in": {
+			body: func(seconds int64) string {
+				return fmt.Sprintf(`{"access_token":"at","expires_in":%d}`, seconds)
+			},
+			expiry: func(tokens TokenSet) time.Time { return tokens.AccessExpiry },
+		},
+		"refresh_token_expires_in": {
+			body: func(seconds int64) string {
+				return fmt.Sprintf(`{"access_token":"at","refresh_token":"rt","refresh_token_expires_in":%d}`, seconds)
+			},
+			expiry: func(tokens TokenSet) time.Time { return tokens.RefreshExpiry },
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := rawResponseServer(t, 0, tc.body(maxSeconds))
+			tokens, err := RefreshToken(context.Background(), server.Client(), newTestConfig(server), "refresh-old")
+			if err != nil {
+				t.Fatalf("RefreshToken() at the boundary error = %v", err)
+			}
+			if got := tc.expiry(tokens); !got.After(at) {
+				t.Fatalf("RefreshToken() at the boundary expiry = %v, want after %v", got, at)
+			}
+
+			server = rawResponseServer(t, 0, tc.body(maxSeconds+1))
+			if _, err := RefreshToken(context.Background(), server.Client(), newTestConfig(server), "refresh-old"); !errors.Is(err, ErrMalformedResponse) {
+				t.Fatalf("RefreshToken() past the boundary error = %v, want ErrMalformedResponse", err)
+			}
+			if _, _, _, err := PollDeviceOnce(context.Background(), server.Client(), newTestConfig(server), testDeviceCode(at)); !errors.Is(err, ErrMalformedResponse) {
+				t.Fatalf("PollDeviceOnce() past the boundary error = %v, want ErrMalformedResponse", err)
+			}
+		})
+	}
+	t.Run("device code expires_in", func(t *testing.T) {
+		body := func(seconds int64) string {
+			return fmt.Sprintf(`{"device_code":"d","user_code":"u","verification_uri":"https://github.com/login/device","expires_in":%d}`, seconds)
+		}
+		server := rawResponseServer(t, 0, body(maxSeconds))
+		dc, err := RequestDeviceCode(context.Background(), server.Client(), newTestConfig(server))
+		if err != nil {
+			t.Fatalf("RequestDeviceCode() at the boundary error = %v", err)
+		}
+		if !dc.Expiry.After(at) {
+			t.Fatalf("RequestDeviceCode() at the boundary expiry = %v, want after %v", dc.Expiry, at)
+		}
+
+		server = rawResponseServer(t, 0, body(maxSeconds+1))
+		if _, err := RequestDeviceCode(context.Background(), server.Client(), newTestConfig(server)); !errors.Is(err, ErrMalformedResponse) {
+			t.Fatalf("RequestDeviceCode() past the boundary error = %v, want ErrMalformedResponse", err)
+		}
+	})
 }
 
 func TestRefreshTokenReportsTransientServerFailure(t *testing.T) {

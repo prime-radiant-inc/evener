@@ -73,6 +73,7 @@ func FuzzTokenEndpointResponse(f *testing.F) {
 		[]byte(``),
 		[]byte(`not json`),
 		[]byte(`{"access_token":123}`),
+		[]byte(`{"access_token":"at","expires_in":9223372037}`), // one second past time.Duration's range (#7721)
 	}
 	for _, s := range seeds {
 		f.Add(byte(200), s)
