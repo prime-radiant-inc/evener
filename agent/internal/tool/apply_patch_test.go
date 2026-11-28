@@ -675,3 +675,319 @@ func TestApplyPatchMismatchAtEndOfFileReportsEOF(t *testing.T) {
 		t.Errorf("mismatch = {HunkLine:%d Want:%q GotEOF:%v}, want {2 gamma true}", mm.HunkLine, mm.Want, mm.GotEOF)
 	}
 }
+
+func TestApplyPatch_BlankLineTolerantUniqueFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing blank line preserves file blank line", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "rank.js")
+		orig := "function a() {\n  return 1\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: rank.js\n@@\n }\n-function boundaryRank(x) {\n+function boundaryRankNew(x) {\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "function a() {\n  return 1\n}\n\nfunction boundaryRankNew(x) {\n  return x\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("extra blank line in context does not invent stray blank line", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "rank.js")
+		orig := "function a() {\n  return 1\n}\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: rank.js\n@@\n }\n \n-function boundaryRank(x) {\n+function boundaryRankNew(x) {\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "function a() {\n  return 1\n}\nfunction boundaryRankNew(x) {\n  return x\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("insertion after context with missing blank line preserves all lines", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "ins.txt")
+		orig := "a\n\nb\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: ins.txt\n@@\n a\n+mid\n b\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "a\n\nmid\nb\n" && string(got) != "a\nmid\n\nb\n" {
+			t.Fatalf("got:\n%q", string(got))
+		}
+	})
+
+	t.Run("missing blank line with tabs vs spaces preserves file indentation and blank line", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "tabs.go")
+		orig := "func a() {\n\t}\n\n\tfmt.Println(1)\n}\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: tabs.go\n@@\n   }\n-  fmt.Println(1)\n+\tfmt.Println(2)\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "func a() {\n\t}\n\n\tfmt.Println(2)\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("multi-line deletion spanning internal blank line drops internal blank line", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "del.txt")
+		orig := "top\nold1\n\nold2\nbot\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: del.txt\n@@\n top\n-old1\n-old2\n bot\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "top\nbot\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("replacement pairs separated by file blank line preserve blank line", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "rep.txt")
+		orig := "old1\n\nold2\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: rep.txt\n@@\n-old1\n+new1\n-old2\n+new2\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "new1\n\nnew2\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("replacement before context preserves trailing blank line after replacement", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "after.txt")
+		orig := "old1\n\nkeep\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: after.txt\n@@\n-old1\n+new1\n keep\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "new1\n\nkeep\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("ambiguous duplicate fails with PatchMismatchError and leaves file untouched", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "dup.js")
+		orig := "}\n\nfunction f() {\n  return 1\n}\n\nfunction f() {\n  return 2\n}\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: dup.js\n@@\n }\n-function f() {\n+function g() {\n*** End Patch\n"
+		_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
+		if _, ok := errors.AsType[*PatchMismatchError](err); !ok {
+			t.Fatalf("err = %v, want *PatchMismatchError", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated on ambiguous fallback:\n%q", string(got))
+		}
+	})
+
+	t.Run("hint disambiguates unique tail match and refuses ambiguous tail without falling back", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "hint.js")
+		orig := "// first\n}\n\nfunction f() {\n  return 1\n}\n\n// second\n}\n\nfunction f() {\n  return 2\n}\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: hint.js\n@@ // second\n }\n-function f() {\n+function g() {\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("hint-disambiguated ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "// first\n}\n\nfunction f() {\n  return 1\n}\n\n// second\n}\n\nfunction g() {\n  return 2\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+
+		ambigPath := filepath.Join(dir, "hint_ambig.js")
+		ambigOrig := "// start\n}\n\nfunction f() {\n  return 1\n}\n\nfunction f() {\n  return 2\n}\n"
+		if err := os.WriteFile(ambigPath, []byte(ambigOrig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ambigPatch := "*** Begin Patch\n*** Update File: hint_ambig.js\n@@ // start\n }\n-function f() {\n+function g() {\n*** End Patch\n"
+		_, err = ApplyPatch(t.Context(), testMutator(dir), ambigPatch)
+		if _, ok := errors.AsType[*PatchMismatchError](err); !ok {
+			t.Fatalf("err = %v, want *PatchMismatchError", err)
+		}
+		got, err = os.ReadFile(ambigPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != ambigOrig {
+			t.Fatalf("file mutated on ambiguous hinted fallback:\n%q", string(got))
+		}
+	})
+
+	t.Run("explicit deleted blank line disables fallback", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "delblank.txt")
+		orig := "alpha\nbeta\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: delblank.txt\n@@\n alpha\n-\n beta\n*** End Patch\n"
+		_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
+		if _, ok := errors.AsType[*PatchMismatchError](err); !ok {
+			t.Fatalf("err = %v, want *PatchMismatchError", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated:\n%q", string(got))
+		}
+	})
+
+	t.Run("single non-blank line or boundary blank context disables fallback", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "single.txt")
+		orig := "top\nalpha\n\nbeta\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cases := []string{
+			// Leading blank context line + single non-blank line.
+			"*** Begin Patch\n*** Update File: single.txt\n@@\n \n-top\n+TOP\n*** End Patch\n",
+			// Leading blank context line with 2 non-blank lines.
+			"*** Begin Patch\n*** Update File: single.txt\n@@\n \n alpha\n-beta\n+BETA\n*** End Patch\n",
+			// Trailing blank context line with 2 non-blank lines.
+			"*** Begin Patch\n*** Update File: single.txt\n@@\n alpha\n-beta\n+BETA\n \n*** End Patch\n",
+		}
+		for _, patch := range cases {
+			_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
+			if _, ok := errors.AsType[*PatchMismatchError](err); !ok {
+				t.Fatalf("patch %q: err = %v, want *PatchMismatchError", patch, err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != orig {
+				t.Fatalf("file mutated for patch %q:\n%q", patch, string(got))
+			}
+		}
+	})
+
+	t.Run("ambiguous at tightest fuzzy tier refuses without loosening", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "tiers.txt")
+		orig := "  alpha\n\n  beta\n\n\talpha\n\n\tbeta\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: tiers.txt\n@@\n alpha\n-beta\n+BETA\n*** End Patch\n"
+		_, err := ApplyPatch(t.Context(), testMutator(dir), patch)
+		if _, ok := errors.AsType[*PatchMismatchError](err); !ok {
+			t.Fatalf("err = %v, want *PatchMismatchError", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated:\n%q", string(got))
+		}
+	})
+
+	t.Run("hint past unique match falls back to pos and multi-hunk continues after matched end", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "multi.js")
+		orig := "}\n\nfunction first() {\n  return 1\n}\n// later anchor\nfunction second() {\n  return 2\n}\n"
+		if err := os.WriteFile(path, []byte(orig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		patch := "*** Begin Patch\n*** Update File: multi.js\n@@ // later anchor\n }\n-function first() {\n+function firstRenamed() {\n@@\n function second() {\n-  return 2\n+  return 3\n*** End Patch\n"
+		if _, err := ApplyPatch(t.Context(), testMutator(dir), patch); err != nil {
+			t.Fatalf("ApplyPatch failed: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "}\n\nfunction firstRenamed() {\n  return 1\n}\n// later anchor\nfunction second() {\n  return 3\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+}

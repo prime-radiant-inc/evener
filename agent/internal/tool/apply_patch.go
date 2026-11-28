@@ -300,6 +300,12 @@ func (o updateFileOp) update(state patchFileState) (patchFileState, error) {
 			k = seekLineSequence(origLines, oldLines, pos)
 		}
 		if k < 0 {
+			if matchedIdx := seekBlankTolerantMatch(origLines, entries, oldLines, searchStart, pos); matchedIdx != nil {
+				out = append(out, origLines[pos:matchedIdx[0]]...)
+				out = append(out, applyBlankTolerantReplacement(origLines, matchedIdx, entries)...)
+				pos = matchedIdx[len(matchedIdx)-1] + 1
+				continue
+			}
 			hunkLine, diagLine := firstDifferingLine(origLines, oldLines, pos)
 			if hunkLine == 0 {
 				diagLine = mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
@@ -713,6 +719,95 @@ func applyReplacementEntries(matchedOldLines []string, entries []replacementEntr
 		case '+':
 			out = append(out, entry.body)
 		}
+	}
+	return out
+}
+
+// seekBlankTolerantMatch is the last-resort unique search when fixed-length
+// matching fails. Boundary or deleted blank lines disable it, and an ambiguous
+// hinted tail refuses immediately instead of widening back to pos.
+func seekBlankTolerantMatch(origLines []string, entries []replacementEntry, oldLines []string, searchStart, pos int) []int {
+	if len(oldLines) < 2 || strings.TrimSpace(oldLines[0]) == "" || strings.TrimSpace(oldLines[len(oldLines)-1]) == "" {
+		return nil
+	}
+	for _, entry := range entries {
+		if entry.prefix == '-' && strings.TrimSpace(entry.body) == "" {
+			return nil
+		}
+	}
+	patNonBlank := make([]string, 0, len(oldLines))
+	for _, line := range oldLines {
+		if strings.TrimSpace(line) != "" {
+			patNonBlank = append(patNonBlank, line)
+		}
+	}
+	nonBlankIdx := make([]int, 0, max(len(origLines)-pos, 0))
+	hintOff := 0
+	for i := pos; i < len(origLines); i++ {
+		if strings.TrimSpace(origLines[i]) != "" {
+			nonBlankIdx = append(nonBlankIdx, i)
+			if i < searchStart {
+				hintOff = len(nonBlankIdx)
+			}
+		}
+	}
+	if matchedIdx, ambiguous := uniqueNonBlankMatch(origLines, nonBlankIdx[hintOff:], patNonBlank); matchedIdx != nil || ambiguous || hintOff == 0 {
+		return matchedIdx
+	}
+	matchedIdx, _ := uniqueNonBlankMatch(origLines, nonBlankIdx, patNonBlank)
+	return matchedIdx
+}
+
+// uniqueNonBlankMatch walks the mode ladder from tightest to loosest, requiring
+// a single match at the tightest matching tier and refusing on ambiguity.
+func uniqueNonBlankMatch(lines []string, nonBlankIdx []int, patNonBlank []string) ([]int, bool) {
+	m := len(patNonBlank)
+	for mode := matchExact; mode <= matchFuzzyLine; mode++ {
+		firstStart, count := -1, 0
+	scan:
+		for j := 0; j <= len(nonBlankIdx)-m; j++ {
+			for k := range m {
+				if !lineMatchesMode(lines[nonBlankIdx[j+k]], patNonBlank[k], mode) {
+					continue scan
+				}
+			}
+			if count++; count > 1 {
+				return nil, true
+			}
+			firstStart = j
+		}
+		if count == 1 {
+			return nonBlankIdx[firstStart : firstStart+m], false
+		}
+	}
+	return nil, false
+}
+
+// applyBlankTolerantReplacement preserves file indentation on context lines and
+// file blank lines outside deleted blocks while skipping blank patch context.
+func applyBlankTolerantReplacement(origLines []string, matchedIdx []int, entries []replacementEntry) []string {
+	out := make([]string, 0, len(entries))
+	oldIdx, prevPrefix, sawPlus := 0, byte(0), false
+	for _, entry := range entries {
+		if entry.prefix == '+' {
+			out = append(out, entry.body)
+			sawPlus = true
+			continue
+		}
+		if entry.prefix == ' ' && strings.TrimSpace(entry.body) == "" {
+			continue
+		}
+		if oldIdx > 0 && prevPrefix == '-' && (entry.prefix == ' ' || sawPlus) {
+			out = append(out, origLines[matchedIdx[oldIdx-1]+1:matchedIdx[oldIdx]]...)
+		}
+		if entry.prefix == ' ' {
+			out = append(out, origLines[matchedIdx[oldIdx]])
+			if oldIdx+1 < len(matchedIdx) {
+				out = append(out, origLines[matchedIdx[oldIdx]+1:matchedIdx[oldIdx+1]]...)
+			}
+		}
+		prevPrefix, sawPlus = entry.prefix, false
+		oldIdx++
 	}
 	return out
 }

@@ -205,6 +205,119 @@ func TestFindFuzzyMatchSpans_MaxSpansLimit(t *testing.T) {
 	})
 }
 
+func TestFindFuzzyMatchSpans_BlankLineTolerantUniqueFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing blank line unique match", func(t *testing.T) {
+		t.Parallel()
+		content := "alpha\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		old := "}\nfunction boundaryRank(x) {"
+		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
+		if limitExceeded || ambigLines != nil || len(spans) != 1 {
+			t.Fatalf("findFuzzyMatchSpans = (%v, %v, %v), want one span", spans, ambigLines, limitExceeded)
+		}
+		want := "}\n\nfunction boundaryRank(x) {"
+		if got := content[spans[0].start:spans[0].end]; got != want {
+			t.Fatalf("matched span = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("extra blank line in oldString unique match", func(t *testing.T) {
+		t.Parallel()
+		content := "alpha\n}\nfunction boundaryRank(x) {\n  return x\n}\n"
+		old := "}\n\nfunction boundaryRank(x) {"
+		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
+		if limitExceeded || ambigLines != nil || len(spans) != 1 {
+			t.Fatalf("findFuzzyMatchSpans = (%v, %v, %v), want one span", spans, ambigLines, limitExceeded)
+		}
+		want := "}\nfunction boundaryRank(x) {"
+		if got := content[spans[0].start:spans[0].end]; got != want {
+			t.Fatalf("matched span = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("missing blank line combined with tabs vs spaces", func(t *testing.T) {
+		t.Parallel()
+		content := "pkg\n\t}\n\n\tfunction   boundaryRank(x) {\n\t\treturn x\n\t}\n"
+		old := "  }\n  function boundaryRank(x) {"
+		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
+		if limitExceeded || ambigLines != nil || len(spans) != 1 {
+			t.Fatalf("findFuzzyMatchSpans = (%v, %v, %v), want one span", spans, ambigLines, limitExceeded)
+		}
+		want := "\t}\n\n\tfunction   boundaryRank(x) {"
+		if got := content[spans[0].start:spans[0].end]; got != want {
+			t.Fatalf("matched span = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ambiguous duplicate reports candidate lines", func(t *testing.T) {
+		t.Parallel()
+		content := "}\n\nfunction f() {\n  return 1\n}\n\nfunction f() {\n  return 2\n}\n"
+		old := "}\nfunction f() {"
+		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
+		if spans != nil || limitExceeded {
+			t.Fatalf("ambiguous blank-line fallback = (%v, %v, %v), want nil spans without overflow", spans, ambigLines, limitExceeded)
+		}
+		if want := []int{1, 5}; !slices.Equal(ambigLines, want) {
+			t.Fatalf("ambiguous lines = %v, want %v", ambigLines, want)
+		}
+	})
+
+	t.Run("self-overlapping blank-separated repeats are ambiguous", func(t *testing.T) {
+		t.Parallel()
+		content := "foo()\n\nfoo()\n\nfoo()\n"
+		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, "foo()\nfoo()", false, 10)
+		if spans != nil || limitExceeded {
+			t.Fatalf("self-overlapping match = (%v, %v, %v), want ambiguity", spans, ambigLines, limitExceeded)
+		}
+		if want := []int{1, 3}; !slices.Equal(ambigLines, want) {
+			t.Fatalf("ambiguous lines = %v, want %v", ambigLines, want)
+		}
+	})
+
+	t.Run("replaceAll disables blank-line fallback", func(t *testing.T) {
+		t.Parallel()
+		content := "alpha\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		old := "}\nfunction boundaryRank(x) {"
+		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, true, 10)
+		if spans != nil || ambigLines != nil || limitExceeded {
+			t.Fatalf("replaceAll blank-line fallback = (%v, %v, %v), want (nil, nil, false)", spans, ambigLines, limitExceeded)
+		}
+	})
+
+	t.Run("leading or trailing blank line in oldString disables fallback", func(t *testing.T) {
+		t.Parallel()
+		content := "alpha\n}\n\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		for _, old := range []string{
+			"\n}\nfunction boundaryRank(x) {",
+			"}\nfunction boundaryRank(x) {\n",
+			"   \n}\nfunction boundaryRank(x) {",
+			"}\nfunction boundaryRank(x) {\n\t ",
+		} {
+			spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 10)
+			if spans != nil || ambigLines != nil || limitExceeded {
+				t.Fatalf("boundary-blank old=%q = (%v, %v, %v), want (nil, nil, false)", old, spans, ambigLines, limitExceeded)
+			}
+		}
+	})
+
+	t.Run("maxSpans budget respected on fallback", func(t *testing.T) {
+		t.Parallel()
+		content := "alpha\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		old := "}\nfunction boundaryRank(x) {"
+		spans, ambigLines, limitExceeded := findFuzzyMatchSpans(content, old, false, 0)
+		if !limitExceeded || spans != nil || ambigLines != nil {
+			t.Fatalf("maxSpans=0 fallback = (%v, %v, %v), want (nil, nil, true)", spans, ambigLines, limitExceeded)
+		}
+
+		dup := "}\n\nfunction f() {\n}\n\nfunction f() {\n"
+		spans, ambigLines, limitExceeded = findFuzzyMatchSpans(dup, "}\nfunction f() {", false, 1)
+		if limitExceeded || spans != nil || !slices.Equal(ambigLines, []int{1, 4}) {
+			t.Fatalf("maxSpans=1 ambiguous fallback = (%v, %v, %v), want ambig [1 4]", spans, ambigLines, limitExceeded)
+		}
+	})
+}
+
 // TestNearestFileRegion_IncludesOneBasedLineNumber pins the near-miss
 // diagnostic's line number: the snippet must say which 1-based file line the
 // region starts on, not just show its text.

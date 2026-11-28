@@ -1072,3 +1072,177 @@ func TestEditFileBatch_ConfinedAtomicityAndSymlinkRefusal(t *testing.T) {
 		t.Fatalf("expected sandbox.DeniedError before input/match check on outside path, got %v", err)
 	}
 }
+
+func TestEditFile_BlankLineTolerantUniqueFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing blank line replaces exact unique span", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "function a() {\n  return 1\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("rank.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("rank.js", "}\nfunction boundaryRank(x) {", "}\n\nfunction boundaryRank(x, y) {", false); err != nil {
+			t.Fatalf("EditFile missing blank line failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "rank.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "function a() {\n  return 1\n}\n\nfunction boundaryRank(x, y) {\n  return x\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("extra blank line in old_string replaces exact unique span", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "function a() {\n  return 1\n}\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("rank.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("rank.js", "}\n\nfunction boundaryRank(x) {", "}\nfunction boundaryRank(x, y) {", false); err != nil {
+			t.Fatalf("EditFile extra blank line failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "rank.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "function a() {\n  return 1\n}\nfunction boundaryRank(x, y) {\n  return x\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("missing blank line combined with tabs vs spaces", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "func a() {\n\tif ok {\n\t\treturn\n\t}\n\n\tfmt.Println(1)\n}\n"
+		if _, err := env.WriteFile("a.go", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("a.go", "  }\n  fmt.Println(1)", "\t}\n\n\tfmt.Println(2)", false); err != nil {
+			t.Fatalf("EditFile tabs+blank fallback failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "a.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "func a() {\n\tif ok {\n\t\treturn\n\t}\n\n\tfmt.Println(2)\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+	})
+
+	t.Run("ambiguous duplicate fails and leaves file untouched", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "}\n\nfunction dup() {\n  return 1\n}\n\nfunction dup() {\n  return 2\n}\n"
+		if _, err := env.WriteFile("dup.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("dup.js", "}\nfunction dup() {", "}\nfunction renamed() {", false); err == nil {
+			t.Fatal("expected ambiguity error for duplicate blank-line match")
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "dup.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated on ambiguous fallback:\n%q", string(got))
+		}
+	})
+
+	t.Run("replace_all does not use blank-line fallback", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("all.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFile("all.js", "}\nfunction boundaryRank(x) {", "}\nfunction renamed(x) {", true); err == nil {
+			t.Fatal("expected replace_all with missing blank line to fail")
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "all.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != orig {
+			t.Fatalf("file mutated when replace_all refused:\n%q", string(got))
+		}
+	})
+
+	t.Run("leading or trailing blank line in old_string does not corrupt boundaries", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "top\n}\n\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("edge.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		for _, old := range []string{
+			"\n}\nfunction boundaryRank(x) {",
+			"}\nfunction boundaryRank(x) {\n",
+		} {
+			if _, err := env.EditFile("edge.js", old, "REPLACED", false); err == nil {
+				t.Fatalf("expected failure for boundary-blank old_string %q", old)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "edge.js"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != orig {
+				t.Fatalf("file mutated for old_string %q:\n%q", old, string(got))
+			}
+		}
+	})
+
+	t.Run("batch edits apply atomically and abort on ambiguous fallback", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		env := NewLocalExecutionEnvironment(dir)
+		orig := "const v = 1\n}\n\nfunction boundaryRank(x) {\n  return x\n}\n"
+		if _, err := env.WriteFile("batch_ok.js", orig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "batch_ok.js", []FileEdit{
+			{OldString: "const v = 1", NewString: "const v = 2"},
+			{OldString: "}\nfunction boundaryRank(x) {", NewString: "}\n\nfunction boundaryRank(x, y) {"},
+		}); err != nil {
+			t.Fatalf("atomic batch with blank-line fallback failed: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, "batch_ok.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "const v = 2\n}\n\nfunction boundaryRank(x, y) {\n  return x\n}\n"
+		if string(got) != want {
+			t.Fatalf("got:\n%q\nwant:\n%q", string(got), want)
+		}
+
+		dupOrig := "const v = 1\n}\n\nfunction dup() {\n  return 1\n}\n\nfunction dup() {\n  return 2\n}\n"
+		if _, err := env.WriteFile("batch_ambig.js", dupOrig); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.EditFileBatchCtx(context.Background(), "batch_ambig.js", []FileEdit{
+			{OldString: "const v = 1", NewString: "const v = 2"},
+			{OldString: "}\nfunction dup() {", NewString: "}\nfunction renamed() {"},
+		}); err == nil {
+			t.Fatal("expected atomic batch abort when second edit is ambiguous")
+		}
+		got, err = os.ReadFile(filepath.Join(dir, "batch_ambig.js"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != dupOrig {
+			t.Fatalf("batch partially mutated file on ambiguous fallback:\n%q", string(got))
+		}
+	})
+}

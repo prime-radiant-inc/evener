@@ -29,10 +29,12 @@ func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans in
 	if normOld == "" {
 		return nil, nil, false
 	}
-	wSize := len(splitEditLines(oldString, "\n"))
+	oldLines := splitEditLines(oldString, "\n")
+	wSize := len(oldLines)
 	var (
 		windowSpans []byteSpan
 		windowLines []string
+		nonEmptyWin int
 		scanOffset  int
 		lineNo      int
 		firstLine   int
@@ -90,16 +92,22 @@ func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans in
 		if wSize < 2 {
 			return false
 		}
+		if line != "" {
+			nonEmptyWin++
+		}
 		if len(windowSpans) < wSize {
 			windowSpans = append(windowSpans, byteSpan{start: lineStart, end: lineEnd})
 			windowLines = append(windowLines, line)
 		} else {
+			if windowLines[0] != "" {
+				nonEmptyWin--
+			}
 			copy(windowSpans, windowSpans[1:])
 			windowSpans[wSize-1] = byteSpan{start: lineStart, end: lineEnd}
 			copy(windowLines, windowLines[1:])
 			windowLines[wSize-1] = line
 		}
-		if len(windowSpans) < wSize || normalizeWS(strings.Join(windowLines, "\n")) != normOld {
+		if len(windowSpans) < wSize || nonEmptyWin == 0 || normalizeWS(strings.Join(windowLines, "\n")) != normOld {
 			return false
 		}
 		stop := accept(byteSpan{start: windowSpans[0].start, end: windowSpans[wSize-1].end}, thisLine-wSize+1)
@@ -108,6 +116,7 @@ func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans in
 			// re-report bytes this match already covers.
 			windowSpans = windowSpans[:0]
 			windowLines = windowLines[:0]
+			nonEmptyWin = 0
 		}
 		return stop
 	})
@@ -118,11 +127,82 @@ func findFuzzyMatchSpans(content, oldString string, replaceAll bool, maxSpans in
 	if len(ambigLines) > 0 {
 		return nil, ambigLines, false
 	}
+	if len(spans) == 0 && !replaceAll {
+		return findBlankTolerantMatchSpan(content, oldLines, maxSpans)
+	}
+	return spans, nil, false
+}
+
+// findBlankTolerantMatchSpan is the last-resort unique-match fallback when
+// exact and fixed-window fuzzy matching find nothing. It streams content in
+// O(len(patNonBlank)) memory, skipping blank lines between non-blank lines;
+// boundary blank lines in oldLines disable it.
+func findBlankTolerantMatchSpan(content string, oldLines []string, maxSpans int) (spans []byteSpan, ambigLines []int, limitExceeded bool) {
+	if len(oldLines) < 2 || normalizeWS(oldLines[0]) == "" || normalizeWS(oldLines[len(oldLines)-1]) == "" {
+		return nil, nil, false
+	}
+	patNonBlank := make([]string, 0, len(oldLines))
+	for _, l := range oldLines {
+		if norm := normalizeWS(l); norm != "" {
+			patNonBlank = append(patNonBlank, norm)
+		}
+	}
+	type nonBlankLine struct {
+		norm               string
+		start, end, lineNo int
+	}
+	m := len(patNonBlank)
+	ring := make([]nonBlankLine, m)
+	var head, count, scanOffset, lineNo, firstLine int
+	eachLine(content, func(line string) bool {
+		lineStart, lineEnd := scanOffset, scanOffset+len(line)
+		scanOffset = lineEnd + 1
+		lineNo++
+		norm := normalizeWS(line)
+		if norm == "" {
+			return false
+		}
+		ring[(head+count)%m] = nonBlankLine{norm: norm, start: lineStart, end: lineEnd, lineNo: lineNo}
+		if count < m {
+			count++
+			if count < m {
+				return false
+			}
+		} else {
+			head = (head + 1) % m
+		}
+		for i, want := range patNonBlank {
+			if ring[(head+i)%m].norm != want {
+				return false
+			}
+		}
+		first, last := ring[head], ring[(head+m-1)%m]
+		if len(spans) == 0 {
+			if maxSpans < 1 {
+				limitExceeded = true
+				return true
+			}
+			firstLine = first.lineNo
+			spans = []byteSpan{{start: first.start, end: last.end}}
+			return false
+		}
+		if len(ambigLines) == 0 {
+			ambigLines = append(ambigLines, firstLine)
+		}
+		ambigLines = append(ambigLines, first.lineNo)
+		return len(ambigLines) >= maxAmbiguousLines
+	})
+	if limitExceeded || len(ambigLines) > 0 {
+		return nil, ambigLines, limitExceeded
+	}
 	return spans, nil, false
 }
 
 // normalizeWS collapses all whitespace runs to single spaces and trims ends.
 func normalizeWS(s string) string {
+	if s == "" {
+		return ""
+	}
 	return strings.Join(strings.Fields(s), " ")
 }
 
